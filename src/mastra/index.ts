@@ -20,8 +20,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Mastra } from '@mastra/core/mastra';
-import { LibSQLFactoryStorage } from '@mastra/libsql';
-import { PgVector, PgFactoryStorage } from '@mastra/pg';
+import { LibSQLFactoryStorage, LibSQLVector } from '@mastra/libsql';
 import { LocalSandbox } from '@mastra/core/workspace';
 import { PlatformSandbox, createRepoTemplate as createPlatformRepoTemplate } from '@mastra/platform-workspace';
 import { E2BSandbox, createRepoTemplate as createE2BRepoTemplate } from '@mastra/e2b';
@@ -208,16 +207,38 @@ const linear =
       })
     : undefined;
 
-// Host env exposed to local sandboxes: an allow-list only, so app secrets
-// (GITHUB_APP_PRIVATE_KEY, WORKOS_API_KEY, DATABASE_URL, …) never leak into
-// commands run against untrusted repo checkouts. PATH is always added by the
-// core LocalSandbox itself; the rest keeps git and TLS working normally.
+// Host env exposed to the local sandbox: an ALLOW-LIST, so app secrets
+// (GITHUB_APP_PRIVATE_KEY, BETTER_AUTH_SECRET, TURSO_AUTH_TOKEN, E2B_API_KEY, …)
+// never leak into commands run against a repo checkout. PATH is added by the
+// core LocalSandbox itself; these keep git, TLS and the shell working.
+//
+// Both POSIX and Windows names are listed because Samskara is meant to be
+// self-hostable on any OS the Mastra sandbox supports. Absent names are simply
+// skipped, so carrying both sets costs nothing on either platform — whereas the
+// POSIX-only list the scaffold shipped left a Windows checkout with no HOME, no
+// TEMP and no COMSPEC, which breaks git and any shell-invoking command.
 const LOCAL_SANDBOX_ENV_KEYS = [
+  // POSIX
   'HOME',
   'USER',
   'LOGNAME',
   'SHELL',
   'TMPDIR',
+  // Windows
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'TEMP',
+  'TMP',
+  'SYSTEMROOT',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  'PROCESSOR_ARCHITECTURE',
+  'NUMBER_OF_PROCESSORS',
+  // Locale, terminal and TLS — same names everywhere
   'LANG',
   'LC_ALL',
   'TERM',
@@ -237,41 +258,111 @@ function localSandboxEnv(): Record<string, string> {
   return env;
 }
 
-// One FactoryStorage backend powers agent storage, the factory app tables,
-// the distributed project lock, and better-auth. `DATABASE_URL` set →
-// Postgres (the paired PgVector rides the same database for recall search).
-// Unset (bare local dev) → libSQL on the same local file the SDK's default
-// storage resolution uses, running the FULL app surface (auth, intake,
-// audit, work-items, integrations) — no features silently off.
-//
-// `APP_DATABASE_URL` is the deprecated legacy name — still honored as a
-// fallback so existing checkouts keep working, but new setups should use
-// `DATABASE_URL` (matches the platform's managed env-var sync for attached
-// databases, so `mastra deploy` populates it automatically).
-const databaseUrl = process.env.DATABASE_URL?.trim() || process.env.APP_DATABASE_URL?.trim() || undefined;
-if (process.env.APP_DATABASE_URL?.trim() && !process.env.DATABASE_URL?.trim()) {
-  console.warn(
-    '[mastracode-web] APP_DATABASE_URL is deprecated — rename it to DATABASE_URL. ' +
-      'The old name is honored as a fallback for now, but new deploys should use DATABASE_URL.',
+/** Where local sandbox checkouts live. homedir() is correct on every platform. */
+function localSandboxRoot(): string {
+  return (
+    process.env.MASTRACODE_LOCAL_SANDBOX_ROOT?.trim() ||
+    join(homedir(), '.mastracode', 'web', 'sandboxes')
   );
 }
-const localDevelopmentMode = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
-if (!databaseUrl && !localDevelopmentMode) {
-  throw new Error('DATABASE_URL is required outside local development and tests.');
+
+// One libSQL database powers agent storage, the factory app tables, the
+// distributed project lock, and better-auth — plus its own vector index for
+// recall search. There is exactly ONE adapter for every environment; local dev
+// and production differ only by URL:
+//
+//   TURSO_DATABASE_URL unset -> file:<getDatabasePath()>   (local development)
+//   TURSO_DATABASE_URL set   -> libsql://<db>.turso.io     (production)
+//
+// Postgres/PgVector are deliberately NOT wired. libSQL covers all 24 storage
+// domains and ships LibSQLVector, so Postgres buys nothing here — and a
+// DATABASE_URL-triggered branch is an active hazard, because most deploy
+// platforms inject DATABASE_URL automatically. That would silently repoint the
+// whole factory at an empty Postgres and strand every row living in Turso.
+const tursoUrl = process.env.TURSO_DATABASE_URL?.trim() || undefined;
+const tursoAuthToken = process.env.TURSO_AUTH_TOKEN?.trim() || undefined;
+
+if (process.env.DATABASE_URL?.trim() || process.env.APP_DATABASE_URL?.trim()) {
+  console.warn(
+    '[storage] DATABASE_URL is set but IGNORED — Samskara runs on libSQL/Turso only. ' +
+      'Set TURSO_DATABASE_URL to point at a remote database.',
+  );
 }
 
-const storage = databaseUrl
-  ? new PgFactoryStorage({
-      id: 'mastra-code-storage',
-      connectionString: databaseUrl,
-      retention: DEFAULT_RETENTION,
-    })
-  : new LibSQLFactoryStorage({
-      id: 'mastra-code-storage',
-      url: `file:${getDatabasePath()}`,
-      retention: DEFAULT_RETENTION,
-    });
-const vector = databaseUrl ? new PgVector({ id: 'mastra-code-vectors', connectionString: databaseUrl }) : undefined;
+// No NODE_ENV gate here, deliberately. An earlier version threw unless
+// NODE_ENV was development/test, which broke every BUILT deployment: the
+// bundler folds process.env.NODE_ENV at build time, so `!localDevelopmentMode`
+// compiled down to the literal `true` and the throw fired unconditionally —
+// runtime NODE_ENV could not switch it back off. Anyone self-hosting Samskara
+// from a build was then forced to own a Turso account just to boot.
+//
+// Running on a local file is a legitimate deployment (one machine, one
+// operator), so it warns rather than throws. Serving clients from it is not,
+// and the warning says so — a cloud deploy that forgets TURSO_DATABASE_URL is
+// loud in the logs on every boot instead of silently correct-looking.
+if (!tursoUrl) {
+  console.warn(
+    '[storage] No TURSO_DATABASE_URL — using a local libSQL file. Fine for self-hosting ' +
+      'on one machine; it does NOT survive a container restart and cannot be shared across ' +
+      'replicas, so never serve clients this way. Set TURSO_DATABASE_URL + TURSO_AUTH_TOKEN ' +
+      'for a hosted database.',
+  );
+}
+// A remote Turso database always requires a token; failing here beats failing
+// on the first query with an opaque authorization error.
+if (tursoUrl && tursoUrl.startsWith('libsql://') && !tursoAuthToken) {
+  throw new Error('TURSO_AUTH_TOKEN is required when TURSO_DATABASE_URL points at a remote libsql:// database.');
+}
+
+const databaseUrl = tursoUrl ?? `file:${getDatabasePath()}`;
+
+const storage = new LibSQLFactoryStorage({
+  id: 'mastra-code-storage',
+  url: databaseUrl,
+  authToken: tursoAuthToken,
+  retention: DEFAULT_RETENTION,
+});
+// Recall search needs an EXPLICIT vector store here. The factory's `vector`
+// option is documented as falling back to "the SDK mount's default vector
+// store resolution", but that fallback cannot fire for us: the mount computes
+// `storageConfig = injectedStorage ? undefined : …` and only builds a default
+// vector when `storageConfig` is set (code-sdk/dist/index.js:270,322). The
+// factory ALWAYS injects a storage instance, so omitting `vector` — as the
+// generated scaffold did on the libSQL path — leaves recall search with no
+// vector store at all.
+//
+// Embeddings live in their OWN database, matching the SDK's own default
+// (`getVectorDatabasePath()`: "Separate from the main DB to avoid bloating it
+// with embedding data"). On Turso that also keeps embedding rows off the
+// primary database's quota. Point TURSO_VECTOR_DATABASE_URL at a second Turso
+// database to split them in production; left unset with Turso configured, both
+// share one database and the boot log says so.
+// The local vector file must sit BESIDE our app database, never at the SDK's
+// `getVectorDatabasePath()`. That helper is hardcoded to
+// <appdata>/mastracode/mastra-vectors.db with NO env override (unlike
+// getDatabasePath(), which honors MASTRA_DB_PATH) — so it resolves to the
+// mastracode CLI's own shared vector database. Pointing Samskara there mixes
+// our embeddings into the CLI's store and reintroduces the SQLITE_BUSY
+// collision MASTRA_DB_PATH exists to prevent.
+const localVectorPath = getDatabasePath().replace(/.db$/i, '') + '-vectors.db';
+const vectorUrl =
+  process.env.TURSO_VECTOR_DATABASE_URL?.trim() || tursoUrl || `file:${localVectorPath}`;
+const vectorAuthToken = process.env.TURSO_VECTOR_AUTH_TOKEN?.trim() || (vectorUrl === tursoUrl ? tursoAuthToken : undefined);
+
+if (vectorUrl.startsWith('libsql://') && !vectorAuthToken) {
+  throw new Error('TURSO_VECTOR_AUTH_TOKEN is required when TURSO_VECTOR_DATABASE_URL points at a remote libsql:// database.');
+}
+
+const vector = new LibSQLVector({
+  id: 'mastra-code-vectors',
+  url: vectorUrl,
+  authToken: vectorAuthToken,
+});
+
+// Which databases are actually live. Hosts only — never a token, and never the
+// credential-bearing query string a Turso url can carry.
+const describe = (url: string) => (url.startsWith('file:') ? 'local file' : `turso remote (${new URL(url).host})`);
+console.log(`[storage] app=${describe(databaseUrl)} vectors=${describe(vectorUrl)}` + (vectorUrl === databaseUrl ? ' (shared)' : ''));
 
 // Deployment-stable secret for OAuth/link `state` signing. Shared by the
 // factory's integration signer and the channel-account-link deep link so both
@@ -318,37 +409,86 @@ console.log(
 
 export const factoryConfigVersion = 'mastracode-web-v1';
 
+// Sandbox provider. Two supported shapes, and the choice is always EXPLICIT:
+//
+//   local    — runs agent commands directly on this machine. Correct for
+//              someone self-hosting Samskara for their own use, on any OS. NOT
+//              safe for multi-tenant serving: no isolation between a client's
+//              code and the host, so a repo's own scripts run with this
+//              process's privileges.
+//   e2b      — runs every command in a per-session E2B microVM. What Samskara
+//              serves clients with.
+//   platform — runs on Mastra's managed platform workspace, for anyone hosting
+//              this on Mastra rather than self-hosting the sandbox layer.
+//
+// All three stay supported: a self-hoster should be able to pick whichever they
+// are set up for. What was removed is the scaffold's SILENT chaining
+// (platform -> e2b -> local), which failed OPEN — a missing or misspelled
+// E2B_API_KEY did not error, it quietly ran untrusted code on the host. The fix
+// was never to delete options, only to stop substituting one provider for
+// another behind your back. An explicit request that cannot be honored throws.
+type SandboxProvider = 'local' | 'e2b' | 'platform';
+
+const e2bApiKey = process.env.E2B_API_KEY?.trim();
 const hasPlatformSandboxEnv =
-  ['MASTRA_PLATFORM_ACCESS_TOKEN', 'MASTRA_PLATFORM_SECRET_KEY'].some(key => Boolean(process.env[key]?.trim())) &&
-  ['MASTRA_ENVIRONMENT_ID', 'MASTRA_PROJECT_ID'].every(key => Boolean(process.env[key]?.trim()));
+  ['MASTRA_PLATFORM_ACCESS_TOKEN', 'MASTRA_PLATFORM_SECRET_KEY'].some(k => Boolean(process.env[k]?.trim())) &&
+  ['MASTRA_ENVIRONMENT_ID', 'MASTRA_PROJECT_ID'].every(k => Boolean(process.env[k]?.trim()));
+
+const SANDBOX_PROVIDERS: readonly SandboxProvider[] = ['local', 'e2b', 'platform'];
+const requestedProvider = process.env.FACTORY_SANDBOX_PROVIDER?.trim().toLowerCase();
+
+if (requestedProvider && !SANDBOX_PROVIDERS.includes(requestedProvider as SandboxProvider)) {
+  throw new Error(
+    `FACTORY_SANDBOX_PROVIDER must be one of ${SANDBOX_PROVIDERS.join(', ')} (got '${requestedProvider}').`,
+  );
+}
+
+// Unset → whatever this machine is actually configured for, most isolated
+// first. An EXPLICIT request is never downgraded; it throws instead.
+const sandboxProvider: SandboxProvider =
+  (requestedProvider as SandboxProvider | undefined) ??
+  (hasPlatformSandboxEnv ? 'platform' : e2bApiKey ? 'e2b' : 'local');
+
+if (sandboxProvider === 'e2b' && !e2bApiKey) {
+  throw new Error(
+    'FACTORY_SANDBOX_PROVIDER=e2b requires E2B_API_KEY. ' +
+      'Refusing to start rather than falling back to running agent commands on this host.',
+  );
+}
+if (sandboxProvider === 'platform' && !hasPlatformSandboxEnv) {
+  throw new Error(
+    'FACTORY_SANDBOX_PROVIDER=platform requires MASTRA_PLATFORM_ACCESS_TOKEN or ' +
+      'MASTRA_PLATFORM_SECRET_KEY, plus MASTRA_ENVIRONMENT_ID and MASTRA_PROJECT_ID. ' +
+      'Refusing to start rather than falling back to running agent commands on this host.',
+  );
+}
+
+if (sandboxProvider === 'local') {
+  console.warn(
+    '[sandbox] provider=local — agent commands run DIRECTLY ON THIS MACHINE with this ' +
+      "process's privileges. Fine for self-hosting your own work; never serve clients this way. " +
+      'Set FACTORY_SANDBOX_PROVIDER=e2b with an E2B_API_KEY for isolated runs.',
+  );
+} else {
+  console.log('[sandbox] provider=' + sandboxProvider);
+}
 export const factory = new MastraFactory({
   auth,
   secretEncryption,
   integrations,
   configVersion: factoryConfigVersion,
   sandbox: ctx => {
-    const useLocalSandbox = process.env.FACTORY_SANDBOX_PROVIDER?.trim() === 'local';
-    if (!useLocalSandbox && hasPlatformSandboxEnv) {
-      return new PlatformSandbox({
-        id: ctx.sessionId,
-        template: createPlatformRepoTemplate(ctx),
-      });
+    switch (sandboxProvider) {
+      case 'platform':
+        return new PlatformSandbox({ id: ctx.sessionId, template: createPlatformRepoTemplate(ctx) });
+      case 'e2b':
+        return new E2BSandbox({ id: ctx.sessionId, template: createE2BRepoTemplate(ctx) });
+      case 'local':
+        return new LocalSandbox({
+          workingDirectory: join(localSandboxRoot(), ctx.sessionId),
+          env: localSandboxEnv(),
+        });
     }
-
-    if (!useLocalSandbox && process.env.E2B_API_KEY?.trim()) {
-      return new E2BSandbox({
-        id: ctx.sessionId,
-        template: createE2BRepoTemplate(ctx),
-      });
-    }
-
-    return new LocalSandbox({
-      workingDirectory: join(
-        process.env.MASTRACODE_LOCAL_SANDBOX_ROOT?.trim() || join(homedir(), '.mastracode', 'web', 'sandboxes'),
-        ctx.sessionId,
-      ),
-      env: localSandboxEnv(),
-    });
   },
   // Per-replica cap on concurrent Factory background dispatches. Unset means
   // the dispatcher default; invalid and non-positive values are ignored.
