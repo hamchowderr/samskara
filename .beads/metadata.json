@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "samskara",
+  "project_id": "dec73559-72b8-4196-9add-5931c3507e32"
+}
