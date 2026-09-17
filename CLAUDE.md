@@ -58,20 +58,81 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 <!-- END BEADS INTEGRATION -->
 
 
+## Verify against the Mastra docs AND the installed package — always
+
+**Before stating any fact about Mastra behaviour, and before writing code that
+depends on one, check BOTH sources. Never answer from memory or inference.**
+
+1. **The installed package** — `node_modules/@mastra/*`. This is what actually
+   runs. Cite `file:line`.
+2. **The official docs** — via the `mastra-docs` MCP server
+   (`@mastra/mcp-docs-server`). `searchMastraDocs`, `readMastraDocs`,
+   `getMastraExports`, `getMastraExportDetails`, `mastraMigration`. Every
+   `[📦 LOCAL PACKAGES]` tool needs `projectPath` (absolute repo root) as a
+   required argument.
+
+**When the two disagree, that disagreement IS the finding** — say so explicitly
+rather than silently trusting one. A docstring describing behaviour the code
+cannot perform is a reportable bug, not a detail to smooth over.
+
+If the MCP server is unreachable (it times out on a cold `npx` download and
+cannot be reconnected mid-session), either restart, or drive it over stdio
+directly — do NOT fall back to guessing. Say it is unavailable instead.
+
+### Claims require evidence
+
+- Never report a negative ("X is not supported", "there is no route for Y")
+  from a single grep. Validate the instrument first: prove the search finds a
+  known-present case. HTTP status codes are NOT evidence of route existence
+  here — unknown `/auth/*` paths return SPA HTML and unknown `/api/*` paths
+  return 401.
+- Verify behaviour, not just logic: run it and read the output. Type-checking
+  proves nothing about runtime.
+- **Verify against the BUILT output, not only source.** The bundler folds
+  `process.env.NODE_ENV` at build time, so a NODE_ENV-dependent branch can
+  compile to a constant and behave differently from the source you read.
+- Before anything goes to the Mastra team or a public issue, have it
+  independently audited (a fresh subagent and Codex, separately) and report
+  only what survives. Overstating a claim gets it dismissed.
+
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+npm run dev          # local: plain .env, no Infisical needed
+npm run dev:secure   # injects secrets from Infisical (maintainer only)
+npm run check        # tsc --noEmit
+npm run build        # bundles to .mastra/output
+npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
 ```
+
+**`mastra build` deletes the whole `.mastra/` directory.** Never store anything
+you want to keep there — the database lives in `data/` for exactly this reason,
+and backups go outside the repo. This destroyed the local database twice.
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Samskara is a self-hosted Mastra Factory built on `@mastra/factory` as a
+dependency, not a fork. Entry point: `src/mastra/index.ts`.
+
+- **Storage** — libSQL only. Local file by default; Turso when
+  `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` are set. Postgres is deliberately
+  not wired: an injected `DATABASE_URL` must never repoint the backend.
+- **Vector** — `LibSQLVector`, passed explicitly and kept in its own file
+  beside the app database. It must be passed: the Factory always injects a
+  storage instance, so the SDK's documented default-vector resolution cannot
+  run and omitting it yields no vector store at all.
+- **Sandbox** — `local | e2b | platform` via `FACTORY_SANDBOX_PROVIDER`,
+  auto-detected when unset. An explicit choice missing its credentials THROWS;
+  it must never silently downgrade to a less isolated provider.
+- **Boards** — `src/mastra/boards/requests-board.ts` wires `manual` work items
+  into triage, which the built-in Work board does not do.
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- Back up the database before killing any server process. SQLite holds recent
+  writes in a `-wal` sidecar until a checkpoint, so a hard kill loses them and
+  copying the `.db` file alone does not capture them — use `npm run db:backup`.
+- Edit `src/mastra/index.ts` with anchored scripts that assert each anchor
+  matches exactly once. Loose string slicing has silently deleted whole blocks.
+- Never print a secret value. Confirm presence by mask only (type, length,
+  first characters).
