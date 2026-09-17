@@ -10,3 +10,8 @@ dist/
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+.env.*
+!.env.example
+!.env.schema
+*.log
+.DS_Store
