@@ -14,7 +14,8 @@
     "start": "varlock run -- mastra start",
     "deploy": "mastra deploy",
     "dev:secure": "infisical run --projectId <project-id> --env dev --path=/samskara --silent -- cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
-    "start:secure": "infisical run --projectId <project-id> --env dev --path=/samskara --silent -- mastra start"
+    "start:secure": "infisical run --projectId <project-id> --env dev --path=/samskara --silent -- mastra start",
+    "db:backup": "node scripts/backup-db.mjs"
   },
   "dependencies": {
     "@mastra/auth-better-auth": "1.1.5",
