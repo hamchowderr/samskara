@@ -29,6 +29,7 @@ import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
+import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 import { createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
 import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webhook';
@@ -125,10 +126,16 @@ if (redisUrl) {
 //      compute/integration credentials (sandboxes, GitHub/Linear slots), not
 //      identity signals — platform compute plus self-managed sign-in is a
 //      supported combination.
-//   4. Nothing configured — leave undefined and MastraFactory installs its
+//   4. BETTER_AUTH_SECRET — self-hosted sign-in with no third-party identity
+//      provider. Deferred-instance mode: the provider builds its own
+//      `betterAuth()` on the host's auth database and owns its schema
+//      migrations, so `secret` alone is the whole configuration. Ranked below
+//      WorkOS so an explicitly configured WORKOS_* pair still wins.
+//   5. Nothing configured — leave undefined and MastraFactory installs its
 //      platform-backed default provider.
 const authDisabled = process.env.MASTRACODE_AUTH_DISABLED === '1';
 const workosConfigured = Boolean(process.env.WORKOS_API_KEY?.trim() && process.env.WORKOS_CLIENT_ID?.trim());
+const betterAuthSecret = process.env.BETTER_AUTH_SECRET?.trim();
 let auth: IMastraAuthProvider | null | undefined;
 
 if (authDisabled) {
@@ -141,7 +148,26 @@ if (authDisabled) {
   }
 } else if (workosConfigured) {
   auth = new MastraAuthWorkos({ fetchMemberships: true });
+} else if (betterAuthSecret) {
+  // Samskara runs fully self-hosted: no WorkOS tenant, no platform identity.
+  // Auth cannot simply be turned off instead — with MASTRACODE_AUTH_DISABLED=1
+  // the agent runtime works but the Factory surface does not:
+  // /web/factory/projects returns 401 and resolveTenant rejects a tenant with
+  // no organization as 403 organization_required. A real login is what
+  // bootstraps the personal organization the board needs.
+  auth = new MastraAuthBetterAuth({ secret: betterAuthSecret });
 }
+// Which auth provider actually resolved. Worth a permanent boot line: when auth
+// resolves to null the factory skips buildAuthRoutes (factory.js:497), so every
+// /auth/* route — including the /auth/me the SPA blocks on — falls through to
+// the HTML catch-all and the UI hangs on an infinite loader with no error
+// anywhere. `mastra factory dev` injects MASTRACODE_AUTH_DISABLED=1 unless it
+// is already set, which is why the dev script pins it to 0.
+console.log(
+  '[auth] provider=' +
+    (auth === null ? 'DISABLED (Factory UI will not load)' : auth ? auth.constructor.name : 'platform-default'),
+);
+
 const secretEncryption = auth === null ? undefined : credentialEncryption();
 
 // Direct GitHub App fallback: when the platform-backed integration isn't in
@@ -278,6 +304,17 @@ const slack = slackSigningSecret
   : undefined;
 
 const integrations = [...(github ? [github] : []), ...(linear ? [linear] : []), ...(slack ? [slack] : [])];
+
+// Which integrations actually constructed. Each is built only from a COMPLETE
+// credential group — a partial group stays undefined and the surface it powers
+// silently does not exist (GitHub missing also means no board renders, because
+// the UI gates every board on a linked repository).
+console.log(
+  '[integrations] ' +
+    (integrations.length
+      ? [github ? 'github' : null, linear ? 'linear' : null, slack ? 'slack' : null].filter(Boolean).join(', ')
+      : 'NONE configured'),
+);
 
 export const factoryConfigVersion = 'mastracode-web-v1';
 
