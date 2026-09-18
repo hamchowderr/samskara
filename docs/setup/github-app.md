@@ -10,6 +10,45 @@ Complete [tunnel.md](tunnel.md) first. The app's URLs are built from
 Throughout, replace `https://samskara.example.com` with your own
 `MASTRACODE_PUBLIC_URL`.
 
+## Use the script
+
+`scripts/create-github-app.mjs` drives GitHub's app-manifest flow. It declares
+the permissions, the webhook and all seven event subscriptions up front, so the
+app is complete the moment it is created. One approval screen is the only manual
+step.
+
+```bash
+# Confirm the public origin is set first — this is what the manifest is built from
+node -e "console.log(process.env.MASTRACODE_PUBLIC_URL ?? '(unset — will use localhost)')"
+
+node scripts/create-github-app.mjs
+```
+
+It prints what it is about to create, then serves a page on `localhost:4321`.
+Open it, approve on GitHub, and the credentials are written to Infisical.
+
+```
+--org <login>            create under an organization instead of your account
+--name <name>            app name (default: "Samskara Factory")
+--factory-url <url>      public origin of the running Factory
+--env-file               write credentials to .env instead of Infisical
+--infisical-path <path>  Infisical folder (default: /samskara)
+--infisical-env <env>    Infisical environment (default: dev)
+```
+
+**Run it with the tunnel address set.** GitHub rejects a manifest whose webhook
+is not reachable from the public internet, so with a `localhost` origin the
+script omits the webhook and the events — and then every one of them has to be
+added by hand afterwards. It warns you when this is about to happen.
+
+The private key is returned by GitHub exactly once. If the Infisical write
+fails, the script falls back to `.env` and says so, rather than losing it. Move
+it into your secret store and delete it from `.env`: an entry there shadows the
+injected value.
+
+The rest of this document is the manual equivalent — for fixing an existing app,
+or when you would rather click.
+
 ## 1. Prepare the values
 
 An agent can do this part.
@@ -82,6 +121,16 @@ The webhook handler dispatches on these, verified in
 - Status
 
 Other events are accepted and ignored.
+
+**GitHub only offers an event when the permission behind it is granted.**
+`Status` does not appear in the list at all without `Commit statuses:
+Read-only`, which is easy to read as the event being missing. If an event you
+expect is absent, the permission above it is the reason. Grant it, save, and the
+event becomes selectable.
+
+Changing permissions on an app that is already installed puts the change in a
+pending state until the installation accepts it. Accept the prompt, or events
+still will not arrive.
 
 ### Installation scope
 

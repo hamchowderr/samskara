@@ -11,6 +11,19 @@ change.
 Cloudflare is recommended. ngrok works for a quick test but breaks the Slack
 connect flow on the free tier — see below.
 
+## This is for running Samskara locally
+
+A tunnel exists because a laptop or workstation has no public address. It is a
+development convenience, not a deployment strategy.
+
+When you deploy Samskara to a server, point a domain at that server and set
+`MASTRACODE_PUBLIC_URL` to it. There is no tunnel in that picture.
+
+What stays true in both cases: `MASTRACODE_PUBLIC_URL` must be the address
+users actually reach the Factory at. A link built from `localhost` resolves only
+on the machine running the server, so Slack deep links and OAuth callbacks break
+for everyone else.
+
 ## Cloudflare Tunnel
 
 Gives a stable hostname on a domain you control, survives restarts, and serves
