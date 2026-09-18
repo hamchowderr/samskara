@@ -66,10 +66,17 @@ depends on one, check BOTH sources. Never answer from memory or inference.**
 1. **The installed package** — `node_modules/@mastra/*`. This is what actually
    runs. Cite `file:line`.
 2. **The official docs** — via the `mastra-docs` MCP server
-   (`@mastra/mcp-docs-server`). `searchMastraDocs`, `readMastraDocs`,
-   `getMastraExports`, `getMastraExportDetails`, `mastraMigration`. Every
-   `[📦 LOCAL PACKAGES]` tool needs `projectPath` (absolute repo root) as a
-   required argument.
+   (`@mastra/mcp-docs-server`, wired in `.mcp.json`). It serves two sources,
+   and the difference between them is the point:
+   - `[📦 LOCAL PACKAGES]` — `listMastraPackages`, `searchMastraDocs`,
+     `readMastraDocs`, `getMastraExports`, `getMastraExportDetails`. These read
+     `node_modules/@mastra/*`, so they match the code that runs. Each one
+     requires `projectPath` (absolute repo root); so does `getMastraHelp`.
+   - `[🌐 REMOTE]` — `mastraDocs`, `mastraMigration`. These read the published
+     docs, which track the latest release and may be ahead of what is
+     installed. Neither takes `projectPath`.
+
+   `getMastraHelp` is the entry point. Setup: `docs/setup/mastra-docs-mcp.md`.
 
 **When the two disagree, that disagreement IS the finding** — say so explicitly
 rather than silently trusting one. A docstring describing behaviour the code

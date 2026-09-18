@@ -32,6 +32,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@mastra/mcp-docs-server": "^1.2.26",
     "@types/node": "22.20.1",
     "cross-env": "10.1.0",
     "mastra": "1.30.0",

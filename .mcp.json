@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mastra-docs": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["node_modules/@mastra/mcp-docs-server/dist/stdio.js"]
+    }
+  }
+}
