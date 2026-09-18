@@ -407,6 +407,73 @@ console.log(
       : 'NONE configured'),
 );
 
+// ---------------------------------------------------------------------------
+// TEMPORARY: survive an upstream crash in @mastra/core's execute_command tool.
+// Delete this whole block once https://github.com/mastra-ai/mastra/issues/24346
+// is fixed and we are on a release that contains the fix.
+//
+// The tool accumulates a command's stdout into one unbounded string
+// (`stdout += data`). Past V8's maximum string length the concatenation throws
+// RangeError: Invalid string length. That throw reaches us two ways, and both
+// are fatal by default:
+//
+//   * unhandledRejection — `onStdout` is async and `emitStdout` never awaits it
+//   * uncaughtException  — RetainedOutputBuffer.append -> compactIfNeeded ->
+//                          toString throws synchronously from the socket handler
+//
+// Either one kills the process serving EVERY tenant, over a single agent run,
+// on any sandbox provider (the accumulation happens in this process, not in the
+// sandbox — E2B does not protect us). This converts that into one failed run.
+//
+// NOT a fix, and deliberately narrow: only the exact upstream RangeError raised
+// from @mastra/core's workspace bundle is swallowed. Anything else keeps its
+// default fatal behaviour, so real bugs still surface instead of being masked.
+//
+// Known gap: true heap exhaustion is NOT covered. V8 aborts the process on OOM
+// without delivering anything to a JS handler, and the same duplication costs
+// roughly 6-7x the command's output in memory (measured: 100 MB of output ->
+// ~670 MB heap). A command large enough can still exhaust memory before it ever
+// reaches the string-length limit.
+const UPSTREAM_STDOUT_CRASH_ISSUE = 'https://github.com/mastra-ai/mastra/issues/24346';
+
+function isUpstreamStdoutOverflow(err: unknown): err is Error {
+  if (!(err instanceof RangeError)) return false;
+  if (!/invalid string length/i.test(err.message)) return false;
+  // Must originate in @mastra/core's workspace bundle — otherwise an unrelated
+  // RangeError with the same message would be silently swallowed.
+  return /workspace-[\w-]+\.(js|mjs|cjs)/.test(err.stack ?? '');
+}
+
+function reportSurvivedCrash(kind: string, err: Error): void {
+  console.error(
+    `[upstream-crash] Survived ${kind} from @mastra/core execute_command: ${err.message}\n` +
+      `[upstream-crash] A command produced more output than one JS string can hold. That agent run ` +
+      `is now in an undefined state, but the server stayed up.\n` +
+      `[upstream-crash] Tracking: ${UPSTREAM_STDOUT_CRASH_ISSUE}\n` +
+      (err.stack ?? ''),
+  );
+}
+
+process.on('unhandledRejection', reason => {
+  if (isUpstreamStdoutOverflow(reason)) {
+    reportSurvivedCrash('unhandled rejection', reason);
+    return;
+  }
+  // Restore Node's default: an unhandled rejection is fatal.
+  throw reason;
+});
+
+process.on('uncaughtException', err => {
+  if (isUpstreamStdoutOverflow(err)) {
+    reportSurvivedCrash('uncaught exception', err);
+    return;
+  }
+  // Restore Node's default: print and die, rather than limping on.
+  console.error(err);
+  process.exit(1);
+});
+// ---------------------------------------------------------------------------
+
 export const factoryConfigVersion = 'mastracode-web-v1';
 
 // Sandbox provider. Two supported shapes, and the choice is always EXPLICIT:
