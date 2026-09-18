@@ -19,3 +19,6 @@ dist/
 !.env.schema
 *.log
 .DS_Store
+
+# Rendered from scripts/slack-app-manifest.template.json — holds one deployment's hostname
+scripts/slack-app-manifest.json
