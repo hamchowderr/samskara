@@ -193,7 +193,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`\nApp name : ${APP_NAME}`);
-  console.log(`Owner    : ${ORG ?? 'hamchowderr (personal account)'}`);
+  console.log(`Owner    : ${ORG ?? 'your personal account (set ORG for an organization)'}`);
   console.log(`Perms    : contents:write, issues:write, pull_requests:write, metadata:read`);
   console.log(`Webhook  : omitted (localhost is rejected by the manifest endpoint)`);
   console.log(`Callback : ${FACTORY_URL}/auth/github/callback`);
