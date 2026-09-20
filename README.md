@@ -1,107 +1,117 @@
-# Mastra Factory
+# Samskara
 
-Mastra Factory is an open source environment for building software with coding agents. Connect your repository to turn issues into plans, implementations, and reviewed pull requests.
+A self-hosted [Mastra Factory](https://factory.mastra.ai/) — agents turn work
+items into plans, implementations and reviewed pull requests — that treats chat
+as a first-class intake path alongside GitHub.
 
-Created with [`npm create factory`](https://www.npmjs.com/package/create-factory). This project contains the Factory Server and its configuration. Keep it separate from the repository you want agents to change.
+Built on `@mastra/factory` as a dependency, not a fork. Runs entirely on
+infrastructure you own: your own authentication, database, and sandbox
+provider, with no dependency on Mastra's hosted platform.
 
-Read the [documentation](https://factory.mastra.ai/) or [watch the Mastra Factory overview](https://youtu.be/iMA-Xkhj7fU).
+## What is different from a stock Factory
 
-## Start the Factory Server
+A Factory scaffolded with `npm create factory` defaults to Mastra's platform for
+auth, storage and sandboxes, and its built-in Work board is shaped around
+GitHub issues. Samskara changes four things.
 
-Using Mastra platform services is optional. The installer configures them for authentication, storage, and sandboxes by default, but you can replace each service independently or run the server without a platform connection. Pass `--no-platform` to `npm create factory` to skip platform provisioning.
+**Storage is libSQL only.** A local file for single-machine use, [Turso](https://turso.tech)
+when `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are set. Postgres is
+deliberately not wired: an injected `DATABASE_URL` is ignored rather than
+silently repointing the backend, and the server says so at startup.
 
-Before connecting a model provider, check for `FACTORY_CREDENTIAL_ENCRYPTION_KEY` in `.env`. If it's missing, generate a key once for this project:
+**Vectors live in their own database.** `LibSQLVector` is passed explicitly.
+The Factory always injects a storage instance, which suppresses the SDK's
+documented default-vector resolution, so omitting it yields no vector store at
+all rather than the default.
 
-```bash
-openssl rand -base64 32
-```
+**The sandbox provider is an explicit choice.** `local`, `e2b` or `platform`
+via `FACTORY_SANDBOX_PROVIDER`, auto-detected when unset. A provider named
+without its credentials throws at startup; it never downgrades to a less
+isolated one. Running agent commands against untrusted repositories on the host
+should be a decision, not a fallback.
 
-Save the output as `FACTORY_CREDENTIAL_ENCRYPTION_KEY` in `.env`. Preserve the key across restarts and deployments, and keep a protected backup. See [credential encryption](https://factory.mastra.ai/reference/configuration#stored-credential-encryption) for details.
+**Chat-submitted work gets its own board.** `src/mastra/boards/requests-board.ts`
+wires `manual` work items into triage, which the built-in Work board does not
+do — it declares triage for GitHub and Linear items only, so a chat-sourced card
+reaches Triage and receives a generic stage message instead of running the
+triage skill.
 
-From the Factory project directory, start the server:
+## Setup
 
-```bash
-npm run dev
-```
+The runbooks in [`docs/setup/`](docs/setup/) take a fresh clone to a running
+Factory. They are written to be followed by an AI coding agent; steps only a
+human can do — creating accounts, browser authentication, pasting secrets — are
+marked **HUMAN**.
 
-With the default setup, open the local URL printed by the server and sign in through Mastra platform. One server serves both the Factory UI and API. After login you'll see an onboarding wizard, select the repository agents should change. Use **Manage GitHub connection** to grant the GitHub App access if the repository is missing. Optionally add Linear. Connect a model provider using an API key or a supported subscription, then choose the Factory model.
+| # | Runbook | What it gets you |
+|---|---------|------------------|
+| 1 | [mastra-docs-mcp.md](docs/setup/mastra-docs-mcp.md) | Documentation tooling, so later steps can be verified rather than guessed |
+| 2 | [secrets-infisical.md](docs/setup/secrets-infisical.md) | A secret store, and every key this project needs created as a placeholder |
+| 3 | [tunnel.md](docs/setup/tunnel.md) | A public HTTPS address, for local development only |
+| 4 | [github-app.md](docs/setup/github-app.md) | Repository access and issue intake |
+| 5 | [slack-app.md](docs/setup/slack-app.md) | Chat intake (optional) |
 
-If you skipped platform setup during installation, follow [Get started](https://factory.mastra.ai/) to configure alternative authentication, storage, and sandbox providers.
-
-## Run your first issue
-
-1. Open **Settings → Work Intake → GitHub issues**. Enable **Sync GitHub issues** and select your repository. Each teammate chooses their own issue sources.
-1. Create a small GitHub issue, such as adding contribution guidance to the repository's README.
-1. Find the issue in **Work → Intake**, select **Investigate**, and open its session to follow the agent's work.
-
-Continue with the [issue-to-pull-request walkthrough](https://factory.mastra.ai/#create-your-first-pull-request) to review a plan and take the change through implementation and pull request review.
-
-## Configure your Factory
-
-Choose authentication, storage, and sandboxes independently. Model providers and issue sources are configured through the Factory UI. Server settings live in `.env`; restart the server after changing them.
-
-| Configuration                                              | What you can change                                                           |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| [Models](https://factory.mastra.ai/configure/models)       | Provider access, personal or organization credentials, and the default model. |
-| [GitHub](https://factory.mastra.ai/configure/github)       | Repository access and personal issue intake.                                  |
-| [Linear](https://factory.mastra.ai/configure/linear)       | Workspace connection, project selection, and routing issues to a Factory.     |
-| [Slack](https://factory.mastra.ai/configure/slack)         | App setup, account linking, and starting sessions from Slack.                 |
-| [Auth](https://factory.mastra.ai/configure/auth)           | Mastra platform sign-in or another provider with Server and Studio support.   |
-| [Storage](https://factory.mastra.ai/configure/storage)     | The database connection or Factory storage adapter.                           |
-| [Sandboxes](https://factory.mastra.ai/configure/sandboxes) | Mastra platform, local execution, or another Mastra sandbox provider.         |
-
-The generated server uses `DATABASE_URL` for PostgreSQL with pgvector. To use the included local PostgreSQL service, run `npm run db:up` and set `DATABASE_URL` to its connection string in `.env`. The generated `docker-compose.yml` contains the connection settings.
-
-Mastra platform sandboxes use `MASTRA_PLATFORM_ACCESS_TOKEN` or `MASTRA_PLATFORM_SECRET_KEY`, together with `MASTRA_PROJECT_ID` and `MASTRA_ENVIRONMENT_ID`. To run commands on the Factory Server's machine, set this override in `.env`:
-
-```dotenv
-FACTORY_SANDBOX_PROVIDER=local
-```
-
-Install Git and your repository's build tools on that machine. Authentication and storage can continue to use Mastra platform. The separate `SANDBOX_PROVIDER` setting selects the backend used by Mastra platform sandboxes.
-
-## Deploy
-
-### Mastra platform
-
-Deploy the Factory Server to your Mastra platform project:
+Requires Node.js 22.13.0 or newer.
 
 ```bash
-npm run deploy
+npm install
+npm run dev          # plain .env
+npm run dev:secure   # secrets injected from Infisical
 ```
 
-The CLI reports the deployed Factory URL. See [Deployment](https://factory.mastra.ai/deployment) for environment configuration and deployment options.
+The Factory serves its UI and API together on <http://localhost:4111>.
 
-### Self-host
-
-Run Factory as a persistent Node.js service on a virtual machine or in a container. Configure persistent storage and set `MASTRACODE_PUBLIC_URL` to the public HTTPS origin. Supply your provider credentials through the deployment environment, then build and start the server:
+## Commands
 
 ```bash
-npm run build
-npm run start
+npm run check        # tsc --noEmit
+npm run build        # bundles to .mastra/output
+npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
 ```
 
-Keep the generated project's CLI dependencies installed for these commands. You can use Mastra platform services while hosting the Factory Server elsewhere. See [self-hosting](https://factory.mastra.ai/deployment#self-host) for runtime requirements and setup steps.
+`mastra build` deletes the whole `.mastra/` directory, so nothing worth keeping
+belongs there. The database lives in `data/` for that reason, and backups are
+written outside the repository.
 
-## Scripts
+## Configuration
 
-| Script                              | What it does                                                    |
-| ----------------------------------- | --------------------------------------------------------------- |
-| `npm run dev`                       | Start the local Factory Server with its UI and API.             |
-| `npm run check`                     | Typecheck the Factory Server.                                   |
-| `npm run build`                     | Build the server and Factory UI in `.mastra/output`.            |
-| `npm run start`                     | Run the production build.                                       |
-| `npm run deploy`                    | Build and deploy to Mastra platform.                            |
-| `npm run db:up` / `npm run db:down` | Start or stop the optional local PostgreSQL and Redis services. |
+`.env.example` documents every variable with its effect. The ones that decide
+the shape of a deployment:
 
-## Troubleshooting
+| Variable | Effect |
+|----------|--------|
+| `MASTRACODE_PUBLIC_URL` | The origin users reach the Factory at. Builds OAuth callbacks and the deep links posted into chat, so a `localhost` value produces links that resolve for nobody else. |
+| `MASTRACODE_CHANNELS_PUBLIC_URL` | Origin for channel webhooks and the Slack OIDC redirect. Falls back to the above. |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Hosted database. Without them, a local libSQL file that does not survive a container restart and cannot be shared across replicas. |
+| `FACTORY_SANDBOX_PROVIDER` | `local`, `e2b` or `platform`. |
+| `FACTORY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored provider credentials. Losing it makes them unreadable. |
 
-- **Runtime:** Use a Node.js version that matches `engines.node` in this project's `package.json`.
-- **Port changes:** Set `PORT` and update `MASTRACODE_PUBLIC_URL` to match. Update callback URLs for any auth or integration apps you manage.
-- **Missing issues:** Check repository access and your **Work Intake** selections. See [intake troubleshooting](https://factory.mastra.ai/troubleshooting#intake-is-empty).
+Secrets belong in a secret manager rather than `.env` — see
+[secrets-infisical.md](docs/setup/secrets-infisical.md). An entry in `.env`
+shadows an injected value, so a key should live in one place, not both.
 
-See [Troubleshooting](https://factory.mastra.ai/troubleshooting) for sign-in, provider access, and sandbox errors, or [Environment variables](https://factory.mastra.ai/reference/configuration) for server settings.
+## Status
 
-## License
+Version 0.1.0, running but not yet serving anyone other than its author. Known
+gaps are tracked in the issue tracker that ships with this repository (see
+below).
 
-Apache-2.0
+Pinned to `@mastra/factory@0.15.0` exactly. The package ships breaking minors
+weekly, so the pin is deliberate; upgrading is a task, not a bump.
+
+## Issue tracking
+
+Issues are tracked with [beads](https://github.com/gastownhall/beads) and travel
+with this repository on a separate git ref, so a clone can read them:
+
+```bash
+bd init --remote git+https://github.com/hamchowderr/samskara.git
+bd ready
+```
+
+`.beads/issues.jsonl` is a disposable export and is not tracked; the database is
+the source of truth.
+
+## Licence
+
+[Apache-2.0](LICENSE).
