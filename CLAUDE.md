@@ -58,33 +58,22 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 <!-- END BEADS INTEGRATION -->
 
 
-## Verify against the Mastra docs AND the installed package — always
+## Verifying Mastra behaviour
 
-**Before stating any fact about Mastra behaviour, and before writing code that
-depends on one, check BOTH sources. Never answer from memory or inference.**
+The standing rule is `~/.claude/rules/mastra.md` — source order (skill →
+embedded package docs → installed package → MCP), the skills, and the MCP
+config. Read it; do not duplicate it here.
 
-1. **The installed package** — `node_modules/@mastra/*`. This is what actually
-   runs. Cite `file:line`.
-2. **The official docs** — via the `mastra-docs` MCP server
-   (`@mastra/mcp-docs-server`, wired in `.mcp.json`). It serves two sources,
-   and the difference between them is the point:
-   - `[📦 LOCAL PACKAGES]` — `listMastraPackages`, `searchMastraDocs`,
-     `readMastraDocs`, `getMastraExports`, `getMastraExportDetails`. These read
-     `node_modules/@mastra/*`, so they match the code that runs. Each one
-     requires `projectPath` (absolute repo root); so does `getMastraHelp`.
-   - `[🌐 REMOTE]` — `mastraDocs`, `mastraMigration`. These read the published
-     docs, which track the latest release and may be ahead of what is
-     installed. Neither takes `projectPath`.
+Two things specific to this project:
 
-   `getMastraHelp` is the entry point. Setup: `docs/setup/mastra-docs-mcp.md`.
-
-**When the two disagree, that disagreement IS the finding** — say so explicitly
-rather than silently trusting one. A docstring describing behaviour the code
-cannot perform is a reportable bug, not a detail to smooth over.
-
-If the MCP server is unreachable (it times out on a cold `npx` download and
-cannot be reconnected mid-session), either restart, or drive it over stdio
-directly — do NOT fall back to guessing. Say it is unavailable instead.
+- **`@mastra/factory` and `@mastra/code-sdk` ship no `dist/docs`.** For those
+  two — which is most of what this project touches — read the installed package
+  and cite `file:line`, or use the `mastra-docs` MCP. The embedded-docs step
+  does not apply.
+- **The `mastra-factory` skill operates a running Factory** via
+  `mastra api factory` — status, queues, work items, health, supervisor
+  sessions. Reach for it before writing a script that pokes the database or the
+  HTTP API directly.
 
 ### Claims require evidence
 

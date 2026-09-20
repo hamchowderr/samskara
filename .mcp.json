@@ -2,8 +2,8 @@
   "mcpServers": {
     "mastra-docs": {
       "type": "stdio",
-      "command": "node",
-      "args": ["node_modules/@mastra/mcp-docs-server/dist/stdio.js"]
+      "command": "npx",
+      "args": ["mcp-docs-server"]
     }
   }
 }
