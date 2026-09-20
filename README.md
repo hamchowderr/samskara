@@ -51,7 +51,7 @@ marked **HUMAN**.
 | 4 | [github-app.md](docs/setup/github-app.md) | Repository access and issue intake |
 | 5 | [slack-app.md](docs/setup/slack-app.md) | Chat intake (optional) |
 
-Requires Node.js 22.13.0 or newer.
+Requires Node.js 22.19.0 or newer.
 
 ```bash
 npm install
