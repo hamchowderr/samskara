@@ -1,57 +1,140 @@
-# Samskara
+<div align="center">
 
-A self-hosted [Mastra Factory](https://factory.mastra.ai/) — agents turn work
-items into plans, implementations and reviewed pull requests — that treats chat
-as a first-class intake path alongside GitHub.
+# 🏭 Samskara
 
-Built on `@mastra/factory` as a dependency, not a fork. Runs entirely on
-infrastructure you own: your own authentication, database, and sandbox
-provider, with no dependency on Mastra's hosted platform.
+### A factory floor for agent work — with chat as a front door.
 
-## What is different from a stock Factory
+**Samskara is a self-hosted [Mastra Factory](https://factory.mastra.ai/): a shared workspace where work moves across a board and every stage is an agent.** Intake, triage, planning, building, review — each one a specialised agent running a skill you can replace, with humans approving at the gates between them. It remembers what it learns about a codebase and applies that next time instead of rediscovering it.
 
-A Factory scaffolded with `npm create factory` defaults to Mastra's platform for
-auth, storage and sandboxes, and its built-in Work board is shaped around
-GitHub issues. Samskara changes four things.
+Samskara adds chat as a first-class intake path, so work can arrive as a sentence in Slack rather than only as a GitHub issue.
 
-**Storage is libSQL only.** A local file for single-machine use, [Turso](https://turso.tech)
-when `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are set. Postgres is
-deliberately not wired: an injected `DATABASE_URL` is ignored rather than
-silently repointing the backend, and the server says so at startup.
+[![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
+[![Node: 22.19+](https://img.shields.io/badge/node-22.19%2B-339933?logo=node.js&logoColor=white)](#-setup)
+[![Built on Mastra](https://img.shields.io/badge/built%20on-Mastra%20Factory-000)](https://factory.mastra.ai/)
+[![Storage: libSQL / Turso](https://img.shields.io/badge/storage-libSQL%20%2F%20Turso-4ff8d2)](https://turso.tech)
+[![Sandbox: E2B](https://img.shields.io/badge/sandbox-E2B-ff8800)](https://e2b.dev)
 
-**Vectors live in their own database.** `LibSQLVector` is passed explicitly.
-The Factory always injects a storage instance, which suppresses the SDK's
-documented default-vector resolution, so omitting it yields no vector store at
-all rather than the default.
+</div>
 
-**The sandbox provider is an explicit choice.** `local`, `e2b` or `platform`
-via `FACTORY_SANDBOX_PROVIDER`, auto-detected when unset. A provider named
-without its credentials throws at startup; it never downgrades to a less
-isolated one. Running agent commands against untrusted repositories on the host
-should be a decision, not a fallback.
+---
 
-**Chat-submitted work gets its own board.** `src/mastra/boards/requests-board.ts`
-wires `manual` work items into triage, which the built-in Work board does not
-do — it declares triage for GitHub and Linear items only, so a chat-sourced card
-reaches Triage and receives a generic stage message instead of running the
-triage skill.
+> Authentication, database, sandbox and models are four independent choices. Samskara runs all four on infrastructure you control. Any one of them can point at Mastra's hosted platform instead.
 
-## Setup
+## ⚡ What it does
 
-The runbooks in [`docs/setup/`](docs/setup/) take a fresh clone to a running
-Factory. They are written to be followed by an AI coding agent; steps only a
-human can do — creating accounts, browser authentication, pasting secrets — are
-marked **HUMAN**.
+Mention the bot in a channel:
+
+> _"@Samskara the CSV export drops the last row"_
+
+A session starts on its own git branch. The triage agent works out what the request actually is, planning proposes an approach, and the plan goes up for approval before anything is written. GitHub and Linear issues enter the same board and take the same path.
+
+The boards here are configured for software delivery, which is what the stock Factory ships. The model underneath is not specific to code — [Translucent](https://mastra.ai/customers/translucent) runs accounting jobs on a Factory: posting journals, reconciling balances, escalating to a human when the evidence is not conclusive.
+
+## 🧩 The four choices
+
+| Part | What Samskara runs | Other options |
+|------|--------------------|---------------|
+| **Authentication** | Better Auth, self-hosted | [configure/auth](https://factory.mastra.ai/configure/auth) |
+| **Database** | libSQL file, or [Turso](https://turso.tech) | [configure/storage](https://factory.mastra.ai/configure/storage) |
+| **Sandbox** | [E2B](https://e2b.dev) | [configure/sandboxes](https://factory.mastra.ai/configure/sandboxes) |
+| **Models** | Your own provider keys | [configure/models](https://factory.mastra.ai/configure/models) |
+
+Deployment shapes are covered in Mastra's [deployment guide](https://factory.mastra.ai/deployment#self-host); every server setting is in [reference/configuration](https://factory.mastra.ai/reference/configuration).
+
+## 🔒 Picking a sandbox
+
+The sandbox is where agent-authored commands actually run, against a repository you have connected. Set it with `FACTORY_SANDBOX_PROVIDER`.
+
+**Local works on any operating system, but confinement does not.** Samskara asks the SDK for the best backend it can actually use: `seatbelt` on macOS, `bwrap` on Linux when bubblewrap is installed, and nothing on Windows. The resolved backend is printed at startup as `[sandbox] isolation=...`, with a warning when it comes out as `none`.
+
+**Windows has no backend at all**, so `local` there is always unconfined. That gap is upstream and acknowledged ([mastra-ai/mastra#20304](https://github.com/mastra-ai/mastra/issues/20304)) — what shipped raises an error when you explicitly request an unavailable backend, rather than adding a Windows one.
+
+**Use a cloud sandbox for anything beyond your own code.** Samskara wires E2B, and Mastra ships adapters for plenty of others:
+
+[AgentCore](https://mastra.ai/integrations/sandboxes/agentcore) ·
+[Apple Container](https://mastra.ai/integrations/sandboxes/apple-container) ·
+[Blaxel](https://mastra.ai/integrations/sandboxes/blaxel) ·
+[Cloudflare](https://mastra.ai/integrations/sandboxes/cloudflare-sandbox) ·
+[Daytona](https://mastra.ai/integrations/sandboxes/daytona) ·
+[Docker](https://mastra.ai/integrations/sandboxes/docker) ·
+[E2B](https://mastra.ai/integrations/sandboxes/e2b) ·
+[Modal](https://mastra.ai/integrations/sandboxes/modal) ·
+[Railway](https://mastra.ai/integrations/sandboxes/railway) ·
+[Vercel](https://mastra.ai/integrations/sandboxes/vercel)
+
+On Windows, Docker is the way to get isolation without a cloud provider.
+
+## 🔀 What differs from a stock Factory
+
+A Factory scaffolded with `npm create factory` behaves as the left column describes. Each row was checked against a real scaffold.
+
+| | Stock scaffold | Samskara |
+|---|---|---|
+| **Database** | `DATABASE_URL` set → Postgres; unset → local libSQL file in dev/test, and a hard throw outside them | libSQL and Turso. `DATABASE_URL` is read, ignored, and warned about |
+| **Vector store** | `PgVector` when `DATABASE_URL` is set; otherwise **none at all** | `LibSQLVector` always — its own file locally, sharing the Turso database unless `TURSO_VECTOR_DATABASE_URL` splits them |
+| **Sandbox** | Only `FACTORY_SANDBOX_PROVIDER=local` is read. Otherwise platform → E2B → local, silently | The value is validated. An explicit choice missing its credentials throws at startup |
+| **Chat-sourced work** | The Work board declares triage for `issue` and `linearIssue` only | A Requests board declares it for `manual` too. See the caveat below — Slack cards do not reach it automatically |
+
+**Database.** Most deploy platforms inject `DATABASE_URL` automatically. On the stock scaffold that repoints the whole backend at a Postgres instance you did not pick — and with `NODE_ENV` set to anything but `development` or `test`, its absence is a startup error rather than a libSQL fallback. Samskara ignores the variable and logs a warning.
+
+**Sandbox.** A missing or mistyped `E2B_API_KEY` on the stock scaffold falls through to running agent commands on the host, with no signal.
+
+## 📋 How work moves
+
+Work enters at Intake and moves through five more phases. Each phase runs a handler, and the handler is chosen by where the item came from.
+
+```mermaid
+flowchart LR
+    GH["GitHub issue"] --> IN
+    LN["Linear issue"] --> IN
+    CH["Chat message<br/>(classifies as manual)"] --> IN
+
+    IN["Intake"] --> TR["Triage"] --> PL["Planning"] --> BU["Building"] --> RV["Review"] --> DN["Done"]
+
+    style TR fill:#8a4a2a,stroke:#8a4a2a,color:#fff
+```
+
+Triage is the phase that matters here. On the stock Work board it declares handlers for `issue` and `linearIssue` only:
+
+```js
+triage: {
+  onEnter: {
+    issue: triageIssueEntry,
+    linearIssue: investigateTriagedLinearIssue,
+  },
+},
+```
+
+A chat message classifies as `manual`, so it reaches Triage, matches no handler, and gets a generic stage message instead of the triage skill. Planning and every phase after it already handle `manual`, so the card then continues normally.
+
+`src/mastra/boards/requests-board.ts` is a copy of the Work board with `manual` added wherever `issue` appears. Both boards stay installed, so GitHub work is untouched.
+
+### The caveat: Slack cards do not reach it on their own
+
+Installing the board is not the same as routing work to it. In `@mastra/factory` 0.15.0 a dispatched Slack thread creates its card directly at Building with no board assigned:
+
+```js
+// integrations/slack/slack.js
+input: { title, externalSource: {...}, stages: ["execute"] }   // no `board`
+```
+
+With `board` unset, `boardForWorkItem()` resolves it to the built-in Work board, and nothing routes it elsewhere: intake bindings are an issue-tracker contract Slack does not implement, the rules dispatcher knows no Slack source, and cross-board transitions are rejected outright. The Slack integration exposes no option for either value.
+
+A card can be moved by hand — `PATCH /web/factory/work-items/:id` with `{"board":"requests","stages":["triage"]}` is accepted while its board is still null — but that is one call per card, after the run has already started.
+
+So today the Requests board serves manual items created in the UI. Chat-sourced triage needs routing that upstream does not yet provide; the Slack integration's own comment calls it a planned follow-up.
+
+## 🚀 Setup
+
+The runbooks in [`docs/setup/`](docs/setup/) take a fresh clone to a running Factory. They are written to be followed by an AI coding agent — steps only a human can do are marked **HUMAN**.
 
 | # | Runbook | What it gets you |
 |---|---------|------------------|
-| 1 | [mastra-docs-mcp.md](docs/setup/mastra-docs-mcp.md) | Documentation tooling, so later steps can be verified rather than guessed |
-| 2 | [secrets-infisical.md](docs/setup/secrets-infisical.md) | A secret store, and every key this project needs created as a placeholder |
+| 1 | [mastra-docs-mcp.md](docs/setup/mastra-docs-mcp.md) | Documentation tooling, so later steps are verified rather than guessed |
+| 2 | [secrets-infisical.md](docs/setup/secrets-infisical.md) | A secret store, with every key this project needs created as a placeholder |
 | 3 | [tunnel.md](docs/setup/tunnel.md) | A public HTTPS address, for local development only |
 | 4 | [github-app.md](docs/setup/github-app.md) | Repository access and issue intake |
 | 5 | [slack-app.md](docs/setup/slack-app.md) | Chat intake (optional) |
-
-Requires Node.js 22.19.0 or newer.
 
 ```bash
 npm install
@@ -59,9 +142,18 @@ npm run dev          # plain .env
 npm run dev:secure   # secrets injected from Infisical
 ```
 
-The Factory serves its UI and API together on <http://localhost:4111>.
+UI and API serve together on <http://localhost:4111>. Requires Node.js 22.19.0+.
 
-## Commands
+## 🛠️ Working on it
+
+Mastra ships first-party tooling for coding agents. Set it up before touching anything — including before filing an issue, so what you report is checked rather than remembered.
+
+```bash
+npx skills add mastra-ai/skills --skill '*' -y   # the framework guide + Factory supervisor
+npx skills update                                 # they move; refresh rather than assume
+```
+
+The docs MCP server is already configured in `.mcp.json` and arrives with `npm install`. Between them you get four sources, in descending order of authority: the `mastra` skill, the docs each package embeds under `dist/docs`, the installed package itself, and the MCP server for packages that embed none — `@mastra/factory` among them, which is most of what this project touches.
 
 ```bash
 npm run check        # tsc --noEmit
@@ -69,49 +161,25 @@ npm run build        # bundles to .mastra/output
 npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
 ```
 
-`mastra build` deletes the whole `.mastra/` directory, so nothing worth keeping
-belongs there. The database lives in `data/` for that reason, and backups are
-written outside the repository.
+> **`mastra build` deletes the whole `.mastra/` directory.** Nothing worth keeping belongs there — the database lives in `data/` for exactly that reason, and backups are written outside the repository.
 
-## Configuration
+## ⚙️ Configuration
 
-`.env.example` documents every variable with its effect. The ones that decide
-the shape of a deployment:
+`.env.example` documents every variable. These four decide the shape of a deployment:
 
 | Variable | Effect |
 |----------|--------|
-| `MASTRACODE_PUBLIC_URL` | The origin users reach the Factory at. Builds OAuth callbacks and the deep links posted into chat, so a `localhost` value produces links that resolve for nobody else. |
-| `MASTRACODE_CHANNELS_PUBLIC_URL` | Origin for channel webhooks and the Slack OIDC redirect. Falls back to the above. |
-| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Hosted database. Without them, a local libSQL file that does not survive a container restart and cannot be shared across replicas. |
-| `FACTORY_SANDBOX_PROVIDER` | `local`, `e2b` or `platform`. |
-| `FACTORY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored provider credentials. Losing it makes them unreadable. |
+| `MASTRACODE_PUBLIC_URL` | The origin users reach the Factory at. Builds OAuth callbacks and the links posted into chat, so a `localhost` value produces links nobody else can open |
+| `FACTORY_SANDBOX_PROVIDER` | `local`, `e2b` or `platform` — see above |
+| `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` | A hosted database. Without them, a local file that does not survive a container restart and cannot be shared across replicas |
+| `FACTORY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored provider credentials. Lose it and they are unreadable |
 
-Secrets belong in a secret manager rather than `.env` — see
-[secrets-infisical.md](docs/setup/secrets-infisical.md). An entry in `.env`
-shadows an injected value, so a key should live in one place, not both.
+Secrets belong in a secret manager, not `.env` — see [secrets-infisical.md](docs/setup/secrets-infisical.md). An entry in `.env` shadows an injected value, so a key should live in one place.
 
-## Status
+## 🤝 Contributing
 
-Version 0.1.0, running but not yet serving anyone other than its author. Known
-gaps are tracked in the issue tracker that ships with this repository (see
-below).
+Detailed issues, not pull requests — [CONTRIBUTING.md](CONTRIBUTING.md). For vulnerabilities, [SECURITY.md](SECURITY.md).
 
-Pinned to `@mastra/factory@0.15.0` exactly. The package ships breaking minors
-weekly, so the pin is deliberate; upgrading is a task, not a bump.
-
-## Issue tracking
-
-Issues are tracked with [beads](https://github.com/gastownhall/beads) and travel
-with this repository on a separate git ref, so a clone can read them:
-
-```bash
-bd init --remote git+https://github.com/hamchowderr/samskara.git
-bd ready
-```
-
-`.beads/issues.jsonl` is a disposable export and is not tracked; the database is
-the source of truth.
-
-## Licence
+## 📄 Licence
 
 [Apache-2.0](LICENSE).
