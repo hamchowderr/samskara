@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/hamchowderr/samskara/security/advisories/new
+    about: Report privately, never as a public issue. See SECURITY.md.
+  - name: Setup problem
+    url: https://github.com/hamchowderr/samskara/tree/main/docs/setup
+    about: The runbooks cover tunnels, secrets, the GitHub App and the Slack app.
+  - name: Mastra Factory itself
+    url: https://github.com/mastra-ai/mastra/issues
+    about: Agent execution, boards, sandboxes and auth live upstream in @mastra/*.

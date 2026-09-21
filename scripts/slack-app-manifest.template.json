@@ -1,0 +1,69 @@
+{
+  "_comment": "Template. Render with `node scripts/render-slack-manifest.mjs` — do not paste this file into Slack with {{PUBLIC_URL}} unreplaced. Scopes and events mirror DEFAULT_BOT_SCOPES and DEFAULT_BOT_EVENTS in @mastra/slack; the user scopes are what the connect route requests for Sign in with Slack.",
+  "display_information": {
+    "name": "Samskara",
+    "description": "Samskara Factory agent"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "Samskara",
+      "always_online": true
+    },
+    "assistant_view": {
+      "assistant_description": "Samskara Factory agent"
+    }
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "{{PUBLIC_URL}}/connect/slack/oidc/callback"
+    ],
+    "scopes": {
+      "user": [
+        "openid",
+        "profile"
+      ],
+      "bot": [
+        "chat:write",
+        "chat:write.public",
+        "im:write",
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "mpim:history",
+        "mpim:read",
+        "app_mentions:read",
+        "users:read",
+        "reactions:write",
+        "files:read",
+        "assistant:write"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "{{PUBLIC_URL}}/api/agent-controllers/mastra-code/channels/slack/webhook",
+      "bot_events": [
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true,
+      "request_url": "{{PUBLIC_URL}}/api/agent-controllers/mastra-code/channels/slack/webhook"
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

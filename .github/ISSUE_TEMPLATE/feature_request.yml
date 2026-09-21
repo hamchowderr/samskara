@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest a capability or a change
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [CONTRIBUTING.md](https://github.com/hamchowderr/samskara/blob/main/CONTRIBUTING.md) first.
+
+        Samskara is a specific deployment shape rather than a general-purpose Factory distribution, so requests may be declined. The reason will be written down.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what happens instead? Describe this before any solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: What "done" looks like
+      description: How you would know this was solved.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Where does this belong
+      description: >
+        Samskara's scope is storage selection, sandbox selection, intake routing, and the boards.
+        How agents plan, run and review work belongs to @mastra/factory.
+      options:
+        - Samskara
+        - Upstream (@mastra/*)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Existing configuration or workarounds you ruled out, and why.

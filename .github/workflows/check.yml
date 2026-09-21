@@ -1,0 +1,30 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch makes an in-flight run irrelevant.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the floor in package.json engines (>= 22.19.0), which is
+          # itself above @mastra/mcp-docs-server's >= 22.13.0.
+          node-version: '22.19.0'
+          cache: npm
+
+      # `npm ci` installs from the lockfile and fails if the two have drifted,
+      # which is the check worth having here.
+      - run: npm ci
+
+      - run: npm run check
