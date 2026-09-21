@@ -61,18 +61,46 @@ frequently the finding — a docstring describing behaviour the code cannot
 perform is a real defect, and reporting it as one is more useful than picking
 whichever source you trusted.
 
-## Before opening an issue
+## Two trackers, and which one to use
 
-Search the [existing issues](https://github.com/hamchowderr/samskara/issues)
-first, including closed ones.
+**File issues on GitHub.** That is the front door, and the templates collect
+what a report needs.
 
-The issue tracker also travels with this repository on a separate git ref. If
-you want to read it locally:
+The maintainer's working backlog is kept separately, with
+[beads](https://github.com/gastownhall/beads). It travels with this repository
+on a git ref (`refs/dolt/data`) rather than in a branch, so a plain `git clone`
+does not fetch it and it does not appear anywhere in the GitHub interface.
+Anyone can read it; nobody but the maintainer can write to it.
+
+Reading it is optional. It is worth doing before filing, to see whether
+something is already planned:
 
 ```bash
 bd init --remote git+https://github.com/hamchowderr/samskara.git
-bd list --status=open
+bd ready                    # unblocked work
+bd list --status=open       # everything open
+bd show <id>                # one issue, with its dependencies
 ```
+
+The two do not sync. A GitHub issue does not create a bead, and a bead does not
+appear on GitHub.
+
+### For coding agents
+
+If you are an agent working on this repository, use `bd` for task tracking here
+rather than a markdown checklist — `bd prime` prints the full command reference
+and the session-close protocol. `CLAUDE.md` and `AGENTS.md` carry the rules that
+apply to changes in this repository.
+
+Beads is not specific to this project. If you are building something of your
+own and want durable task state that survives a cleared context — dependencies,
+blocked work, decisions and their reasoning — `bd init` in your own repository
+gets you the same thing, syncing to your own git remote the same way.
+
+## Before opening an issue
+
+Search the [existing issues](https://github.com/hamchowderr/samskara/issues)
+first, including closed ones, and the beads backlog above.
 
 ## Reporting a bug
 
