@@ -21,7 +21,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Mastra } from '@mastra/core/mastra';
 import { LibSQLFactoryStorage, LibSQLVector } from '@mastra/libsql';
-import { LocalSandbox } from '@mastra/core/workspace';
+import { LocalSandbox, detectIsolation, getRecommendedIsolation } from '@mastra/core/workspace';
 import { PlatformSandbox, createRepoTemplate as createPlatformRepoTemplate } from '@mastra/platform-workspace';
 import { E2BSandbox, createRepoTemplate as createE2BRepoTemplate } from '@mastra/e2b';
 import { RedisStreamsPubSub } from '@mastra/redis-streams';
@@ -539,6 +539,22 @@ if (sandboxProvider === 'local') {
 } else {
   console.log('[sandbox] provider=' + sandboxProvider);
 }
+
+// Resolved once: seatbelt on macOS, bwrap on Linux when installed, 'none'
+// everywhere else (Windows has no backend at all —
+// https://github.com/mastra-ai/mastra/issues/20304). Unconfined local runs are
+// a real exposure, so say so at boot rather than leaving it to be discovered.
+const localIsolation = getRecommendedIsolation();
+if (sandboxProvider === 'local' && localIsolation === 'none') {
+  console.warn(
+    '[sandbox] isolation=none — ' +
+      detectIsolation().message +
+      ' Agent commands will run unconfined, with the privileges of this server process. ' +
+      'Use FACTORY_SANDBOX_PROVIDER=e2b (or another cloud provider) for anything untrusted.',
+  );
+} else if (sandboxProvider === 'local') {
+  console.log('[sandbox] isolation=' + localIsolation);
+}
 export const factory = new MastraFactory({
   auth,
   secretEncryption,
@@ -551,9 +567,14 @@ export const factory = new MastraFactory({
       case 'e2b':
         return new E2BSandbox({ id: ctx.sessionId, template: createE2BRepoTemplate(ctx) });
       case 'local':
+        // LocalSandbox defaults to `isolation: 'none'`, which runs agent
+        // commands unconfined on EVERY platform — including macOS and Linux,
+        // where a backend is available. Ask the SDK for the best one it can
+        // actually use instead of taking that default.
         return new LocalSandbox({
           workingDirectory: join(localSandboxRoot(), ctx.sessionId),
           env: localSandboxEnv(),
+          isolation: localIsolation,
         });
     }
   },
