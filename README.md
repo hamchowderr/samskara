@@ -153,14 +153,19 @@ UI and API serve together on <http://localhost:4111>. Requires Node.js 22.19.0+.
 
 ## 🛠️ Working on it
 
-Mastra ships first-party tooling for coding agents. Set it up before touching anything — including before filing an issue, so what you report is checked rather than remembered.
+Mastra ships first-party tooling for coding agents. Install it before touching anything, including before filing an issue, so what you report is checked rather than remembered — Mastra ships breaking minors weekly, and a remembered answer is usually a stale one.
 
 ```bash
-npx skills add mastra-ai/skills --skill '*' -y   # the framework guide + Factory supervisor
-npx skills update                                 # they move; refresh rather than assume
+npx skills add mastra-ai/skills --skill '*' -y   # the two skills below
+npx skills list                                   # what is installed, and where
 ```
 
-The docs MCP server is already configured in `.mcp.json` and arrives with `npm install`. Between them you get four sources, in descending order of authority: the `mastra` skill, the docs each package embeds under `dist/docs`, the installed package itself, and the MCP server for packages that embed none — `@mastra/factory` among them, which is most of what this project touches.
+- **`mastra`** — the framework guide: agents, workflows, tools, memory, storage, and the `mastra api` CLI.
+- **`mastra-factory`** — operating a running Factory through `mastra api factory`: status, queues, work items, metrics, health, supervisor sessions.
+
+`skills-lock.json` pins both. The files themselves are fetched, not checked in, so they stay current with upstream.
+
+The docs MCP server needs nothing: `.mcp.json` is checked in and `@mastra/mcp-docs-server` arrives with `npm install`. Together these give four sources, in descending order of authority: the `mastra` skill, the docs each package embeds under `dist/docs`, the installed package itself, and the MCP server for packages that embed none — `@mastra/factory` among them, which is most of what this project touches.
 
 ```bash
 npm run check        # tsc --noEmit

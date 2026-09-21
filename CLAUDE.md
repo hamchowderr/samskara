@@ -60,11 +60,60 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Verifying Mastra behaviour
 
-The standing rule is `~/.claude/rules/mastra.md` — source order (skill →
-embedded package docs → installed package → MCP), the skills, and the MCP
-config. Read it; do not duplicate it here.
+### Never answer Mastra from memory
 
-Two things specific to this project:
+Mastra ships breaking minors weekly, so training data is wrong and a plausible
+answer is usually a stale one. Verify every claim against a live source, in this
+order:
+
+1. **The `mastra` skill** — the vendor's own guide to finding current docs and
+   building against current APIs. Mastra names this the recommended path for
+   everyday work, over the MCP docs server.
+2. **Embedded package docs** — `node_modules/@mastra/<pkg>/dist/docs/`, carrying
+   `SKILL.md`, `references/` and `assets/SOURCE_MAP.json`. Version-matched to
+   what is installed, so they beat anything published. Not every package ships
+   them: `@mastra/core` and `@mastra/libsql` do.
+3. **The installed package itself** — `node_modules/@mastra/*`. This is what
+   actually runs. Cite `file:line`.
+4. **The `mastra-docs` MCP server** — for packages with no embedded docs, and
+   for the published-docs view. Its `[📦 LOCAL PACKAGES]` tools read
+   `node_modules` and each require `projectPath`; its `[🌐 REMOTE]` tools read
+   the published docs and may be ahead of what is installed.
+
+**When two sources disagree, that disagreement is the finding.** Say so rather
+than silently trusting one. A docstring describing behaviour the code cannot
+perform is a reportable bug.
+
+### Setting up the tooling
+
+**The skills are not checked in.** `skills-lock.json` pins them; the files are
+fetched. Run `npx skills list` at the start of a session — if `mastra` and
+`mastra-factory` are not there, install them before doing any Mastra work:
+
+```bash
+npx skills add mastra-ai/skills --skill '*' -y
+npx skills update            # they move; refresh rather than assume
+```
+
+- **`mastra`** — framework guide: agents, workflows, tools, memory, storage and
+  the `mastra api` CLI.
+- **`mastra-factory`** — operating a running Factory through
+  `mastra api factory`: status, queues, work items, metrics, health, supervisor
+  sessions.
+
+`npx skills list` shows what is installed and where. A skill named in
+`skills-lock.json` is a declaration, not proof of installation — check disk.
+
+The docs MCP server needs no setup: `.mcp.json` is checked in, and
+`@mastra/mcp-docs-server` is a devDependency, so `npm install` is enough.
+
+> Mastra's published config for the MCP server is
+> `npx -y @mastra/mcp-docs-server@latest`. Avoid it. Resolving `@latest` has been
+> measured at 43.9s with a warm cache, against Claude Code's 30s connect timeout,
+> so it fails to hand off. `.mcp.json` calls the installed package's declared bin
+> (`npx mcp-docs-server`) instead, which connects in seconds.
+
+### Two things specific to this project
 
 - **`@mastra/factory` and `@mastra/code-sdk` ship no `dist/docs`.** For those
   two — which is most of what this project touches — read the installed package
@@ -74,6 +123,20 @@ Two things specific to this project:
   `mastra api factory` — status, queues, work items, health, supervisor
   sessions. Reach for it before writing a script that pokes the database or the
   HTTP API directly.
+
+### Before wiring anything Mastra-shaped
+
+Mastra or this project usually already ships it. Check, in this order, and only
+then consider writing something:
+
+1. `npx mastra --help`, and the subcommand's `--help` — the CLI covers create,
+   init, dev, build, lint, api and `factory`.
+2. `scripts/` in this repository — it may already exist.
+3. The `mastra` and `mastra-factory` skills.
+4. The package's exports — `getMastraExports` via the MCP, or read `dist/*.d.ts`.
+
+Hand-rolling something the framework ships is the recurring failure here. It
+wastes a session and produces a worse version that then has to be maintained.
 
 ### Claims require evidence
 
