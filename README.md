@@ -6,8 +6,6 @@
 
 **Samskara is a self-hosted [Mastra Factory](https://factory.mastra.ai/): a shared workspace where work moves across a board and every stage is an agent.** Intake, triage, planning, building, review — each one a specialised agent running a skill you can replace, with humans approving at the gates between them. It remembers what it learns about a codebase and applies that next time instead of rediscovering it.
 
-Samskara adds chat as a first-class intake path, so work can arrive as a sentence in Slack rather than only as a GitHub issue.
-
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
 [![Node: 22.19+](https://img.shields.io/badge/node-22.19%2B-339933?logo=node.js&logoColor=white)](#-setup)
 [![Built on Mastra](https://img.shields.io/badge/built%20on-Mastra%20Factory-000)](https://factory.mastra.ai/)
@@ -43,26 +41,35 @@ Deployment shapes are covered in Mastra's [deployment guide](https://factory.mas
 
 ## 🔒 Picking a sandbox
 
-The sandbox is where agent-authored commands actually run, against a repository you have connected. Set it with `FACTORY_SANDBOX_PROVIDER`.
+The sandbox is where agent-authored commands run, against a repository you have connected. Set it with `FACTORY_SANDBOX_PROVIDER`: `local`, `e2b` or `platform`.
 
-**Local works on any operating system, but confinement does not.** Samskara asks the SDK for the best backend it can actually use: `seatbelt` on macOS, `bwrap` on Linux when bubblewrap is installed, and nothing on Windows. The resolved backend is printed at startup as `[sandbox] isolation=...`, with a warning when it comes out as `none`.
+`local` runs on every platform. What confines it depends on the platform:
 
-**Windows has no backend at all**, so `local` there is always unconfined. That gap is upstream and acknowledged ([mastra-ai/mastra#20304](https://github.com/mastra-ai/mastra/issues/20304)) — what shipped raises an error when you explicitly request an unavailable backend, rather than adding a Windows one.
+| Platform | Backend | Confined |
+|----------|---------|----------|
+| macOS | `seatbelt` | yes |
+| Linux | `bwrap` | only with bubblewrap installed (`apt install bubblewrap`) |
+| Windows | none available | **no** |
 
-**Use a cloud sandbox for anything beyond your own code.** Samskara wires E2B, and Mastra ships adapters for plenty of others:
+The backend is resolved at startup and logged:
 
-[AgentCore](https://mastra.ai/integrations/sandboxes/agentcore) ·
-[Apple Container](https://mastra.ai/integrations/sandboxes/apple-container) ·
-[Blaxel](https://mastra.ai/integrations/sandboxes/blaxel) ·
-[Cloudflare](https://mastra.ai/integrations/sandboxes/cloudflare-sandbox) ·
-[Daytona](https://mastra.ai/integrations/sandboxes/daytona) ·
-[Docker](https://mastra.ai/integrations/sandboxes/docker) ·
-[E2B](https://mastra.ai/integrations/sandboxes/e2b) ·
-[Modal](https://mastra.ai/integrations/sandboxes/modal) ·
-[Railway](https://mastra.ai/integrations/sandboxes/railway) ·
-[Vercel](https://mastra.ai/integrations/sandboxes/vercel)
+```
+[sandbox] isolation=seatbelt
+[sandbox] isolation=none — Native sandboxing is not supported on win32. …
+```
 
-On Windows, Docker is the way to get isolation without a cloud provider.
+Windows has no backend ([mastra-ai/mastra#20304](https://github.com/mastra-ai/mastra/issues/20304) — the fix raises an error for an unavailable backend rather than adding one). Docker is the way to get isolation there without a cloud provider.
+
+Samskara wires E2B. Mastra also ships adapters for
+[AgentCore](https://mastra.ai/integrations/sandboxes/agentcore),
+[Apple Container](https://mastra.ai/integrations/sandboxes/apple-container),
+[Blaxel](https://mastra.ai/integrations/sandboxes/blaxel),
+[Cloudflare](https://mastra.ai/integrations/sandboxes/cloudflare-sandbox),
+[Daytona](https://mastra.ai/integrations/sandboxes/daytona),
+[Docker](https://mastra.ai/integrations/sandboxes/docker),
+[Modal](https://mastra.ai/integrations/sandboxes/modal),
+[Railway](https://mastra.ai/integrations/sandboxes/railway) and
+[Vercel](https://mastra.ai/integrations/sandboxes/vercel).
 
 ## 🔀 What differs from a stock Factory
 
@@ -175,6 +182,16 @@ npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
 | `FACTORY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored provider credentials. Lose it and they are unreadable |
 
 Secrets belong in a secret manager, not `.env` — see [secrets-infisical.md](docs/setup/secrets-infisical.md). An entry in `.env` shadows an injected value, so a key should live in one place.
+
+## 📚 Documentation
+
+| | |
+|---|---|
+| [docs/setup/](docs/setup/) | Getting a deployment running |
+| [docs/architecture.md](docs/architecture.md) | How `src/mastra/index.ts` is organised, and why |
+| [docs/boards.md](docs/boards.md) | Phases, handlers, and four things that will catch you |
+| [docs/operations/](docs/operations/) | Backup and restore, upgrading Mastra |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Failures that are hard to diagnose from the symptom |
 
 ## 🤝 Contributing
 
