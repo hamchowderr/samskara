@@ -1,0 +1,119 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read [CONTRIBUTING.md](https://github.com/hamchowderr/samskara/blob/main/CONTRIBUTING.md) first.
+
+        Most reports here turn out to be about `@mastra/*` rather than this repository. That is a useful outcome — it just needs enough detail to establish it.
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched existing issues, including closed ones
+          required: true
+        - label: I reproduced this from a fresh clone, not only in my working tree
+          required: false
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected — in that order, concretely.
+      placeholder: |
+        A message mentioning the bot created a work item on the Work board at Building.
+        I expected it on the custom board I installed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The smallest configuration that shows it. Steps, or a repository.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >
+        The actual error, log lines, or database row — not a summary of them.
+        Say which command produced each.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of the commands below. Exact versions, not "latest".
+      value: |
+        $ node --version
+
+        $ npm ls @mastra/factory @mastra/core @mastra/code-sdk --depth=0
+
+        $ git rev-parse --short HEAD
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Several behaviours differ by platform, and Windows has no sandbox isolation backend.
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sandbox
+    attributes:
+      label: Sandbox provider
+      description: The value of FACTORY_SANDBOX_PROVIDER, or "unset" if you left it to auto-detect.
+      options:
+        - unset (auto-detected)
+        - local
+        - e2b
+        - platform
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options:
+        - local libSQL file
+        - Turso
+        - Postgres (entry point modified)
+        - other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: context
+    attributes:
+      label: Anything else true of your setup
+      options:
+        - label: I ran `mastra build` (the built output can differ from source)
+        - label: I modified `src/mastra/index.ts`
+        - label: I modified a board under `src/mastra/boards/`
+
+  - type: textarea
+    id: ruled-out
+    attributes:
+      label: What you already ruled out
+      description: Optional, and it saves the first few replies.
