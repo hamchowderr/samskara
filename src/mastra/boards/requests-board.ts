@@ -48,6 +48,7 @@
 import { defineBoard } from '@mastra/factory';
 import type { BoardPhaseDefinition } from '@mastra/factory';
 import { advanceApprovedPlan } from '@mastra/factory/boards/work-tool-rules';
+import type { FactoryToolResultRuleContext } from '@mastra/factory/rules/types';
 import { workTransitionPolicy } from '@mastra/factory/boards/work-transition-policy';
 import { needsApproval } from '@mastra/factory/rules/types';
 import type { FactoryRuleItemContext, FactoryStageRuleContext } from '@mastra/factory/rules/types';
@@ -152,15 +153,41 @@ const anyPhase = {
   canceled: 'canceled',
 } as const;
 
+/** The board's id, used by the definition and by the transition rule below. */
+const BOARD_ID = 'requests' as const;
+
+/**
+ * `advanceApprovedPlan` is the SDK's rule for moving a card from Planning to
+ * Building once the plan agent reports "Plan approved." — but its return type
+ * hardcodes `board: 'work'`:
+ *
+ *   readonly board: "work";        // boards/work-tool-rules.d.ts
+ *
+ * The transition service rejects every cross-board transition
+ * (rules/transition-service.js:190, `The work item belongs to board "x", not
+ * "y"`), so on this board the rule fires, targets Work, and is refused — an
+ * approved plan would sit in Planning forever.
+ *
+ * There is no board-parameterised variant exported, so the board has to be
+ * corrected here. Delegate to the SDK rule so its approval detection (result
+ * status, single `planning` stage, agent actor in the `plan` role, the
+ * "Plan approved." prefix) stays upstream's, and override only the target.
+ */
+function advanceApprovedPlanOnThisBoard(context: FactoryToolResultRuleContext) {
+  const transition = advanceApprovedPlan(context);
+  if (!transition) return;
+  return { ...transition, board: BOARD_ID } as const;
+}
+
 export const requestsBoard = defineBoard<
   'requests',
   Record<RequestsBoardPhase, BoardPhaseDefinition<RequestsBoardPhase>>
 >({
-  id: 'requests',
+  id: BOARD_ID,
   title: 'Requests',
   initialPhase: 'intake',
   transitionPolicy: workTransitionPolicy,
-  tools: { submit_plan: { onResult: advanceApprovedPlan } },
+  tools: { submit_plan: { onResult: advanceApprovedPlanOnThisBoard } },
   phases: {
     intake: {
       title: 'Intake',
