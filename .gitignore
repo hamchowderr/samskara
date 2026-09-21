@@ -36,3 +36,6 @@ src/mastra/public/factory/
 # Mastra skills — fetched from mastra-ai/skills, pinned by skills-lock.json
 .agents/skills/mastra/
 .agents/skills/mastra-factory/
+
+# Infisical project linkage — per-machine, created by `infisical init`
+.infisical.json

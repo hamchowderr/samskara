@@ -110,6 +110,11 @@ infisical run --path=/samskara --env=dev --silent -- npm run dev
 
 This is what `npm run dev:secure` does.
 
+Neither command names a project. `infisical run` resolves the project from
+`.infisical.json`, written by `infisical init` in step 4 — so that step is
+required for the `:secure` scripts to work. The file is per-machine and
+gitignored.
+
 ## Verifying without exposing anything
 
 To confirm which variables arrived, print their **names**:

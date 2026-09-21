@@ -13,8 +13,8 @@
     "build": "mastra build --dir src/mastra",
     "start": "varlock run -- mastra start",
     "deploy": "mastra deploy",
-    "dev:secure": "infisical run --projectId <project-id> --env dev --path=/samskara --silent -- cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
-    "start:secure": "infisical run --projectId <project-id> --env dev --path=/samskara --silent -- mastra start",
+    "dev:secure": "infisical run --env dev --path=/samskara --silent -- cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
+    "start:secure": "infisical run --env dev --path=/samskara --silent -- mastra start",
     "db:backup": "node scripts/backup-db.mjs"
   },
   "dependencies": {
