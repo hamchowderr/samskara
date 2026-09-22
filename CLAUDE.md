@@ -108,10 +108,14 @@ The docs MCP server needs no setup: `.mcp.json` is checked in, and
 `@mastra/mcp-docs-server` is a devDependency, so `npm install` is enough.
 
 > Mastra's published config for the MCP server is
-> `npx -y @mastra/mcp-docs-server@latest`. Avoid it. Resolving `@latest` has been
-> measured at 43.9s with a warm cache, against Claude Code's 30s connect timeout,
-> so it fails to hand off. `.mcp.json` calls the installed package's declared bin
-> (`npx mcp-docs-server`) instead, which connects in seconds.
+> `npx -y @mastra/mcp-docs-server@latest`. Avoid it — but note that dropping
+> `@latest` is not enough, because **`npx` itself is the cost**. Measured here,
+> spawn to a valid `initialize` response: `npx mcp-docs-server` took 35.1s cold
+> and 2.0-2.5s warm; `node node_modules/@mastra/mcp-docs-server/dist/stdio.js`
+> took 0.7-0.9s every time. Claude Code's connect budget is 30s, so only the cold
+> run misses it — and any manual retest hits a warm cache and passes, which is how
+> this regressed twice. `.mcp.json` therefore calls `node` on the declared bin
+> directly. If you change it, time a COLD start, not a warm one.
 
 ### Two things specific to this project
 
