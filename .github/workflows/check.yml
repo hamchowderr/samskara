@@ -28,3 +28,8 @@ jobs:
       - run: npm ci
 
       - run: npm run check
+
+      # Samskara passes @mastra/auth-better-auth its own betterAuth() instance,
+      # which makes the provider's init() return early — so its config is ours
+      # to mirror. This fails when that function changes upstream.
+      - run: npm run check:auth-parity

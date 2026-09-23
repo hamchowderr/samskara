@@ -39,3 +39,6 @@ src/mastra/public/factory/
 
 # Infisical project linkage — per-machine, created by `infisical init`
 .infisical.json
+
+# Generated from node_modules by scripts/build-branded-ui.mjs (feat/white-label-factory-ui)
+.branded-ui/
