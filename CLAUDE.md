@@ -193,7 +193,12 @@ that implements it, so the next reader does not have to re-derive it.
 ## Build & Test
 
 ```bash
-npm run dev          # local: plain .env, no Infisical needed
+npm run dev          # local: no Infisical needed. `predev` generates a
+                     # development BETTER_AUTH_SECRET and
+                     # FACTORY_CREDENTIAL_ENCRYPTION_KEY into .env.local
+                     # on first run, so sign-in works against the local
+                     # database instead of falling through to the
+                     # platform default.
 npm run dev:secure   # injects secrets from Infisical (maintainer only)
 npm run check        # tsc --noEmit
 npm run build        # bundles to .mastra/output

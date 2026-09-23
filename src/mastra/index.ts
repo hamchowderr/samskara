@@ -354,6 +354,23 @@ console.log(
     (auth === null ? 'DISABLED (Factory UI will not load)' : auth ? auth.constructor.name : 'platform-default'),
 );
 
+// Landing on the platform default is almost never what this deployment wants.
+// Samskara is self-hosted: the default provider authenticates against
+// platform.mastra.ai, so sign-in cannot work against the local database. The
+// server otherwise reports itself healthy, which is how a clone ends up with a
+// login that silently cannot succeed — so say it plainly rather than printing
+// the provider name and moving on.
+if (auth === undefined && !authDisabled) {
+  console.warn(
+    '[auth] NO AUTH PROVIDER CONFIGURED — falling back to the platform default, which authenticates ' +
+      'against platform.mastra.ai. Sign-in will NOT work against this local database.\n' +
+      '       Set one of: BETTER_AUTH_SECRET (self-hosted sign-in), WORKOS_API_KEY + WORKOS_CLIENT_ID, ' +
+      'or MASTRA_SHARED_API_URL (defer to the platform).\n' +
+      '       `npm run dev` generates a development BETTER_AUTH_SECRET for you; `npm run dev:secure` ' +
+      'injects the real one from Infisical.',
+  );
+}
+
 // Mail is not optional for a real deployment: with no transport, Better Auth
 // declines to mount password reset at all and an invited teammate is never
 // notified. Loud on every boot rather than discovered by a locked-out client.
