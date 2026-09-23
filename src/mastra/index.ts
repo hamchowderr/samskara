@@ -31,7 +31,6 @@ import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 
 import { buildBetterAuth } from './auth/better-auth';
-import { ensureAuthSchema } from './auth/migrate';
 import { mailConfigured } from './auth/mailer';
 import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
@@ -328,7 +327,10 @@ const storage = new LibSQLFactoryStorage({
 // handle the factory would have passed to `init()` (factory.js:270), which a
 // BYO instance never receives.
 if (betterAuthSelected && betterAuthSecret) {
-  const betterAuthInstance = buildBetterAuth({
+  // Owning the instance means owning its schema: the provider only migrates
+  // instances it built itself (dist/index.js:509). buildBetterAuth() migrates
+  // before constructing, so a fresh clone gets its auth tables.
+  const betterAuthInstance = await buildBetterAuth({
     secret: betterAuthSecret,
     database: storage.authDatabase(),
     publicUrl: process.env.MASTRACODE_PUBLIC_URL?.trim().replace(/\/+$/, ''),
@@ -337,10 +339,6 @@ if (betterAuthSelected && betterAuthSecret) {
       .map(o => o.trim())
       .filter(Boolean),
   });
-  // Owning the instance means owning its schema: the provider only migrates
-  // instances it built itself (dist/index.js:509). Without this a fresh clone
-  // has no auth tables and signs nobody in.
-  await ensureAuthSchema(betterAuthInstance);
   auth = new MastraAuthBetterAuth({ auth: betterAuthInstance });
 }
 
