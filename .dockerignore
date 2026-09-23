@@ -1,0 +1,18 @@
+# Rebuilt inside the image.
+node_modules
+.mastra
+.branded-ui
+
+# Never in an image: local data and secrets.
+data
+.env
+.env.*
+!.env.example
+.infisical.json
+
+# Tooling and output with no runtime use.
+.git
+.beads
+.claude
+test-results
+playwright-report

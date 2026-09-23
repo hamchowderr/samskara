@@ -126,9 +126,12 @@ agent-browser eval "JSON.stringify({title:document.title, mastra:document.docume
 local-only and gitignored, so a deploy needs the variable set in its own
 environment, pointing at the `.branded-ui` produced by `npm run build`.
 
-**Not yet verified:** whether `mastra build` copies `.branded-ui/` into
-`.mastra/output`, or whether the deploy must carry it separately. Check this
-before the first client deployment.
+**Verified 2026-09-23:** `mastra build` does NOT carry the branding. It copies
+Mastra's stock UI into `.mastra/output/factory` (title "Mastra Factory"), and
+the server picks that up unless `MASTRACODE_UI_DIST` points elsewhere. The
+`Dockerfile` therefore copies `.branded-ui` into the image as `/app/branded-ui`
+and sets `MASTRACODE_UI_DIST=/app/branded-ui`. Running the image serves
+`<title>Samskara</title>` on `/signin`.
 
 ## What this does not cover
 
