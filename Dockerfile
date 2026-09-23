@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # Samskara for Coolify on the VPS. Boots under `infisical run`, so every key is
-# read from Infisical prod:/samskara at start-up; Coolify holds only the
-# machine-identity pair. The entrypoint is the shared Otaku one (see the
+# read from Infisical at start-up (project VPS, prod:/samskara); Coolify holds
+# only the machine-identity pair. The entrypoint is the shared Otaku one (see the
 # Coolify + Infisical cutover note), copied unchanged.
 
 # ── build ────────────────────────────────────────────────────────────────────
@@ -58,7 +58,10 @@ ENV MASTRACODE_AUTH_DISABLED=0
 # (INFISICAL_UNIVERSAL_AUTH_CLIENT_ID / _CLIENT_SECRET) come from Coolify at
 # runtime and are the ONLY secret it holds. Unset them and the entrypoint boots
 # on the ambient environment (the rollback lever).
-ENV INFISICAL_PROJECT_ID=e56e0da5-6460-4bab-bdd6-2fd12ac5447b
+# The project is VPS, not the laptop's project: on Infisical's free plan an
+# identity's access covers a whole project, so the `vps` identity must only be
+# able to open a project that holds VPS keys and nothing else.
+ENV INFISICAL_PROJECT_ID=56fe6a1e-69bf-487d-b885-3ac9851e2f1f
 ENV INFISICAL_ENVIRONMENT=prod
 ENV INFISICAL_SECRET_PATH=/samskara
 ENV INFISICAL_DISABLE_UPDATE_CHECK=true
