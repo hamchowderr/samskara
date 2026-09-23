@@ -18,7 +18,9 @@
     "dev:secure": "infisical run --env dev --path=/samskara --silent -- cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
     "start:secure": "infisical run --env dev --path=/samskara --silent -- mastra start",
     "db:backup": "node scripts/backup-db.mjs",
-    "check:auth-parity": "node scripts/check-auth-provider-parity.mjs"
+    "check:auth-parity": "node scripts/check-auth-provider-parity.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@libsql/kysely-libsql": "0.4.1",
@@ -37,12 +39,14 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@libsql/client": "0.18.0",
     "@mastra/mcp-docs-server": "^1.2.26",
     "@types/node": "22.20.1",
     "cross-env": "10.1.0",
     "mastra": "1.31.0",
     "typescript": "^5.9.2",
-    "varlock": "^1.9.0"
+    "varlock": "^1.9.0",
+    "vitest": "5.0.1"
   },
   "engines": {
     "node": ">=22.19.0"
