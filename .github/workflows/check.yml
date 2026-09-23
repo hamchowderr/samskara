@@ -37,3 +37,26 @@ jobs:
       # Tier-1 tests: no network, no server. Auth tests use a real temp libSQL
       # file; only the Resend HTTP call is mocked.
       - run: npm test
+
+  # The invite flow in a real browser against the real dev server, on its own
+  # port and a throwaway database (playwright.config.ts). Separate job so the
+  # fast checks above report without waiting for a browser.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          CI: 'true'
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7
