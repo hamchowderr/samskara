@@ -19,35 +19,64 @@ intake → triage → planning → execute (Building) → review → done
 
 ## Why Requests exists
 
-Each phase declares `onEnter` handlers keyed by where the item came from. The
-valid keys are `issue`, `pullRequest`, `linearIssue` and `manual` — anything
-that is not a GitHub or Linear item classifies as `manual`.
+Each phase declares `onEnter` handlers keyed by where the item came from (see
+[Source keys](#source-keys)). Work created in the UI or by chat is `manual`.
 
-The Work board declares triage for two of them:
+The Work board runs triage for every tracker source but not for `manual`
+(`@mastra/factory` 0.16.0, `dist/boards/work.js`):
 
 ```js
 triage: {
   onEnter: {
     issue: triageIssueEntry,
+    gitlabIssue: investigateTriagedGitLabIssue,
     linearIssue: investigateTriagedLinearIssue,
+    jiraIssue: investigateTriagedJiraIssue,
+    incidentioFollowUp: investigateTriagedIncidentioFollowUp,
   },
 },
 ```
 
 A `manual` card entering Triage there matches no handler and receives a generic
-stage message instead of running the triage skill. Planning and every later
-phase already declare `manual`, so only that one phase is affected — and it is
-the phase that decides what the work is.
+stage message instead of running the triage skill. Planning and Building
+already declare `manual`, so only that one phase is affected — and it is the
+phase that decides what the work is.
 
-Requests is the Work board with `manual` added wherever `issue` appears.
+Requests is a custom board, built with `defineBoard()` as Mastra's README
+describes. It was modelled on the 0.15.0 Work board and handles the sources this
+deployment uses: `issue`, `linearIssue` and `manual`. It is not derived
+from `workBoard` at runtime, and should not be: the README says *"Built-in
+customization is deferred; there is no built-in override or replacement API."*
+
+## Source keys
+
+Mastra's README and its types disagree about which keys exist.
+
+| Source | README (0.16.0, line 88) | `rules/types.d.ts` `FACTORY_RULE_SOURCES` | Requests handles it |
+|---|---|---|---|
+| `issue` | yes | yes | yes |
+| `pullRequest` | yes | yes | no (Review board) |
+| `linearIssue` | yes | yes | yes |
+| `manual` | yes | yes | yes |
+| `gitlabIssue` | no | yes | no |
+| `gitlabPullRequest` | no | yes | no |
+| `jiraIssue` | no | yes | no |
+| `incidentioFollowUp` | no | yes | no |
+
+Treat `FACTORY_RULE_SOURCES` as the list the runtime uses. None of the last
+four integrations is connected here, so Requests does not declare them. A card
+from one of them would get a generic stage message on this board. If GitLab,
+Jira or incident.io intake is ever connected, add its key to Requests first,
+modelled on the Work board's handler for it.
 
 ## Four things that will catch you
 
 ### `defineBoard()` does not validate handler keys
 
 A misspelled source — `pull-request` for `pullRequest` — type-checks, is stored,
-and never fires. No error, no warning. The only valid keys are `issue`,
-`pullRequest`, `linearIssue`, `manual`.
+and never fires. No error, no warning — 0.16.0 validates phases, roles and
+tools, but copies `onEnter` as given (`dist/boards/define-board.js:68`). Check
+keys against [Source keys](#source-keys).
 
 ### The SDK's plan-advance rule only works on the Work board
 
@@ -106,7 +135,7 @@ chat-sourced work needs support upstream does not yet provide.
 ## Adding a board
 
 1. Copy `requests-board.ts` as a starting point — it already handles the
-   transition policy, the tool rule and all four source keys.
+   transition policy, the tool rule and the source keys this deployment uses.
 2. Give it a new id, and use a constant for it so the definition and any rule
    cannot drift apart.
 3. Pass it in the `boards` array in `src/mastra/index.ts`.
