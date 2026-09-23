@@ -92,7 +92,13 @@ const indexPath = join(DEST, 'index.html');
 let html = readFileSync(indexPath, 'utf8');
 const beforeHtml = html;
 html = html.replace(/<title>[^<]*<\/title>/, `<title>${BRAND.name}</title>`);
-if (html !== beforeHtml) changes.push('index.html <title>');
+// Same reason as the manifest: the apple-touch-icon PNG is Mastra's and is
+// deleted, so drop the link rather than leave iOS fetching a 404. Safari falls
+// back to the SVG favicon.
+if (!existsSync(join(BRAND_DIR, 'apple-touch-icon.png'))) {
+  html = html.replace(/\s*<link[^>]*rel="apple-touch-icon"[^>]*>/g, '');
+}
+if (html !== beforeHtml) changes.push('index.html <title> + dropped icon links that would 404');
 writeFileSync(indexPath, html);
 
 // --- manifest: PWA identity ------------------------------------------------
@@ -102,6 +108,14 @@ if (existsSync(manifestPath)) {
   manifest.name = BRAND.name;
   manifest.short_name = BRAND.short;
   manifest.description = BRAND.description;
+  // Point the PWA at the SVG we actually ship. Upstream lists pwa-192.png and
+  // pwa-512.png — Mastra's logo, deleted below rather than faked — so leaving
+  // them listed would make the install prompt fetch two 404s. An SVG icon is
+  // valid in a manifest and scales to every size.
+  if (!existsSync(join(BRAND_DIR, 'pwa-192.png'))) {
+    manifest.icons = [{ src: '/mastra.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }];
+    changes.push('manifest.webmanifest icons -> the SVG (no raster 404s)');
+  }
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   changes.push('manifest.webmanifest name/short_name/description');
 }

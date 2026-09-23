@@ -70,9 +70,16 @@ script does.
 
 ## Supplying real brand assets
 
-The script ships a plain monogram as `mastra.svg` and **deletes** the raster
-icons rather than inventing them — a missing icon 404s visibly, which is better
-than serving Mastra's logo.
+The script ships a plain monogram as `mastra.svg`. The raster icons are
+Mastra's logo, and inventing replacements is not something to guess at, so they
+are **deleted** — and every reference to them is removed with them:
+
+- the `apple-touch-icon` `<link>` is dropped from `index.html`
+- the manifest's `icons` array is repointed at the SVG, which is valid there
+  and scales to any size
+
+So nothing 404s and nothing shows Mastra's mark. Supply real files in `brand/`
+and the script uses them instead, restoring the normal raster references.
 
 Put real files in `brand/` and they are used instead:
 
