@@ -145,7 +145,7 @@ The runbooks in [`docs/setup/`](docs/setup/) take a fresh clone to a running Fac
 
 ```bash
 npm install
-npm run dev          # plain .env
+npm run dev          # plain .env; generates dev auth secrets on first run
 npm run dev:secure   # secrets injected from Infisical
 ```
 
