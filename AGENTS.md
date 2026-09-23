@@ -202,6 +202,7 @@ npm run dev          # local: no Infisical needed. `predev` generates a
 npm run dev:secure   # injects secrets from Infisical (maintainer only)
 npm run check        # tsc --noEmit
 npm test             # vitest: tier-1, real temp libSQL, no server
+npm run test:e2e     # playwright: invite flow on port 4199, throwaway DB
 npm run build        # bundles to .mastra/output
 npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
 ```

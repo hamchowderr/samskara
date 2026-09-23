@@ -42,3 +42,7 @@ src/mastra/public/factory/
 
 # Generated from node_modules by scripts/build-branded-ui.mjs
 .branded-ui/
+
+# Playwright output
+test-results/
+playwright-report/

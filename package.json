@@ -20,7 +20,8 @@
     "db:backup": "node scripts/backup-db.mjs",
     "check:auth-parity": "node scripts/check-auth-provider-parity.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@libsql/kysely-libsql": "0.4.1",
@@ -41,6 +42,7 @@
   "devDependencies": {
     "@libsql/client": "0.18.0",
     "@mastra/mcp-docs-server": "^1.2.26",
+    "@playwright/test": "1.63.0",
     "@types/node": "22.20.1",
     "cross-env": "10.1.0",
     "mastra": "1.31.0",
