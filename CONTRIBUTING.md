@@ -10,7 +10,7 @@ below, so that nobody spends an evening on a change that will not be merged.
 - **One maintainer.** A patch that arrives without context costs more to review,
   verify and take responsibility for than the same problem described well.
 - **A pinned, fast-moving dependency.** The project pins
-  `@mastra/factory@0.15.0` exactly, and that package ships breaking minors
+  `@mastra/factory@0.16.0` exactly, and that package ships breaking minors
   weekly. A change that is correct against your installed version can be wrong
   against the pinned one, and neither of us would notice until something broke.
 - **Most defects here are not in this repository.** Samskara is a thin layer

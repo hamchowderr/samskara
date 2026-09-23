@@ -26,12 +26,33 @@ npm run db:backup
 
 ## Doing it
 
-Move one package at a time, pinning exactly:
+Four packages release together and must move together, pinned exactly:
+
+| Package | Why it moves with the others |
+|---|---|
+| `@mastra/factory` | the package being upgraded |
+| `@mastra/core` | pinned exactly in factory's `dependencies` |
+| `@mastra/code-sdk` | pinned exactly in factory's `dependencies` |
+| `mastra` (CLI) | ships the Factory UI that `npm run dev` serves |
+
+Read the core and code-sdk versions from the factory release itself:
 
 ```bash
-npm install --save-exact @mastra/factory@<version>
+npm view @mastra/factory@<version> dependencies --json | grep -E '"@mastra/(core|code-sdk)"'
+npm install --save-exact @mastra/factory@<version> @mastra/core@<core> @mastra/code-sdk@<sdk> mastra@<cli>
 npm run check
+npm ls @mastra/core     # one copy for the app; the docs MCP server may keep its own
 ```
+
+Moving factory alone leaves two copies of `@mastra/core` and fails type-checking
+with identity mismatches on `LibSQLVector`, `LibSQLFactoryStorage`, `PubSub` and
+`MastraWorker`. That is a dedupe failure, not a code change. Take the CLI version
+released alongside the factory: 0.15.0 shipped with CLI 1.30.0, and 0.16.0 with
+CLI 1.31.0, minutes apart (`npm view mastra time`).
+
+The other `@mastra/*` packages (libsql, memory, auth providers, e2b,
+redis-streams) are pinned on their own schedule. Move them only when the new
+core requires it.
 
 `npm run check` catches removed and renamed exports, which is how most breaking
 changes surface here. It will not catch behaviour changes.
