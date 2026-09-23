@@ -6,10 +6,12 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
+    "predev": "node scripts/build-branded-ui.mjs",
     "dev": "cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",
     "check": "tsc --noEmit",
+    "prebuild": "node scripts/build-branded-ui.mjs",
     "build": "mastra build --dir src/mastra",
     "start": "varlock run -- mastra start",
     "deploy": "mastra deploy",
