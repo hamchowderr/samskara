@@ -33,3 +33,7 @@ jobs:
       # which makes the provider's init() return early — so its config is ours
       # to mirror. This fails when that function changes upstream.
       - run: npm run check:auth-parity
+
+      # Tier-1 tests: no network, no server. Auth tests use a real temp libSQL
+      # file; only the Resend HTTP call is mocked.
+      - run: npm test
