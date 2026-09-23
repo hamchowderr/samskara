@@ -145,7 +145,7 @@ The runbooks in [`docs/setup/`](docs/setup/) take a fresh clone to a running Fac
 
 ```bash
 npm install
-npm run dev          # plain .env
+npm run dev          # plain .env; generates dev auth secrets on first run
 npm run dev:secure   # secrets injected from Infisical
 ```
 
@@ -195,7 +195,7 @@ Secrets belong in a secret manager, not `.env` — see [secrets-infisical.md](do
 | [docs/setup/](docs/setup/) | Getting a deployment running |
 | [docs/architecture.md](docs/architecture.md) | How `src/mastra/index.ts` is organised, and why |
 | [docs/boards.md](docs/boards.md) | Phases, handlers, and four things that will catch you |
-| [docs/operations/](docs/operations/) | Backup and restore, white-labelling the UI, upgrading Mastra |
+| [docs/operations/](docs/operations/) | Backup and restore, outbound mail, Better Auth migrations, white-labelling the UI, upgrading Mastra |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Failures that are hard to diagnose from the symptom |
 
 ## 🤝 Contributing

@@ -6,7 +6,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
-    "predev": "node scripts/build-branded-ui.mjs",
+    "predev": "node scripts/ensure-dev-secrets.mjs && node scripts/build-branded-ui.mjs",
     "dev": "cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down",
@@ -17,9 +17,11 @@
     "deploy": "mastra deploy",
     "dev:secure": "infisical run --env dev --path=/samskara --silent -- cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
     "start:secure": "infisical run --env dev --path=/samskara --silent -- mastra start",
-    "db:backup": "node scripts/backup-db.mjs"
+    "db:backup": "node scripts/backup-db.mjs",
+    "check:auth-parity": "node scripts/check-auth-provider-parity.mjs"
   },
   "dependencies": {
+    "@libsql/kysely-libsql": "0.4.1",
     "@mastra/auth-better-auth": "1.1.5",
     "@mastra/auth-workos": "1.6.5",
     "@mastra/code-sdk": "1.7.2",
@@ -30,6 +32,8 @@
     "@mastra/memory": "1.30.0",
     "@mastra/platform-workspace": "1.6.1",
     "@mastra/redis-streams": "0.4.3",
+    "better-auth": "1.7.5",
+    "resend": "6.28.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {

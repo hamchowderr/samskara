@@ -29,6 +29,10 @@ import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
+
+import { buildBetterAuth } from './auth/better-auth';
+import { ensureAuthSchema } from './auth/migrate';
+import { mailConfigured } from './auth/mailer';
 import { createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
 import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webhook';
@@ -126,16 +130,20 @@ if (redisUrl) {
 //      identity signals — platform compute plus self-managed sign-in is a
 //      supported combination.
 //   4. BETTER_AUTH_SECRET — self-hosted sign-in with no third-party identity
-//      provider. Deferred-instance mode: the provider builds its own
-//      `betterAuth()` on the host's auth database and owns its schema
-//      migrations, so `secret` alone is the whole configuration. Ranked below
-//      WorkOS so an explicitly configured WORKOS_* pair still wins.
+//      provider. NOT deferred-instance mode: we hand the provider our own
+//      `betterAuth()` (src/mastra/auth/better-auth.ts) because the deferred
+//      path calls `organization()` with no options, which makes invite email
+//      impossible. The trade is that we own the schema migrations, the
+//      database handle, baseURL, trustedOrigins and cookie attributes — so
+//      this branch is wired AFTER storage, not here. Ranked below WorkOS so an
+//      explicitly configured WORKOS_* pair still wins.
 //   5. Nothing configured — leave undefined and MastraFactory installs its
 //      platform-backed default provider.
 const authDisabled = process.env.MASTRACODE_AUTH_DISABLED === '1';
 const workosConfigured = Boolean(process.env.WORKOS_API_KEY?.trim() && process.env.WORKOS_CLIENT_ID?.trim());
 const betterAuthSecret = process.env.BETTER_AUTH_SECRET?.trim();
 let auth: IMastraAuthProvider | null | undefined;
+let betterAuthSelected = false;
 
 if (authDisabled) {
   auth = null;
@@ -154,21 +162,12 @@ if (authDisabled) {
   // /web/factory/projects returns 401 and resolveTenant rejects a tenant with
   // no organization as 403 organization_required. A real login is what
   // bootstraps the personal organization the board needs.
-  auth = new MastraAuthBetterAuth({ secret: betterAuthSecret });
+  // Constructed AFTER storage, below: we pass our OWN betterAuth() instance so
+  // the organization plugin can carry sendInvitationEmail, and that needs the
+  // host's libSQL client. See src/mastra/auth/better-auth.ts for what owning
+  // the instance costs us (migrations, baseURL, trustedOrigins, cookies).
+  betterAuthSelected = true;
 }
-// Which auth provider actually resolved. Worth a permanent boot line: when auth
-// resolves to null the factory skips buildAuthRoutes (factory.js:497), so every
-// /auth/* route — including the /auth/me the SPA blocks on — falls through to
-// the HTML catch-all and the UI hangs on an infinite loader with no error
-// anywhere. `mastra factory dev` injects MASTRACODE_AUTH_DISABLED=1 unless it
-// is already set, which is why the dev script pins it to 0.
-console.log(
-  '[auth] provider=' +
-    (auth === null ? 'DISABLED (Factory UI will not load)' : auth ? auth.constructor.name : 'platform-default'),
-);
-
-const secretEncryption = auth === null ? undefined : credentialEncryption();
-
 // Direct GitHub App fallback: when the platform-backed integration isn't in
 // play (self-hosted / local deploys), a complete GITHUB_APP_* env group wires
 // a GithubIntegration so the app still gets a real GitHub connection — Connect
@@ -322,6 +321,69 @@ const storage = new LibSQLFactoryStorage({
   authToken: tursoAuthToken,
   retention: DEFAULT_RETENTION,
 });
+
+// Self-hosted sign-in, wired here rather than at the selection above because a
+// bring-your-own Better Auth instance needs the host's auth database — the same
+// handle the factory would have passed to `init()` (factory.js:270), which a
+// BYO instance never receives.
+if (betterAuthSelected && betterAuthSecret) {
+  const betterAuthInstance = buildBetterAuth({
+    secret: betterAuthSecret,
+    database: storage.authDatabase(),
+    publicUrl: process.env.MASTRACODE_PUBLIC_URL?.trim().replace(/\/+$/, ''),
+    allowedOrigins: (process.env.MASTRACODE_ALLOWED_ORIGINS ?? '')
+      .split(',')
+      .map(o => o.trim())
+      .filter(Boolean),
+  });
+  // Owning the instance means owning its schema: the provider only migrates
+  // instances it built itself (dist/index.js:509). Without this a fresh clone
+  // has no auth tables and signs nobody in.
+  await ensureAuthSchema(betterAuthInstance);
+  auth = new MastraAuthBetterAuth({ auth: betterAuthInstance });
+}
+
+// Which auth provider actually resolved. Worth a permanent boot line: when auth
+// resolves to null the factory skips buildAuthRoutes (factory.js:497), so every
+// /auth/* route — including the /auth/me the SPA blocks on — falls through to
+// the HTML catch-all and the UI hangs on an infinite loader with no error
+// anywhere. `mastra factory dev` injects MASTRACODE_AUTH_DISABLED=1 unless it
+// is already set, which is why the dev script pins it to 0.
+console.log(
+  '[auth] provider=' +
+    (auth === null ? 'DISABLED (Factory UI will not load)' : auth ? auth.constructor.name : 'platform-default'),
+);
+
+// Landing on the platform default is almost never what this deployment wants.
+// Samskara is self-hosted: the default provider authenticates against
+// platform.mastra.ai, so sign-in cannot work against the local database. The
+// server otherwise reports itself healthy, which is how a clone ends up with a
+// login that silently cannot succeed — so say it plainly rather than printing
+// the provider name and moving on.
+if (auth === undefined && !authDisabled) {
+  console.warn(
+    '[auth] NO AUTH PROVIDER CONFIGURED — falling back to the platform default, which authenticates ' +
+      'against platform.mastra.ai. Sign-in will NOT work against this local database.\n' +
+      '       Set one of: BETTER_AUTH_SECRET (self-hosted sign-in), WORKOS_API_KEY + WORKOS_CLIENT_ID, ' +
+      'or MASTRA_SHARED_API_URL (defer to the platform).\n' +
+      '       `npm run dev` generates a development BETTER_AUTH_SECRET for you; `npm run dev:secure` ' +
+      'injects the real one from Infisical.',
+  );
+}
+
+// Mail is not optional for a real deployment: with no transport, Better Auth
+// declines to mount password reset at all and an invited teammate is never
+// notified. Loud on every boot rather than discovered by a locked-out client.
+if (betterAuthSelected) {
+  console.log(
+    mailConfigured
+      ? '[mail] Resend configured — password reset, email verification and invitations will send.'
+      : '[mail] NO TRANSPORT (set RESEND_API_KEY + MAIL_FROM): password reset is not mounted, ' +
+          'verification cannot complete, and invitations write a row that notifies nobody.',
+  );
+}
+
+const secretEncryption = auth === null ? undefined : credentialEncryption();
 // Recall search needs an EXPLICIT vector store here. The factory's `vector`
 // option is documented as falling back to "the SDK mount's default vector
 // store resolution", but that fallback cannot fire for us: the mount computes

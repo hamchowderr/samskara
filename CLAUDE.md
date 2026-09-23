@@ -142,6 +142,38 @@ then consider writing something:
 Hand-rolling something the framework ships is the recurring failure here. It
 wastes a session and produces a worse version that then has to be maintained.
 
+### Non-Mastra dependencies you configure yourself
+
+Everything above is scoped to Mastra. The moment this project takes ownership
+of another library's configuration — as it does with `better-auth`, because
+`@mastra/auth-better-auth` cannot pass `sendInvitationEmail` — that library's
+OWN documentation becomes a required source, and the ladder above does not
+cover it.
+
+**Reading the installed source is not a substitute.** Source tells you what the
+code does. It never tells you what the maintainers warn you about. Better
+Auth's "Avoid awaiting the email sending to prevent timing attacks" exists only
+in prose; reading `api/routes/password.mjs` shows the call and nothing about
+why awaiting it leaks account existence. That warning was missed exactly this
+way, and it shipped an account-enumeration oracle into a first draft.
+
+So before writing integration code against any non-Mastra library this project
+configures:
+
+1. **Fetch the vendor's docs** for the specific feature — WebFetch, the
+   `defuddle` skill, or the `SDK Quality Gate` agent. Not a search result
+   summary: the page.
+2. **Ask what it ships that you are about to write.** Better Auth ships
+   `@better-auth/cli migrate`; the reason this project calls `getMigrations()`
+   instead is that the CLI statically imports an `auth.ts` and our instance
+   needs a runtime database handle. That reason belongs in the code, and it
+   only exists because the docs were checked.
+3. **Read the security notes**, not just the API shape. Timing, CSRF, origin
+   and enumeration guidance is prose, and it is the part source-reading loses.
+
+Record what the docs said in `docs/operations/`, with the file:line of the code
+that implements it, so the next reader does not have to re-derive it.
+
 ### Claims require evidence
 
 - Never report a negative ("X is not supported", "there is no route for Y")
@@ -161,7 +193,12 @@ wastes a session and produces a worse version that then has to be maintained.
 ## Build & Test
 
 ```bash
-npm run dev          # local: plain .env, no Infisical needed
+npm run dev          # local: no Infisical needed. `predev` generates a
+                     # development BETTER_AUTH_SECRET and
+                     # FACTORY_CREDENTIAL_ENCRYPTION_KEY into .env.local
+                     # on first run, so sign-in works against the local
+                     # database instead of falling through to the
+                     # platform default.
 npm run dev:secure   # injects secrets from Infisical (maintainer only)
 npm run check        # tsc --noEmit
 npm run build        # bundles to .mastra/output
