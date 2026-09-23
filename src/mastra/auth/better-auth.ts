@@ -34,6 +34,7 @@ import type { Auth, BetterAuthOptions } from 'better-auth';
 import { organization } from 'better-auth/plugins';
 
 import { basicHtml, escapeHtml, mailConfigured, sendMail } from './mailer';
+import { ensureAuthSchema } from './migrate';
 import { invitationPath } from '../team/paths';
 
 /**
@@ -62,13 +63,23 @@ export interface BuildBetterAuthOptions {
 }
 
 /**
- * Build the instance to hand to `new MastraAuthBetterAuth({ auth })`.
+ * Migrate the auth schema, then build the instance to hand to
+ * `new MastraAuthBetterAuth({ auth })`.
+ *
+ * The order matters. `betterAuth()` starts a schema check as soon as it is
+ * called (better-auth dist/auth/base.mjs, `ctx.checkSchema?.()`), and on an
+ * empty database that check runs while the migration is still creating the
+ * tables. It then logs a false "Database schema mismatch / Missing tables"
+ * ERROR on a boot that succeeds. `getMigrations()` needs only the options, so
+ * migrating first means the check sees a current schema. The check itself stays
+ * on (`validateSchema` defaults to true): auth requests wait on it and fail if
+ * the schema is wrong, which is worth keeping.
  *
  * Throws on a non-libsql handle rather than guessing: the storage backend is
  * libSQL-only by design (see the Architecture note in CLAUDE.md), so anything
  * else means the entry file changed and this needs revisiting.
  */
-export function buildBetterAuth(options: BuildBetterAuthOptions): Auth {
+export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<Auth> {
   const { secret, database, publicUrl, allowedOrigins = [], signUpEnabled = true } = options;
   const appName = options.appName ?? 'Samskara';
 
@@ -239,5 +250,6 @@ export function buildBetterAuth(options: BuildBetterAuthOptions): Auth {
     },
   };
 
+  await ensureAuthSchema(authOptions);
   return betterAuth(authOptions);
 }

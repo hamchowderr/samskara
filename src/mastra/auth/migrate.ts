@@ -19,7 +19,7 @@
  * replaces had none, nothing here needs one, and an untested escape hatch is
  * worse than no escape hatch.
  */
-import type { Auth } from 'better-auth';
+import type { BetterAuthOptions } from 'better-auth';
 import { getMigrations } from 'better-auth/db/migration';
 
 /**
@@ -29,9 +29,12 @@ import { getMigrations } from 'better-auth/db/migration';
  * (`/web/factory/projects` is 401 and the SPA blocks on `/auth/me`), so a
  * half-migrated database is a broken deployment that should announce itself at
  * boot instead of at a client's first sign-in.
+ *
+ * Takes the options, not a built instance, so it can run BEFORE `betterAuth()`
+ * — see buildBetterAuth() for why that order matters.
  */
-export async function ensureAuthSchema(auth: Auth): Promise<void> {
-  const plan = await getMigrations(auth.options, { throwOnUnsafe: false });
+export async function ensureAuthSchema(options: BetterAuthOptions): Promise<void> {
+  const plan = await getMigrations(options, { throwOnUnsafe: false });
 
   if (plan.schemaProblems.length) {
     throw new Error(
