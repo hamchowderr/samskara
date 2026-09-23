@@ -33,13 +33,14 @@ import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 import { buildBetterAuth } from './auth/better-auth';
 import { ensureAuthSchema } from './auth/migrate';
 import { mailConfigured } from './auth/mailer';
-import { createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
+import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
 import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webhook';
 import { LinearIntegration } from '@mastra/factory/integrations/linear/integration';
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { requestsBoard } from './boards/requests-board';
+import { createTeamRoutes } from './team/routes';
 
 /**
  * Parse a positive-integer env knob; anything else means "use the default".
@@ -690,6 +691,12 @@ const preparedArgs = await factory.prepare();
 // properties explicit so deploy builds can statically detect the worker topology.
 export const mastra = new Mastra({
   ...preparedArgs,
+  // Samskara's team pages ride alongside the Factory's own routes, behind the
+  // same auth gate middleware. See src/mastra/team/routes.ts.
+  server: {
+    ...preparedArgs.server,
+    apiRoutes: [...(preparedArgs.server?.apiRoutes ?? []), ...createTeamRoutes(createFactoryRouteAuth(auth ?? undefined))],
+  },
   storage: preparedArgs.storage,
   pubsub: preparedArgs.pubsub,
   workers: preparedArgs.workers,

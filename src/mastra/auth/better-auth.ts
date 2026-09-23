@@ -33,7 +33,8 @@ import { betterAuth } from 'better-auth';
 import type { Auth, BetterAuthOptions } from 'better-auth';
 import { organization } from 'better-auth/plugins';
 
-import { basicHtml, mailConfigured, sendMail } from './mailer';
+import { basicHtml, escapeHtml, mailConfigured, sendMail } from './mailer';
+import { invitationPath } from '../team/paths';
 
 /**
  * The host's auth database handle, exactly as `LibSQLFactoryStorage` returns
@@ -78,7 +79,15 @@ export function buildBetterAuth(options: BuildBetterAuthOptions): Auth {
         '@mastra/auth-better-auth/dist/index.js:480.',
     );
   }
-  const client = database.client;
+  const client = database.client as {
+    execute(stmt: { sql: string; args: unknown[] }): Promise<{ rows: Array<Record<string, unknown>> }>;
+  };
+
+  // Links in mail must be absolute. With no MASTRACODE_PUBLIC_URL, fall back
+  // to the local dev server rather than the request's Host header: an inviter
+  // controls that header, and a Host-derived link would let them send a
+  // Samskara-branded email pointing at any site they like.
+  const linkBase = publicUrl ?? `http://localhost:${process.env.PORT?.trim() || '4111'}`;
 
   // `#crossSite` in the provider is `allowedOrigins.length > 0`. A cross-origin
   // SPA needs SameSite=None; Secure or the session cookie is dropped.
@@ -143,6 +152,30 @@ export function buildBetterAuth(options: BuildBetterAuthOptions): Auth {
         }
       : {}),
 
+    // Which org a new session acts under. Nothing sets activeOrganizationId at
+    // sign-in, so the provider falls back to the user's OLDEST membership
+    // (@mastra/auth-better-auth dist/index.js:546-553). For an invitee that is
+    // the personal org the Factory created on their first visit, not the team
+    // they were invited into — they would sign in to an empty org. Pinning the
+    // session to the most recently joined org fixes that. A user in several
+    // orgs always lands in the newest one; there is no org switcher yet.
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (session: { userId: string; activeOrganizationId?: string | null }) => {
+            if (session.activeOrganizationId) return;
+            const { rows } = await client.execute({
+              sql: 'SELECT "organizationId" FROM "member" WHERE "userId" = ? ORDER BY "createdAt" DESC LIMIT 1',
+              args: [session.userId],
+            });
+            const organizationId = rows[0]?.organizationId;
+            if (typeof organizationId !== 'string') return;
+            return { data: { ...session, activeOrganizationId: organizationId } };
+          },
+        },
+      },
+    },
+
     plugins: [
       organization({
         ...(mailConfigured
@@ -155,17 +188,19 @@ export function buildBetterAuth(options: BuildBetterAuthOptions): Auth {
               }) => {
                 // Better Auth does not hand the callback a URL for invitations
                 // — only the invitation id — so the accept link is ours to
-                // build, and it must point at the browser origin.
-                const base = publicUrl ?? '';
-                const url = `${base}/accept-invitation/${data.id}`;
+                // build. It opens the page in src/mastra/team/routes.ts.
+                const url = `${linkBase}${invitationPath(data.id)}`;
                 const who = data.inviter.user.name?.trim() || data.inviter.user.email;
+                // Both names are user-controlled (sign-up name, org name), so
+                // they are escaped before they go into HTML.
+                const org = escapeHtml(data.organization.name);
                 await sendMail({
                   to: data.email,
                   subject: `${who} invited you to ${data.organization.name} on ${appName}`,
                   text: `${who} invited you to join ${data.organization.name}.\n\nAccept: ${url}`,
                   html: basicHtml(
-                    `Join ${data.organization.name}`,
-                    `${who} invited you to join <strong>${data.organization.name}</strong> on ${appName}.`,
+                    `Join ${org}`,
+                    `${escapeHtml(who)} invited you to join <strong>${org}</strong> on ${appName}.`,
                     url,
                     'Accept invitation',
                   ),

@@ -68,6 +68,16 @@ export async function sendMail(mail: OutboundMail): Promise<void> {
   console.log(`[mail] sent ${JSON.stringify(mail.subject)} to ${mail.to} (id ${data?.id ?? 'unknown'})`);
 }
 
+/** Escape text for HTML element content and double-quoted attributes. */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /** A minimal HTML body. Kept here so every auth email looks the same. */
 export function basicHtml(heading: string, body: string, actionUrl: string, actionLabel: string): string {
   return [
