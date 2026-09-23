@@ -31,9 +31,12 @@ time, which is worse than declining to mount the flow.
 | `MAIL_FROM` | e.g. `Samskara <noreply@send.otakusolutions.io>`. Domain must be **verified** in the Resend account. |
 | `MAIL_REPLY_TO` | Optional Reply-To. |
 
-`MAIL_FROM` is not a secret, but it is kept alongside the key in Infisical so
-the deployment reads both from one place. Both are in
-`scripts/secrets-template.env`.
+Only `RESEND_API_KEY` is a secret, and it is the only one in
+`scripts/secrets-template.env`. `MAIL_FROM` is an address, so it lives in
+`.env` with a working default already set — nothing to fill in for this
+deployment, one line to change for another domain. It stays a variable because
+the sender is tied to whichever domain is verified in the Resend account, so it
+moves together with the API key.
 
 Every boot logs which state it is in:
 
