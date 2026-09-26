@@ -18,9 +18,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Matches the floor in package.json engines (>= 22.19.0), which is
-          # itself above @mastra/mcp-docs-server's >= 22.13.0.
-          node-version: '22.19.0'
+          # Matches the floor in package.json engines (>= 24.21.0). Not 22.19:
+          # its undici cancels request bodies on GC (samskara-z1i).
+          node-version: '24.21.0'
           cache: npm
 
       # `npm ci` installs from the lockfile and fails if the two have drifted,
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.19.0'
+          node-version: '24.21.0'
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium

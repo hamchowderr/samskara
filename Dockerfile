@@ -6,9 +6,11 @@
 # Coolify + Infisical cutover note), copied unchanged.
 
 # ── build ────────────────────────────────────────────────────────────────────
-# node:22-slim, not Alpine: onnxruntime-node needs glibc. Pinned to the floor in
-# package.json engines, which is also what CI runs.
-FROM node:22.19.0-slim AS build
+# node:24-slim, not Alpine: onnxruntime-node needs glibc. Pinned to the floor in
+# package.json engines, which is also what CI runs. Not 22.19: its undici
+# cancels a request body when a discarded clone is garbage-collected, which
+# broke web sessions in prod (samskara-z1i; tests/runtime/request-body-gc).
+FROM node:24.21.0-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -19,7 +21,7 @@ RUN npm run build
 
 # ── infisical cli ────────────────────────────────────────────────────────────
 # Same pin as the other Otaku images. Only the binary reaches the runtime stage.
-FROM node:22.19.0-slim AS infisical-cli
+FROM node:24.21.0-slim AS infisical-cli
 ARG INFISICAL_CLI_VERSION=0.43.110
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
@@ -29,7 +31,7 @@ RUN apt-get update \
  && infisical --version
 
 # ── runtime ──────────────────────────────────────────────────────────────────
-FROM node:22.19.0-slim AS runtime
+FROM node:24.21.0-slim AS runtime
 
 # git: agent sessions clone and push repositories. tini: PID 1 that signals
 # the whole group, since `infisical run` forks rather than execs.
