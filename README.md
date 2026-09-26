@@ -7,7 +7,7 @@
 **Samskara is a self-hosted [Mastra Factory](https://factory.mastra.ai/): a shared workspace where work moves across a board and every stage is an agent.** Intake, triage, planning, building, review — each one a specialised agent running a skill you can replace, with humans approving at the gates between them. It remembers what it learns about a codebase and applies that next time instead of rediscovering it.
 
 [![Licence: Apache-2.0](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
-[![Node: 22.19+](https://img.shields.io/badge/node-22.19%2B-339933?logo=node.js&logoColor=white)](#-setup)
+[![Node: 24.21+](https://img.shields.io/badge/node-24.21%2B-339933?logo=node.js&logoColor=white)](#-setup)
 [![Built on Mastra](https://img.shields.io/badge/built%20on-Mastra%20Factory-000)](https://factory.mastra.ai/)
 [![Storage: libSQL / Turso](https://img.shields.io/badge/storage-libSQL%20%2F%20Turso-4ff8d2)](https://turso.tech)
 [![Sandbox: E2B](https://img.shields.io/badge/sandbox-E2B-ff8800)](https://e2b.dev)
@@ -149,7 +149,7 @@ npm run dev          # plain .env; generates dev auth secrets on first run
 npm run dev:secure   # secrets injected from Infisical
 ```
 
-UI and API serve together on <http://localhost:4111>. Requires Node.js 22.19.0+.
+UI and API serve together on <http://localhost:4111>. Requires Node.js 24.21.0+.
 
 ## 🛠️ Working on it
 
