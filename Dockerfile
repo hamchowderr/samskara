@@ -5,19 +5,24 @@
 # only the machine-identity pair. The entrypoint is the shared Otaku one (see the
 # Coolify + Infisical cutover note), copied unchanged.
 
-# One base for every stage so they cannot drift. The Debian release is named
-# (bookworm, glibc 2.36) because glibc is why this is slim and not Alpine.
-ARG NODE_IMAGE=node:24.21.0-bookworm-slim
+# Base image, identical in all three stages: Node 24.21.0 on Debian bookworm
+# (glibc 2.36, the reason this is slim and not Alpine), pinned by digest so a
+# retagged image cannot change a build. Dependabot (.github/dependabot.yml)
+# refreshes the digest on all three lines together and never bumps the Node
+# version. The lines are literal because Dependabot skips `FROM ${ARG}`.
 
 # ── build ────────────────────────────────────────────────────────────────────
 # node:24-slim, not Alpine: onnxruntime-node needs glibc. Pinned to the floor in
 # package.json engines, which is also what CI runs. Not 22.19: its undici
 # cancels a request body when a discarded clone is garbage-collected, which
 # broke web sessions in prod (samskara-z1i; tests/runtime/request-body-gc).
-FROM ${NODE_IMAGE} AS build
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# npm's download cache lives in a BuildKit cache mount: it persists between
+# builds on the same builder but is never written into a layer, so a rebuild
+# only downloads packages that changed (docs.docker.com/build/cache/optimize).
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY . .
 # prebuild regenerates .branded-ui from node_modules; mastra build writes
 # .mastra/output. Its node_modules are dropped: the runtime stage installs from
@@ -25,11 +30,12 @@ COPY . .
 # Dockerfile, docs-deployment-workers.md "Deploy split workers"). The build's
 # install is kept rather than skipped (MASTRA_BUILD_SKIP_INSTALL) because it is
 # also what writes that lockfile.
-RUN npm run build && rm -rf .mastra/output/node_modules
+RUN --mount=type=cache,target=/root/.npm \
+    npm run build && rm -rf .mastra/output/node_modules
 
 # ── infisical cli ────────────────────────────────────────────────────────────
 # Same pin as the other Otaku images. Only the binary reaches the runtime stage.
-FROM ${NODE_IMAGE} AS infisical-cli
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS infisical-cli
 ARG INFISICAL_CLI_VERSION=0.43.110
 # pipefail so a failed download fails the build instead of piping nothing to
 # bash (Docker best practices, "Using pipes").
@@ -42,7 +48,7 @@ RUN apt-get update \
  && infisical --version
 
 # ── runtime ──────────────────────────────────────────────────────────────────
-FROM ${NODE_IMAGE} AS runtime
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
 
 # git: agent sessions clone and push repositories. tini: PID 1 that signals
 # the whole group, since `infisical run` forks rather than execs.
@@ -68,7 +74,11 @@ USER node
 # `npm ci` where the doc has `npm install`: the doc copies no lockfile, this
 # does, and ci installs exactly that lockfile or fails instead of re-resolving.
 COPY --chown=node:node --from=build /app/.mastra/output/package.json /app/.mastra/output/package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# Runs as node, so the cache mount must be node-owned (uid/gid 1000); it
+# defaults to root and npm would fail with EACCES. No `npm cache clean`: the
+# cache is in the mount, not the layer.
+RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
+    npm ci --omit=dev
 COPY --chown=node:node --from=build /app/.mastra/output/ ./
 # `mastra build` copies Mastra's UNBRANDED Factory UI into output/factory, and
 # the server prefers MASTRACODE_UI_DIST over it (@mastra/factory
