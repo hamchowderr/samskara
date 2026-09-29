@@ -12,6 +12,9 @@ the app.
 
 Throughout, replace `https://samskara.example.com` with your own public URL.
 
+Create one app per environment — one for local development, one for
+production. See [environments.md](environments.md).
+
 ## 1. Render the manifest
 
 Slack can create an app from a JSON manifest, which sets every scope, event and
