@@ -10,6 +10,9 @@ Complete [tunnel.md](tunnel.md) first. The app's URLs are built from
 Throughout, replace `https://samskara.example.com` with your own
 `MASTRACODE_PUBLIC_URL`.
 
+Create one app per environment — one for local development, one for
+production. See [environments.md](environments.md).
+
 ## Use the script
 
 `scripts/create-github-app.mjs` drives GitHub's app-manifest flow. It declares

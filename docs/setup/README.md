@@ -20,6 +20,10 @@ Follow these in order. Each one depends on the ones before it.
 | 4 | [github-app.md](github-app.md) | Repository access and issue intake |
 | 5 | [slack-app.md](slack-app.md) | Chat intake (optional) |
 
+Running Samskara both on your own machine and on a server? Read
+[environments.md](environments.md) before steps 4 and 5: each environment needs
+its own GitHub App and Slack app.
+
 Do 1 before the rest. The docs MCP server is how an agent verifies claims about
 Mastra behaviour, and this project requires that verification — see
 [CLAUDE.md](../../CLAUDE.md).
@@ -47,8 +51,10 @@ the only shape that works when other people use your Factory.
 
 ## What you need first
 
-- **Node.js 22.13.0 or newer.** The docs MCP server requires it, and the
-  Factory is built against it.
+- **Node.js 24.21.0 or newer**, the version pinned in `package.json` engines,
+  CI and the Docker image. Avoid Node 22.19: its bundled undici cancels a
+  request body when a discarded clone is garbage-collected, which breaks web
+  sessions (see `tests/runtime/request-body-gc.test.ts`).
 - **An E2B account** for cloud sandboxes, or nothing extra if you intend to run
   agent commands on the host (see `FACTORY_SANDBOX_PROVIDER` in `.env`).
 - **A Turso database** for anything beyond a single machine. Without it,
