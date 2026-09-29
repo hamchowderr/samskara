@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keeps the Dockerfile's base-image digest current (security patches to the
+  # same tag). Node itself stays at the version pinned in package.json engines
+  # and CI, so every version bump is ignored and only digest refreshes remain.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"

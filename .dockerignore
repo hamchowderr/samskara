@@ -16,3 +16,17 @@ data
 .claude
 test-results
 playwright-report
+
+# Not read by the build. Excluded so editing them does not invalidate
+# `COPY . .` and re-run `npm run build`.
+.github
+.agents
+.codex
+.cursor
+docs
+e2e
+tests
+/*.md
+/db
+/db-wal
+*.log
