@@ -79,6 +79,43 @@ export interface BuildBetterAuthOptions {
  * libSQL-only by design (see the Architecture note in CLAUDE.md), so anything
  * else means the entry file changed and this needs revisiting.
  */
+/** Auth queries slower than this are logged. */
+const SLOW_AUTH_QUERY_MS = 250;
+
+/**
+ * The libSQL client Better Auth queries through, with each slow statement
+ * logged (samskara-lx1).
+ *
+ * In production the Factory's auth gate logs `slow auth.gate.authenticate`
+ * at 1.1-1.5s per request, yet one gate pass is two queries (session row,
+ * then user row), and Turso answers in ~45ms from outside the container.
+ * This shows whether the missing second is spent in those queries or
+ * elsewhere in the process: a slow query prints a line; if the gate is slow
+ * and nothing prints, the time is not in the database. Only the statement's
+ * leading SQL is logged, never its arguments, which carry session tokens.
+ */
+function timedClient<T extends object>(client: T): T {
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if ((prop !== 'execute' && prop !== 'batch') || typeof value !== 'function') return value;
+      return async (...args: unknown[]) => {
+        const started = performance.now();
+        try {
+          return await value.apply(target, args);
+        } finally {
+          const ms = Math.round(performance.now() - started);
+          if (ms >= SLOW_AUTH_QUERY_MS) {
+            const first = args[0] as { sql?: string } | string | unknown[];
+            const sql = typeof first === 'string' ? first : Array.isArray(first) ? `${first.length} statements` : (first?.sql ?? '');
+            console.log(`[auth:timing] slow ${String(prop)} ${ms}ms: ${sql.replace(/\s+/g, ' ').slice(0, 80)}`);
+          }
+        }
+      };
+    },
+  });
+}
+
 export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<Auth> {
   const { secret, database, publicUrl, allowedOrigins = [], signUpEnabled = true } = options;
   const appName = options.appName ?? 'Samskara';
@@ -109,7 +146,7 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
   // narrow that inference to something no longer assignable to plain `Auth`.
   const authOptions: BetterAuthOptions = {
     database: {
-      dialect: new LibsqlDialect({ client: client as never }),
+      dialect: new LibsqlDialect({ client: timedClient(client) as never }),
       type: 'sqlite',
     },
     secret,
