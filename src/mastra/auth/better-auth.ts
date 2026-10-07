@@ -205,13 +205,22 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
                 // Both names are user-controlled (sign-up name, org name), so
                 // they are escaped before they go into HTML.
                 const org = escapeHtml(data.organization.name);
+                // A signed-out invitee is sent to the Factory's /signin page,
+                // which opens in sign-in mode; an invitee with no account who
+                // signs in there gets "Invalid email or password"
+                // (samskara-zkd). Our invitation page cannot greet them first:
+                // the Factory auth gate redirects every signed-out /web/
+                // request before any route runs (@mastra/factory
+                // dist/auth.js createFactoryAuthGate). So the email says it.
+                // "New here? Sign up" is the Factory UI's own label.
+                const newHere = `New to ${appName}? The link opens a sign-in page. Choose "New here? Sign up" and create your account with this email address, ${data.email}. You come back to the invitation afterwards.`;
                 await sendMail({
                   to: data.email,
                   subject: `${who} invited you to ${data.organization.name} on ${appName}`,
-                  text: `${who} invited you to join ${data.organization.name}.\n\nAccept: ${url}`,
+                  text: `${who} invited you to join ${data.organization.name}.\n\nAccept: ${url}\n\n${newHere}`,
                   html: basicHtml(
                     `Join ${org}`,
-                    `${escapeHtml(who)} invited you to join <strong>${org}</strong> on ${appName}.`,
+                    `${escapeHtml(who)} invited you to join <strong>${org}</strong> on ${appName}.<br><br>${escapeHtml(newHere)}`,
                     url,
                     'Accept invitation',
                   ),

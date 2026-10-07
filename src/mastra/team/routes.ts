@@ -76,6 +76,7 @@ const STYLE = `
   .row:first-child { border-top:0; }
   .grow { flex:1 1 200px; min-width:0; overflow-wrap:anywhere; }
   .muted { color:var(--muted); }
+  .danger-text { color:var(--danger); }
   .empty { padding:16px; color:var(--muted); }
   form.invite { display:flex; gap:8px; flex-wrap:wrap; padding:16px; }
   input, select, button { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
@@ -163,14 +164,36 @@ async function load() {
   });
   document.getElementById('members').replaceChildren(...memberRows);
 
-  const pending = invitations.filter(i => i.status === 'pending');
+  // Better Auth never moves a lapsed invitation out of 'pending', and its own
+  // lookups skip it by comparing expiresAt with now (adapter.mjs
+  // findPendingInvitation). Do the same here, so a dead link is not shown as
+  // an open one (samskara-eem).
+  const now = Date.now();
+  const memberEmails = new Set(members.map(m => m.user && m.user.email && m.user.email.toLowerCase()));
+  const pending = invitations
+    .filter(i => i.status === 'pending')
+    .map(i => ({ ...i, expired: new Date(i.expiresAt).getTime() <= now, joined: memberEmails.has(i.email.toLowerCase()) }))
+    .sort((a, b) => a.expired - b.expired || new Date(b.expiresAt) - new Date(a.expiresAt));
   const inviteRows = pending.map(i => {
+    const when = new Date(i.expiresAt).toLocaleString();
+    const status = i.joined ? 'already a member' : i.expired ? 'expired ' + when : 'expires ' + when;
     const row = el('div', { className: 'row' },
       el('div', { className: 'grow' }, el('div', { textContent: i.email }),
-        el('div', { className: 'muted', textContent: i.role + ' · expires ' + new Date(i.expiresAt).toLocaleDateString() })));
+        el('div', { className: i.expired ? 'danger-text' : 'muted', textContent: i.role + ' · ' + status })));
     if (canManage) {
-      const cancel = el('button', { textContent: 'Cancel' });
-      cancel.onclick = () => act(() => api('cancel-invitation', { invitationId: i.id }), 'Invitation cancelled.');
+      if (!i.joined) {
+        const resend = el('button', { textContent: 'Resend' });
+        // A live invitation is resent in place with a fresh expiry. An expired
+        // one cannot be: Better Auth's resend only finds unexpired rows, and
+        // would create a second invitation beside it. So it is replaced.
+        resend.onclick = () => act(async () => {
+          if (i.expired) await api('cancel-invitation', { invitationId: i.id });
+          await api('invite-member', { email: i.email, role: i.role, organizationId: CTX.organizationId, resend: !i.expired });
+        }, 'Invitation resent to ' + i.email + '.');
+        row.append(resend);
+      }
+      const cancel = el('button', { textContent: i.expired || i.joined ? 'Dismiss' : 'Cancel' });
+      cancel.onclick = () => act(() => api('cancel-invitation', { invitationId: i.id }), i.expired || i.joined ? 'Invitation dismissed.' : 'Invitation cancelled.');
       row.append(cancel);
     }
     return row;

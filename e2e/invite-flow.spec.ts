@@ -105,4 +105,26 @@ test('owner invites a teammate who joins the same org and sees its projects', as
   // A member sees the team but not the invite form.
   await expect(againPage.getByText('Only an owner or admin can invite teammates.')).toBeVisible();
   await expect(againPage.getByRole('button', { name: 'Send invite' })).toBeHidden();
+
+  // --- An expired invitation is not shown as open (samskara-eem) ---
+  // Better Auth leaves it at status 'pending'; only expiresAt says it is dead.
+  // The page compares that with the browser clock, so moving the clock past
+  // the 48-hour expiry is enough to exercise it.
+  const lapsed = `lapsed-${run}@example.test`;
+  await ownerPage.goto('/web/samskara/team');
+  await ownerPage.getByRole('textbox', { name: 'Email address' }).fill(lapsed);
+  await ownerPage.getByRole('button', { name: 'Send invite' }).click();
+  await expect(ownerPage.getByText(`Invitation sent to ${lapsed}.`)).toBeVisible();
+  const liveRow = ownerPage.locator('#invitations .row', { hasText: lapsed });
+  await expect(liveRow).toContainText('expires');
+  await expect(liveRow.getByRole('button', { name: 'Cancel' })).toBeVisible();
+
+  await ownerPage.clock.install({ time: Date.now() + 49 * 3600_000 });
+  await ownerPage.reload();
+  const lapsedRow = ownerPage.locator('#invitations .row', { hasText: lapsed });
+  await expect(lapsedRow).toContainText('expired');
+  await expect(lapsedRow.getByRole('button', { name: 'Resend' })).toBeVisible();
+  await lapsedRow.getByRole('button', { name: 'Dismiss' }).click();
+  await expect(ownerPage.getByText('Invitation dismissed.')).toBeVisible();
+  await expect(ownerPage.locator('#invitations')).not.toContainText(lapsed);
 });
