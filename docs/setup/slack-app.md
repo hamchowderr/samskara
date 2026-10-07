@@ -188,7 +188,7 @@ Slack does not allow removing scopes from an installed app.
 ## Where Slack work lands
 
 A dispatched thread creates a card at the **Building** stage on the built-in
-Work board. This is fixed in `@mastra/factory` 0.15.0:
+Work board. This is fixed in `@mastra/factory` 0.16.0:
 `upsertThreadWorkItem` passes `stages: ["execute"]` and no board, so chat work
 does not pass through triage and cannot be routed to a custom board.
 
