@@ -133,6 +133,23 @@ the server picks that up unless `MASTRACODE_UI_DIST` points elsewhere. The
 and sets `MASTRACODE_UI_DIST=/app/branded-ui`. Running the image serves
 `<title>Samskara</title>` on `/signin`.
 
+## The Team link in the sidebar
+
+The same script adds a **Team** entry to the sidebar, beside Settings, linking to
+the team page at `/web/samskara/team` (`src/mastra/team/paths.ts`). It is a plain
+link rather than the SPA's router link, because the server renders that page,
+not the SPA.
+
+The bundle is minified, so the script captures the identifiers it needs (the JSX
+runtime, the sidebar component, the `users` icon) from the code around the
+Settings link instead of hardcoding them. It checks that the Settings link and
+the icon each appear exactly once, and stops the build otherwise. A `mastra`
+upgrade that reshapes the sidebar therefore fails `npm run dev` and
+`npm run build` with the command to re-derive the anchor, instead of shipping a
+sidebar without the link.
+
+`e2e/invite-flow.spec.ts` clicks the link.
+
 ## What this does not cover
 
 Only pre-auth surfaces were audited. Post-auth screens contain further Mastra
