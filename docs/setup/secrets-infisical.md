@@ -61,8 +61,9 @@ infisical init
 ```
 
 Writes `.infisical.json` in the repo root, recording which Infisical project
-this directory belongs to. It is safe to commit — it holds identifiers, not
-secrets.
+this directory belongs to. It holds identifiers, not secrets, but it is
+per-machine and gitignored: each clone links its own project. The CLI also
+finds one in a parent directory.
 
 ## 5. Create the folder and the placeholder keys
 
@@ -105,15 +106,33 @@ values it needs.
 ## 7. Run with secrets injected
 
 ```bash
-infisical run --path=/samskara --env=dev --silent -- npm run dev
+npm run dev:secure
 ```
 
-This is what `npm run dev:secure` does.
+This runs `mastra factory dev` under `infisical run --env dev --path=/samskara`.
+It is not `npm run dev` with secrets added. It skips `predev`, so it neither
+generates development secrets nor rebuilds the branded UI. Run `npm run dev`
+once first on a fresh clone.
 
-Neither command names a project. `infisical run` resolves the project from
-`.infisical.json`, written by `infisical init` in step 4 — so that step is
-required for the `:secure` scripts to work. The file is per-machine and
-gitignored.
+The command names no project. `infisical run` resolves the project from
+`.infisical.json`, written by `infisical init` in step 4, so that step is
+required for the `:secure` scripts to work.
+
+### One credential key for both local modes
+
+Injected values win over `.env` and `.env.local`. So if
+`FACTORY_CREDENTIAL_ENCRYPTION_KEY` in Infisical differs from the one
+`npm run dev` generated into `.env.local`, credentials saved in one mode cannot
+be decrypted in the other. The Factory reports this only as
+`credentials_unavailable`, and provider sign-in fails.
+
+`npm run dev:secure` checks this first (`predev:secure`,
+`scripts/check-dev-keys.mjs`). It compares fingerprints, never values, and
+refuses to start when the key or its id differ. To fix a mismatch, keep the key
+that encrypted the credentials you want: copy the `.env.local` value into
+Infisical `dev:/samskara` through the web UI, or the Infisical value into
+`.env.local`. A different `BETTER_AUTH_SECRET` only produces a warning: it signs
+you out when you switch modes, and nothing else.
 
 ## Verifying without exposing anything
 
@@ -162,11 +181,15 @@ From `scripts/secrets-template.env`:
 | `FACTORY_CREDENTIAL_ENCRYPTION_KEY_ID` | always | any label, e.g. `v1` |
 | `E2B_API_KEY` | sandbox provider is `e2b` | E2B dashboard |
 | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | anything beyond one machine | Turso |
+| `TURSO_VECTOR_DATABASE_URL`, `TURSO_VECTOR_AUTH_TOKEN` | vectors in their own Turso database | Turso |
+| `RESEND_API_KEY` | invitation and password-reset email | [operations/mail.md](../operations/mail.md) |
 | `GITHUB_APP_*` | GitHub intake | [github-app.md](github-app.md) |
 | `SLACK_APP_*` | Slack intake | [slack-app.md](slack-app.md) |
 
-Non-secret settings — `MASTRACODE_PUBLIC_URL`, `MASTRA_DB_PATH`,
-`FACTORY_SANDBOX_PROVIDER` — stay in `.env`.
+Locally, non-secret settings (`MASTRACODE_PUBLIC_URL`, `MASTRA_DB_PATH`,
+`FACTORY_SANDBOX_PROVIDER`, `MAIL_FROM`) stay in `.env`. The Docker image ships
+no `.env`, so a server needs them in its Infisical folder. See
+[deploy-coolify.md](deploy-coolify.md#2-put-the-keys-in-it--human).
 
 ## Rotating a key
 
