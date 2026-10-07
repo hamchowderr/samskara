@@ -39,6 +39,17 @@ test('owner invites a teammate who joins the same org and sees its projects', as
   const ownerOrg = (await me(ownerPage)).organizationId;
   expect(ownerOrg).toBeTruthy();
 
+  // --- Rename the organization (samskara-tdx) ---
+  // Sign-up names it "<email>'s org"; that name is what invitees see.
+  const orgName = ownerPage.getByRole('textbox', { name: 'Organization name' });
+  await expect(orgName).toHaveValue(`${owner.email}'s org`);
+  const companyName = `Owner Co ${run}`;
+  await orgName.fill(companyName);
+  await ownerPage.getByRole('button', { name: 'Save name' }).click();
+  await expect(ownerPage.getByText(`Organization renamed to ${companyName}.`)).toBeVisible();
+  await ownerPage.reload();
+  await expect(orgName).toHaveValue(companyName);
+
   await ownerPage.getByRole('textbox', { name: 'Email address' }).fill(mate.email);
   await ownerPage.getByRole('button', { name: 'Send invite' }).click();
   await expect(ownerPage.getByText(`Invitation sent to ${mate.email}.`)).toBeVisible();
@@ -81,7 +92,7 @@ test('owner invites a teammate who joins the same org and sees its projects', as
   await signUpOnSigninPage(matePage, mate);
 
   await expect(matePage).toHaveURL(new RegExp(`/web/samskara/invitations/${invitationId}$`));
-  await expect(matePage.locator('#summary')).toContainText(`${owner.email} invited you to join`);
+  await expect(matePage.locator('#summary')).toContainText(`${owner.email} invited you to join ${companyName}`);
   await matePage.getByRole('button', { name: 'Accept and open Samskara' }).click();
   await expect(matePage).not.toHaveURL(/\/web\/samskara\/invitations\//);
 
@@ -105,6 +116,10 @@ test('owner invites a teammate who joins the same org and sees its projects', as
   // A member sees the team but not the invite form.
   await expect(againPage.getByText('Only an owner or admin can invite teammates.')).toBeVisible();
   await expect(againPage.getByRole('button', { name: 'Send invite' })).toBeHidden();
+  // ...and the organization's name, but cannot change it.
+  await expect(againPage.getByRole('textbox', { name: 'Organization name' })).toHaveValue(companyName);
+  await expect(againPage.getByRole('textbox', { name: 'Organization name' })).not.toBeEditable();
+  await expect(againPage.getByRole('button', { name: 'Save name' })).toBeHidden();
 
   // --- An expired invitation is not shown as open (samskara-eem) ---
   // Better Auth leaves it at status 'pending'; only expiresAt says it is dead.
