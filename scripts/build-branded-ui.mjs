@@ -147,6 +147,52 @@ if (totalHits !== 1) {
   process.exit(1);
 }
 
+// --- the JS bundle: a "Team" entry in the sidebar ----------------------------
+// The team page (src/mastra/team/routes.ts) is Samskara's own; the Factory has
+// no member screen and no supported way to add a nav entry (samskara-ht9). So
+// the entry is inserted beside Settings, in the sidebar's bottom list. It is a
+// plain <a>, not the SPA's router link: the page is served by the server, not
+// the SPA, so it needs a full navigation.
+//
+// The bundle is minified, so the identifiers (JSX runtime, sidebar component,
+// the lucide "users" icon) are captured from the code rather than hardcoded,
+// and each anchor is asserted to match exactly once. A bundle that changed
+// shape fails the build here instead of shipping a sidebar without the link.
+const TEAM_PATH = '/web/samskara/team'; // keep in step with src/mastra/team/paths.ts
+const settingsLink = /([\w$]+)\.jsx\(([\w$]+)\.NavLink,\{asChild:!0,link:\{name:"Settings",url:"#",icon:/g;
+const usersIcon = /(?<![\w$.])([\w$]+)=[\w$]+\("users",/g;
+let teamLinks = 0;
+for (const file of bundles) {
+  const p = join(assetsDir, file);
+  const js = readFileSync(p, 'utf8');
+  const anchors = [...js.matchAll(settingsLink)];
+  if (!anchors.length) continue;
+  const icons = [...js.matchAll(usersIcon)];
+  if (anchors.length !== 1 || icons.length !== 1) {
+    console.error(
+      `[brand-ui] Sidebar Team link: expected 1 Settings nav link and 1 "users" icon in assets/${file}, ` +
+        `found ${anchors.length} and ${icons.length}.\n` +
+        '           The SPA bundle changed shape. Re-derive the anchor before trusting this script:\n' +
+        `             grep -o '.\\{200\\}name:"Settings",url:"#".\\{200\\}' .branded-ui/assets/*.js\n` +
+        '           See docs/operations/white-label-ui.md.',
+    );
+    process.exit(1);
+  }
+  const [anchor, jsx, sidebar] = anchors[0];
+  const icon = icons[0][1];
+  const team =
+    `${jsx}.jsx(${sidebar}.NavLink,{asChild:!0,link:{name:"Team",url:"${TEAM_PATH}",icon:${jsx}.jsx(${icon},{})},` +
+    `children:${jsx}.jsxs("a",{href:"${TEAM_PATH}","aria-label":"Team",` +
+    `children:[${jsx}.jsx(${icon},{}),${jsx}.jsx(${sidebar}.NavLabel,{children:"Team"})]})}),`;
+  writeFileSync(p, js.slice(0, anchors[0].index) + team + js.slice(anchors[0].index));
+  teamLinks += 1;
+  changes.push(`assets/${file} sidebar "Team" link -> ${TEAM_PATH} (before ${anchor.slice(0, 24)}…)`);
+}
+if (teamLinks !== 1) {
+  console.error(`[brand-ui] Sidebar Team link: found the Settings nav link in ${teamLinks} bundles, expected 1.`);
+  process.exit(1);
+}
+
 // --- icons: real brand files when present, neutral placeholder otherwise ---
 const supplied = [];
 const placeholders = [];

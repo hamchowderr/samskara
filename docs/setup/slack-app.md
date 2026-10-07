@@ -122,6 +122,29 @@ the organization, rather than signing in to the provider. This is also the right
 shape for serving other people: the runs bill to your account, and nobody needs
 their own provider subscription.
 
+### The memory model needs that key too
+
+Every run also calls the observational-memory model, which also writes session
+titles. If its provider has no organization key, memory and titles fail with
+the same "No usable … credential" error while chat keeps working, so the failure
+is easy to miss.
+
+The memory model is stored in two places, in the `memory_settings` table:
+
+- **Your own row.** **Settings → Memory** edits this one, and only this one.
+- **The factory-wide row** (`user_id` = `factory-project:<factoryId>`). Board
+  runs and Slack sessions read this one. The Settings page cannot edit it.
+
+Set the factory-wide row through the API, once per role, while signed in:
+
+```
+PUT /web/config/om/observer/model    {"modelId": "<provider/model>", "factoryId": "<factoryId>"}
+PUT /web/config/om/reflector/model   {"modelId": "<provider/model>", "factoryId": "<factoryId>"}
+```
+
+Use a model from the provider the organization key covers. The route is in
+`@mastra/factory` `dist/routes/config.js` (`/web/config/om/:role/model`).
+
 ## 8. Use it
 
 Invite the bot to a channel and mention it:
@@ -165,7 +188,7 @@ Slack does not allow removing scopes from an installed app.
 ## Where Slack work lands
 
 A dispatched thread creates a card at the **Building** stage on the built-in
-Work board. This is fixed in `@mastra/factory` 0.15.0:
+Work board. This is fixed in `@mastra/factory` 0.16.0:
 `upsertThreadWorkItem` passes `stages: ["execute"]` and no board, so chat work
 does not pass through triage and cannot be routed to a custom board.
 

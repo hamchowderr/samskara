@@ -68,6 +68,12 @@ test('owner invites a teammate who joins the same org and sees its projects', as
     if (!res.ok) throw new Error(`create project ${res.status}`);
   }, projectName);
 
+  // --- The sidebar links to the team page (samskara-ht9) ---
+  // Inserted into the Factory SPA by scripts/build-branded-ui.mjs.
+  await ownerPage.goto('/');
+  await ownerPage.getByRole('link', { name: 'Team' }).click();
+  await expect(ownerPage).toHaveURL(/\/web\/samskara\/team$/);
+
   // --- Invitee, signed out, from the email link ---
   const mateContext = await browser.newContext();
   const matePage = await mateContext.newPage();

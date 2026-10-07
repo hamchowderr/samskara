@@ -15,6 +15,7 @@
     "build": "mastra build --dir src/mastra",
     "start": "varlock run -- mastra start",
     "deploy": "mastra deploy",
+    "predev:secure": "infisical run --env dev --path=/samskara --silent -- node scripts/check-dev-keys.mjs",
     "dev:secure": "infisical run --env dev --path=/samskara --silent -- cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
     "start:secure": "infisical run --env dev --path=/samskara --silent -- mastra start",
     "db:backup": "node scripts/backup-db.mjs",

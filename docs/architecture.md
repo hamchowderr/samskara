@@ -7,13 +7,18 @@ that makes this deployment what it is lives in `src/mastra/index.ts`.
 src/mastra/
   index.ts                  the whole configuration surface
   boards/requests-board.ts  the one custom board
+  auth/                     Better Auth instance, its migrations, and the mailer
+  team/                     the team and invitation pages
 scripts/                    setup and maintenance, not runtime
 docs/setup/                 runbooks, written to be followed by an agent
 ```
 
-There is no application code beyond those two files. The Factory supplies the
-agents, the boards, the UI, the API and the work-item model; this repository
-decides which implementations they run against.
+`auth/` exists because `@mastra/auth-better-auth` cannot pass
+`sendInvitationEmail`, so this project builds the Better Auth instance itself.
+`team/` exists because the Factory UI has no member-invite surface. See
+[operations/team-invites.md](operations/team-invites.md). Beyond those, the
+Factory supplies the agents, the boards, the UI, the API and the work-item
+model; this repository decides which implementations they run against.
 
 ## The four things `index.ts` decides
 

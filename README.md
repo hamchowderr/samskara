@@ -118,7 +118,7 @@ A chat message classifies as `manual`, so it reaches Triage, matches no handler,
 
 ### The caveat: Slack cards do not reach it on their own
 
-Installing the board is not the same as routing work to it. In `@mastra/factory` 0.15.0 a dispatched Slack thread creates its card directly at Building with no board assigned:
+Installing the board is not the same as routing work to it. In `@mastra/factory` 0.16.0 a dispatched Slack thread creates its card directly at Building with no board assigned:
 
 ```js
 // integrations/slack/slack.js

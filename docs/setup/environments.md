@@ -60,9 +60,11 @@ GitHub app names are unique across all of GitHub, so pick names nobody else has
 taken. The script writes the credentials straight to the Infisical environment
 you name, and prints only their names and lengths.
 
-If production reads its secrets from a different Infisical project, create the
-production app from a checkout linked to that project, or move the keys into it
-afterwards by reference — never by copying values through a terminal.
+The script writes to whichever project `.infisical.json` links; it has no
+project flag. A server that follows [deploy-coolify.md](deploy-coolify.md) reads
+from its own project, so for production either run the script from a checkout
+linked to that project, or move the keys into it afterwards by reference. Never
+copy values through a terminal.
 
 ### Slack app
 
