@@ -11,7 +11,7 @@ For setup problems, start with the runbook for that piece in
 **Expected:** a chat request lands on an installed custom board and runs triage.
 **Actual:** the card is on the built-in Work board, already at Building.
 
-This is how `@mastra/factory` 0.15.0 behaves. A dispatched Slack thread creates
+This is how `@mastra/factory` 0.16.0 behaves. A dispatched Slack thread creates
 its card with `stages: ["execute"]` and no board, and nothing routes it to a
 custom board — not intake bindings, not label routes, not the rules dispatcher.
 Cross-board transitions are rejected, so it cannot drift there either.

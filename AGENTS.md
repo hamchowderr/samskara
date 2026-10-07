@@ -199,7 +199,9 @@ npm run dev          # local: no Infisical needed. `predev` generates a
                      # on first run, so sign-in works against the local
                      # database instead of falling through to the
                      # platform default.
-npm run dev:secure   # injects secrets from Infisical (maintainer only)
+npm run dev:secure   # injects secrets from Infisical (maintainer only);
+                     # predev:secure refuses to start if its credential
+                     # key differs from .env.local's (samskara-1kl)
 npm run check        # tsc --noEmit
 npm test             # vitest: tier-1, real temp libSQL, no server
 npm run test:e2e     # playwright: invite flow on port 4199, throwaway DB
@@ -210,6 +212,9 @@ npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
 **`mastra build` deletes the whole `.mastra/` directory.** Never store anything
 you want to keep there — the database lives in `data/` for exactly this reason,
 and backups go outside the repo. This destroyed the local database twice.
+
+Production runs the Docker image on Coolify, booting under `infisical run`:
+see `docs/setup/deploy-coolify.md`.
 
 ## Architecture Overview
 

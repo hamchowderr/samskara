@@ -19,10 +19,11 @@ Follow these in order. Each one depends on the ones before it.
 | 3 | [tunnel.md](tunnel.md) | A public HTTPS address for your machine |
 | 4 | [github-app.md](github-app.md) | Repository access and issue intake |
 | 5 | [slack-app.md](slack-app.md) | Chat intake (optional) |
+| 6 | [deploy-coolify.md](deploy-coolify.md) | An always-on server deployment (optional) |
 
 Running Samskara both on your own machine and on a server? Read
 [environments.md](environments.md) before steps 4 and 5: each environment needs
-its own GitHub App and Slack app.
+its own GitHub App and Slack app. A server needs no tunnel: skip step 3 for it.
 
 Do 1 before the rest. The docs MCP server is how an agent verifies claims about
 Mastra behaviour, and this project requires that verification — see
@@ -31,8 +32,8 @@ Mastra behaviour, and this project requires that verification — see
 Do 2 before 4 and 5, so there is somewhere to put the credentials those steps
 produce.
 
-Do 3 before 4 and 5. Both GitHub and Slack need to reach your machine over
-HTTPS, and both bake that address into their app configuration.
+On your own machine, do 3 before 4 and 5. Both GitHub and Slack need to reach
+it over HTTPS, and both bake that address into their app configuration.
 
 ## Connect model providers with an API key, not OAuth
 
@@ -66,7 +67,7 @@ the only shape that works when other people use your Factory.
 ```bash
 npm run check    # typecheck
 npm run dev      # plain .env
-npm run dev:secure   # secrets injected from Infisical
+npm run dev:secure   # secrets injected from Infisical; checks the key matches dev
 ```
 
 The Factory serves on <http://localhost:4111>.
