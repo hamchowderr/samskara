@@ -6,7 +6,7 @@ A client organization is one org with invited members. There are no sub-teams.
 
 | Page | Who uses it |
 |---|---|
-| `/web/samskara/team` | Everyone in the org. Owners and admins also see the invite form, role controls and pending invitations. |
+| `/web/samskara/team` | Everyone in the org. Owners and admins can also rename the organization, invite, change roles and manage pending invitations. |
 | `/web/samskara/invitations/<id>` | The invitee. The invitation email links here. |
 
 A signed-out visitor to either page goes to `/signin` and returns to the page
@@ -19,12 +19,20 @@ so the link is inserted into its UI at build time. See
 
 Better Auth enforces the roles. The pages only hide controls:
 
-- **owner** can invite, change any role (including granting owner) and remove members.
-- **admin** can invite and manage members, but cannot grant or change owner.
-- **member** can view the team. Invite and role changes return 403.
+- **owner** can rename the organization, invite, change any role (including granting owner) and remove members.
+- **admin** can rename the organization, invite and manage members, but cannot grant or change owner.
+- **member** can view the team and the organization's name. Rename, invite and role changes return 403.
 
 An invitation expires after 48 hours (Better Auth's default). Only the address
-it was sent to can open or accept it.
+it was sent to can open or accept it. The team page shows a lapsed invitation as
+expired, with Resend and Dismiss.
+
+## The organization's name
+
+Sign-up names every organization `<email>'s org`. Rename it on the team page; the
+name is what invitation emails and the invitation page show. Only the name
+changes: members, projects, model keys, GitHub installations and sessions are
+tied to the organization's id, so a rename moves nothing.
 
 ## Which org a user signs in to
 

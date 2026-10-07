@@ -135,14 +135,23 @@ function say(text, isError) {
 const TEAM_SCRIPT = `
 const ROLES = ['member', 'admin', 'owner'];
 async function load() {
-  const [{ members }, invitations] = await Promise.all([
+  const [{ members }, invitations, org] = await Promise.all([
     api('list-members?organizationId=' + encodeURIComponent(CTX.organizationId)),
     api('list-invitations?organizationId=' + encodeURIComponent(CTX.organizationId)),
+    api('get-full-organization?organizationId=' + encodeURIComponent(CTX.organizationId)),
   ]);
   const me = members.find(m => m.userId === CTX.userId);
   const myRole = me ? me.role : 'member';
   const canManage = myRole === 'owner' || myRole === 'admin';
   const grantable = myRole === 'owner' ? ROLES : ROLES.filter(r => r !== 'owner');
+
+  // Better Auth's default roles let owner and admin update the organization
+  // (access/statement.mjs); the endpoint enforces it, this only hides the
+  // control. Leave the field alone while someone is typing in it.
+  const orgName = document.getElementById('org-name');
+  if (document.activeElement !== orgName) orgName.value = org.name;
+  orgName.readOnly = !canManage;
+  document.getElementById('org-save').hidden = !canManage;
 
   document.getElementById('invite-panel').hidden = !canManage;
   document.getElementById('invite-note').hidden = canManage;
@@ -221,6 +230,17 @@ document.getElementById('invite-form').onsubmit = async (event) => {
   button.disabled = false;
   form.email.value = '';
 };
+document.getElementById('org-form').onsubmit = async (event) => {
+  event.preventDefault();
+  const input = document.getElementById('org-name');
+  const name = input.value.trim();
+  if (!name) return say('The organization needs a name.', true);
+  const button = document.getElementById('org-save');
+  button.disabled = true;
+  input.blur();
+  await act(() => api('update', { data: { name }, organizationId: CTX.organizationId }), 'Organization renamed to ' + name + '.');
+  button.disabled = false;
+};
 load().catch(e => say(e.message, true));
 `;
 
@@ -280,6 +300,13 @@ export const createTeamRoutes = (routeAuth: RouteAuth) => [
 <p class="muted"><a href="/">← Back to Samskara</a></p>
 <h1>Team</h1>
 <p class="sub">Everyone here sees the same projects and work.</p>
+<h2>Organization</h2>
+<div class="panel">
+  <form class="invite" id="org-form">
+    <input name="name" id="org-name" required maxlength="100" aria-label="Organization name" autocomplete="organization">
+    <button type="submit" id="org-save" hidden>Save name</button>
+  </form>
+</div>
 <h2>Invite a teammate</h2>
 <div class="panel" id="invite-panel" hidden>
   <form class="invite" id="invite-form">
