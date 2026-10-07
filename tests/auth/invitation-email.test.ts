@@ -92,4 +92,14 @@ describe('invitation email (samskara-9t9)', () => {
     expect(mail.html).not.toContain('<img');
     expect(mail.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
   });
+
+  // samskara-zkd: the link lands on a sign-in page, so a new invitee must be
+  // told to sign up, with the address the invitation is bound to.
+  it('tells a new invitee to sign up with the invited address', async () => {
+    const { mail } = await inviteFrom('Acme', 'https://app.example.test', 'app.example.test');
+    for (const body of [mail.text, mail.html!]) {
+      expect(body).toContain('New here? Sign up');
+      expect(body).toContain('mate@example.test');
+    }
+  });
 });
