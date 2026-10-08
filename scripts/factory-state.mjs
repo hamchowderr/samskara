@@ -17,7 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DB = process.env.MASTRA_DB_PATH ?? path.join(REPO, '.mastra', 'samskara.db');
+// data/, not .mastra/: mastra build deletes .mastra/ (CLAUDE.md, samskara-7p5).
+const DB = process.env.MASTRA_DB_PATH ?? path.join(REPO, 'data', 'samskara.db');
 
 const TABLES = [
   'integration_connections',

@@ -44,6 +44,16 @@ provider whose credentials are missing throws rather than falling back to a less
 isolated one. See [boards.md](boards.md) for the board wiring and
 [troubleshooting.md](troubleshooting.md) for the isolation caveats.
 
+Two settings sit outside those four:
+
+- **`REDIS_URL`** (optional). When set, events and thread leases go through
+  Redis Streams (`RedisStreamsPubSub`), so several server processes can share
+  one event bus. Unset, the in-process default applies, which is what a single
+  container needs. No deployment of Samskara sets it today.
+- **HTTP keep-alive.** `keepOutboundConnectionsAlive()` (`keep-alive.ts`) runs
+  before any client is created and keeps idle outbound connections open for
+  20s. Without it every Turso query after 4s idle opens a new TLS connection.
+
 ## Principles the file follows
 
 **Fail at startup, not at runtime.** A missing credential, an unknown provider
