@@ -35,6 +35,7 @@ import { organization } from 'better-auth/plugins';
 
 import { basicHtml, escapeHtml, mailConfigured, sendMail } from './mailer';
 import { ensureAuthSchema } from './migrate';
+import type { SessionCache } from './session-cache';
 import { invitationPath } from '../team/paths';
 
 /**
@@ -60,6 +61,11 @@ export interface BuildBetterAuthOptions {
   signUpEnabled?: boolean;
   /** Product name used in email subjects and bodies. */
   appName?: string;
+  /**
+   * The gate's session cache, cleared from this instance's database hooks
+   * whenever a session or user row changes. See session-cache.ts.
+   */
+  sessionCache?: SessionCache;
 }
 
 /**
@@ -117,7 +123,10 @@ function timedClient<T extends object>(client: T): T {
 }
 
 export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<Auth> {
-  const { secret, database, publicUrl, allowedOrigins = [], signUpEnabled = true } = options;
+  const { secret, database, publicUrl, allowedOrigins = [], signUpEnabled = true, sessionCache } = options;
+  // Runs after the write commits (with-hooks.mjs queues `*.after` hooks), so a
+  // lookup that starts after the clear sees the new row.
+  const clearSessionCache = { after: async () => sessionCache?.clear() };
   const appName = options.appName ?? 'Samskara';
 
   if (database.dialect !== 'libsql' || !database.client) {
@@ -208,7 +217,10 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
     // session to the most recently joined org fixes that. A user in several
     // orgs always lands in the newest one; there is no org switcher yet.
     databaseHooks: {
+      user: { update: clearSessionCache, delete: clearSessionCache },
       session: {
+        update: clearSessionCache,
+        delete: clearSessionCache,
         create: {
           before: async (session: { userId: string; activeOrganizationId?: string | null }) => {
             if (session.activeOrganizationId) return;
