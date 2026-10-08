@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { IntegrationContext } from '@mastra/factory/integrations/base';
+import { SourceControlConnectionNotFoundError } from '@mastra/factory/storage/domains/source-control/base';
 import { WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
 import type { CreateWorkItemInput, ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 
@@ -122,12 +123,21 @@ export class MemoryWorkItems {
   }
 }
 
+/** Source-control rows the fake handle serves; tests mutate it to add projects and links. */
+export interface FakeSourceControl {
+  projects: Array<{ id: string; orgId: string }>;
+  installations: Set<string>;
+  connections: Array<{ id: string; factoryProjectId: string; installationId: string; repositoryIds: string[] }>;
+  repositories: Map<string, string>;
+}
+
 export interface Harness {
   dir: string;
   remote: string;
   cacheDir: string;
   statePath: string;
   workItems: MemoryWorkItems;
+  sourceControl: FakeSourceControl;
   ctx: IntegrationContext;
   state(): FakeState;
   setState(update: (s: FakeState) => void): void;
@@ -155,17 +165,49 @@ export function createHarness(beads: FakeBead[]): Harness {
     initialPhase: 'intake',
     phaseKind: (p: string) => (['intake', 'triage', 'planning', 'execute', 'review'].includes(p) ? 'working' : p === 'done' || p === 'canceled' ? 'terminal' : undefined),
   };
+  const sourceControl: FakeSourceControl = {
+    projects: [{ id: PROJECT, orgId: ORG }],
+    installations: new Set(['inst_1']),
+    connections: [{ id: 'conn_1', factoryProjectId: PROJECT, installationId: 'inst_1', repositoryIds: ['repo_1'] }],
+    repositories: new Map([['repo_1', SLUG]]),
+  };
+  // Mirrors SourceControlStorage.forIntegration (@mastra/factory 0.20.0
+  // storage/domains/source-control/base.js): connections.list does not check the
+  // installation, connections.get returns null without it, and
+  // projectRepositories.list throws SourceControlConnectionNotFoundError.
+  const liveConnection = (id: string) => {
+    const c = sourceControl.connections.find(x => x.id === id);
+    return c && sourceControl.installations.has(c.installationId) ? c : null;
+  };
   const sourceControlHandle = {
     integrationId: 'github',
-    connections: { list: async () => [{ id: 'conn_1' }] },
-    projectRepositories: { list: async () => [{ repositoryId: 'repo_1' }] },
-    repositories: { get: async () => ({ id: 'repo_1', slug: SLUG }) },
+    connections: {
+      list: async ({ factoryProjectId }: { factoryProjectId: string }) =>
+        sourceControl.connections.filter(c => c.factoryProjectId === factoryProjectId).map(c => ({ id: c.id })),
+      get: async ({ id }: { id: string }) => {
+        const c = liveConnection(id);
+        return c ? { id: c.id } : null;
+      },
+    },
+    projectRepositories: {
+      list: async ({ connectionId }: { connectionId: string }) => {
+        const c = liveConnection(connectionId);
+        if (!c) throw new SourceControlConnectionNotFoundError();
+        return c.repositoryIds.map(repositoryId => ({ repositoryId }));
+      },
+    },
+    repositories: {
+      get: async ({ id }: { id: string }) => {
+        const slug = sourceControl.repositories.get(id);
+        return slug ? { id, slug } : null;
+      },
+    },
   };
   const ctx = {
     auth: { enabled: () => true, ensureUser: async () => undefined, tenant: () => ({ orgId: ORG, userId: 'u1' }), isOrganizationAdmin: async () => true },
     storage: {
       sourceControls: [sourceControlHandle],
-      projects: { listAll: async () => [{ id: PROJECT, orgId: ORG }] },
+      projects: { listAll: async () => sourceControl.projects.map(p => ({ ...p })) },
     },
     runtime: { configVersion: 'test', workItems, boards: new Map([['work', board]]) },
   } as unknown as IntegrationContext;
@@ -177,6 +219,7 @@ export function createHarness(beads: FakeBead[]): Harness {
     cacheDir,
     statePath,
     workItems,
+    sourceControl,
     ctx,
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as FakeState,
     setState(update) {

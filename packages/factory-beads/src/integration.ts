@@ -136,6 +136,8 @@ export class BeadsIntegration implements FactoryIntegration {
   #ctx: IntegrationContext | undefined;
   #worker: BeadsSyncWorker<SweepSummary> | undefined;
   #last: SweepSummary | undefined;
+  /** Orphaned connection ids already logged, so each is reported once per process. */
+  readonly #orphansLogged = new Set<string>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -196,6 +198,21 @@ export class BeadsIntegration implements FactoryIntegration {
     const out: LinkedRepo[] = [];
     for (const project of await ctx.storage.projects.listAll()) {
       for (const connection of await handle.connections.list({ orgId: project.orgId, factoryProjectId: project.id })) {
+        // connections.list only checks the project's org, so it also returns a
+        // connection whose installation is gone (pruned: samskara-1ra).
+        // projectRepositories.list then throws SourceControlConnectionNotFoundError
+        // (@mastra/factory 0.20.0 storage/domains/source-control/base.js:306-309,
+        // :510-515). connections.get applies the same check and returns null
+        // instead, so skip the orphan and keep sweeping the valid links.
+        if (!(await handle.connections.get({ orgId: project.orgId, id: connection.id }))) {
+          if (!this.#orphansLogged.has(connection.id)) {
+            this.#orphansLogged.add(connection.id);
+            this.#log.warn(
+              `[factory-beads] skipping orphaned source-control connection ${connection.id} on project ${project.id}: its installation no longer exists (samskara-1ra)`,
+            );
+          }
+          continue;
+        }
         for (const link of await handle.projectRepositories.list({ orgId: project.orgId, connectionId: connection.id })) {
           const repository = await handle.repositories.get({ orgId: project.orgId, id: link.repositoryId });
           if (repository) {
