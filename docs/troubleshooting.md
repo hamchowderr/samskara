@@ -8,25 +8,28 @@ For setup problems, start with the runbook for that piece in
 
 ## Slack messages create work items, but they never get triaged
 
-**Expected:** a chat request lands on an installed custom board and runs triage.
-**Actual:** the card is on the built-in Work board, already at Building.
+**Expected:** a chat request runs triage.
+**Actual:** the card is on the Work board, already at Building.
 
-This is how `@mastra/factory` 0.16.0 behaves. A dispatched Slack thread creates
-its card with `stages: ["execute"]` and no board, and nothing routes it to a
-custom board — not intake bindings, not label routes, not the rules dispatcher.
-Cross-board transitions are rejected, so it cannot drift there either.
+This is how `@mastra/factory` 0.20.0 behaves. A dispatched Slack thread creates
+its card with `stages: ["execute"]` and no board
+(`dist/integrations/slack/slack.js:570-585`). A card with no board belongs to
+`work` (`dist/boards/semantics.js:8`), which is Samskara's own Work board (see
+[boards.md](boards.md)), so the card is on the right board. It skipped Triage
+because the Slack integration files it straight into Building.
 
-Moving one card by hand:
+Assigning the board and phase by hand:
 
 ```bash
 curl -X PATCH "$FACTORY/web/factory/work-items/<id>" \
   -H 'content-type: application/json' \
-  -d '{"board":"requests","stages":["triage"]}'
+  -d '{"board":"work","stages":["triage"]}'
 ```
 
 That works only while the card's board is still unset — a second attempt returns
-`board_already_assigned`. There is no configuration that routes chat work
-automatically; upstream calls it a planned follow-up.
+`board_already_assigned` (`dist/routes/work-items.js:555-560`). There is no
+configuration that files Slack work into Triage; upstream calls per-origin
+routing a planned follow-up.
 
 ## "No usable anthropic credential is configured"
 

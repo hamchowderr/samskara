@@ -92,13 +92,18 @@ across a version before:
    which is undefined whenever a storage instance is injected.
 2. **The sandbox still throws on an explicit provider with no credentials.**
    `FACTORY_SANDBOX_PROVIDER=e2b` with `E2B_API_KEY` unset must refuse to start.
-3. **The custom board still loads**, and its phase handlers still fire. A
-   misspelled source key type-checks, is stored, and never runs —
-   `defineBoard()` does not validate handler keys.
-4. **The plan-advance rule still targets the right board.** The SDK's
-   `advanceApprovedPlan` hardcodes `board: "work"` in its return type; the local
-   wrapper in `src/mastra/boards/requests-board.ts` exists to correct it. If
-   upstream adds a parameterised variant, replace the wrapper.
+3. **Our Work board still replaces the built-in.** `includeDefaultBoards: false`
+   with a same-id board is the documented customization path (README "replace
+   Work or Review", `factory-skills/configure-factory-rules/SKILL.md`). Re-read
+   both on every upgrade, and check that `tests/boards/requests-board.test.ts`
+   still passes: it asserts our phases and roles match `workBoard`'s and that
+   every source key is one the runtime knows (`defineBoard()` does not validate
+   handler keys).
+4. **Behaviour keyed to the id `work` still applies.** The default GitHub
+   rules, `advanceApprovedPlan` and the triage classification tool all key on
+   the literal `"work"`; see [boards.md](../boards.md#replacing-work-by-id).
+   `tests/boards/work-board-github-rules.test.ts` drives the stock GitHub rules
+   against the installed registry.
 
 Verify against the **built** output as well as source when a change touches
 configuration. `mastra build` folds `process.env.NODE_ENV` at build time, so a
@@ -115,20 +120,18 @@ not show. Each item below was checked against the installed package.
   `'human'` (`rules/types.d.ts:74`), not `'user'`. The approved-plan rule
   runs as a `system` actor, and `rules/processor.js:402` stamps
   `planApproved` only for an approved `submit_plan` result, on any board.
-  The Requests board shares this policy; `tests/boards/requests-board.test.ts`
+  Our Work board uses this policy unchanged; `tests/boards/requests-board.test.ts`
   covers the agent, system and human cases.
 - **The Work board no longer auto-triages Intake arrivals (0.17.2, #24983).**
-  Its Intake phase has no `onEnter` (`boards/work.js:147`). The Requests
-  board keeps its `onArrival` triage rule, so auto-start candidates on it
-  still triage themselves.
+  Its Intake phase has no `onEnter` (`boards/work.js:147`). Our Work board
+  follows it: SKILL.md says not to restore arrival automation on the
+  built-in boards, so arrivals wait in Intake for a person.
 - **Work cards go to Review when a pull request opens, and to Done when it
   merges (#25377).** The rules are in
   `integrations/github/default-rules.js:110` and `:129`. Both hardcode
-  `board: "work"`, so they do not move Requests cards: a Requests card stays
-  in Building when its pull request opens, and the merge transition targets
-  Work and is refused as cross-board. The policy also stops an agent moving a
-  card to Done while `openPullRequestNumber` is set; the merge clears it.
-  Verify the Work board behaviour when real work starts.
+  `board: "work"`; our board has that id, so they apply to it unchanged. The
+  policy also stops an agent moving a card to Done while
+  `openPullRequestNumber` is set; the merge clears it.
 - **Multi-repo runs stop when the repository is ambiguous (#25116).**
   `routes/surface.js:189` throws `source_repository_ambiguous` instead of
   picking one. A project with more than one linked repository needs the
