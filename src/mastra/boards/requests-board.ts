@@ -51,6 +51,7 @@ import { advanceApprovedPlan } from '@mastra/factory/boards/work-tool-rules';
 import type { FactoryToolResultRuleContext } from '@mastra/factory/rules/types';
 import { workTransitionPolicy } from '@mastra/factory/boards/work-transition-policy';
 import { needsApproval } from '@mastra/factory/rules/types';
+import { beadsDoneRule } from '../integrations/beads/integration';
 import type { FactoryRuleItemContext, FactoryStageRuleContext } from '@mastra/factory/rules/types';
 
 /**
@@ -229,6 +230,9 @@ export const requestsBoard = defineBoard<
       title: 'Done',
       kind: 'terminal',
       outcomes: anyPhase,
+      // SPIKE (samskara-iz6): wake the beads worker so it closes the bead.
+      // Returns no decision; see integrations/beads/integration.ts.
+      onEnter: { manual: beadsDoneRule },
     },
     canceled: {
       title: 'Canceled',

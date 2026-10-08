@@ -41,6 +41,7 @@ import { LinearIntegration } from '@mastra/factory/integrations/linear/integrati
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { requestsBoard } from './boards/requests-board';
+import { BeadsIntegration } from './integrations/beads/integration';
 import { requestsGithubRules } from './boards/requests-github-rules';
 import { createTeamRoutes } from './team/routes';
 
@@ -469,7 +470,24 @@ const slack = slackSigningSecret
     })
   : undefined;
 
-const integrations = [...(github ? [github] : []), ...(linear ? [linear] : []), ...(slack ? [slack] : [])];
+// SPIKE (samskara-iz6): beads intake/write-back. Off unless BEADS_INTEGRATION=1.
+const beads =
+  github && process.env.BEADS_INTEGRATION === '1'
+    ? new BeadsIntegration({
+        sourceControl: github,
+        board: requestsBoard.id,
+        intervalMs: positiveInt(process.env.BEADS_POLL_INTERVAL_MS),
+        cacheDir: process.env.BEADS_CACHE_DIR?.trim() || undefined,
+        proofSeedRoute: process.env.BEADS_PROOF_SEED_ROUTE === '1',
+      })
+    : undefined;
+
+const integrations = [
+  ...(github ? [github] : []),
+  ...(linear ? [linear] : []),
+  ...(slack ? [slack] : []),
+  ...(beads ? [beads] : []),
+];
 
 // Which integrations actually constructed. Each is built only from a COMPLETE
 // credential group — a partial group stays undefined and the surface it powers
