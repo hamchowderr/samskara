@@ -69,7 +69,7 @@ from one of them would get a generic stage message on this board. If GitLab,
 Jira or incident.io intake is ever connected, add its key to Requests first,
 modelled on the Work board's handler for it.
 
-## Four things that will catch you
+## Five things that will catch you
 
 ### `defineBoard()` does not validate handler keys
 
@@ -103,6 +103,37 @@ function advanceApprovedPlanOnThisBoard(context: FactoryToolResultRuleContext) {
 ```
 
 If upstream adds a board-aware variant, delete the wrapper.
+
+### Requests cards follow their PRs through a GitHub rule override
+
+The default GitHub rules (`@mastra/factory` 0.20.0) only move Work cards. On PR
+open, `pullRequestOpened` returns nothing for any other board
+(`integrations/github/default-rules.js:113`). On merge, `pullRequestMerged`
+asks for `board: "work", stage: "done"` (`:145-150`), and the validator refuses
+it because a transition may not change a card's board
+(`rules/validation.js:76`).
+
+`GithubIntegration` merges `rules` overrides over the defaults with
+`resolveGithubRules` (`default-rules.js:279-288`, called at
+`integrations/github/integration.js:264`).
+`src/mastra/boards/requests-github-rules.ts` overrides `pullRequestOpened` and
+`pullRequestMerged` with a wrapper around the SDK handlers. For a Requests card,
+the wrapper runs the default rule as if the card were on Work. The stage names
+`execute`, `review` and `done` are the same on both boards. The wrapper then
+retargets a resulting Work transition to `requests`. Every other card gets the
+default decision unchanged. The result:
+
+- PR opened: Building → Review.
+- PR merged: → Done.
+
+The overrides are wired into `new GithubIntegration({ rules })` in
+`src/mastra/index.ts`. They are also passed as `platform.github.rules` when
+the Factory installs its Platform GitHub integration instead.
+`tests/boards/requests-github-rules.test.ts` drives the resolved rules through
+the SDK's own validators for Requests, Work and Review cards.
+
+Other GitHub events stay Work-only: review feedback, PR comments and issue
+closed. The status messages also still say "Work card".
 
 ### A custom board inherits nothing from Work
 
