@@ -6,7 +6,7 @@
  * write. Everything goes through the `bd` CLI, never Dolt internals.
  *
  *   first use : git clone --depth 1  ->  bd --sandbox bootstrap --yes
- *   each poll : bd dolt pull         ->  bd --readonly ready --json
+ *   each poll : bd dolt pull         ->  bd --readonly ready --json (with descriptions)
  *   write-back: bd --sandbox close   ->  bd sync (exit 2 conflict, 3 retry)
  *
  * `--sandbox` disables Dolt auto-push (bd --help), so a close is published only
@@ -25,6 +25,8 @@ export interface ReadyBead {
   status?: string;
   priority?: number;
   issue_type?: string;
+  /** Absent when the bead has none: bd omits empty text fields from JSON. */
+  description?: string;
 }
 
 const MARKER = 'factory-beads-bootstrapped';
@@ -77,9 +79,13 @@ export class BdRepo {
     return this.runner.bd(['dolt', 'pull'], { cwd: this.dir, credentials });
   }
 
-  /** Ready, non-epic beads. Epics are containers: `bd ready` lists an unblocked epic beside its first child. */
+  /**
+   * Ready, non-epic beads. Epics are containers: `bd ready` lists an unblocked epic beside its first child.
+   * No `--brief`: in bd 1.3.0 it omits description, design, acceptance and notes (`bd ready --help`),
+   * and the description is posted to the card's feed.
+   */
   async ready(): Promise<ReadyBead[]> {
-    const res = await this.runner.bd(['--readonly', 'ready', '--json', '--brief', '--exclude-type=epic', '-n', '0'], {
+    const res = await this.runner.bd(['--readonly', 'ready', '--json', '--exclude-type=epic', '-n', '0'], {
       cwd: this.dir,
     });
     if (res.code !== 0) throw new Error(`bd ready failed (exit ${res.code}): ${tail(res)}`);

@@ -1,4 +1,12 @@
-export { BeadsIntegration, BEADS_INTEGRATION_ID, BEADS_META, beadsClaimKey } from './integration';
+export {
+  BeadsIntegration,
+  BEADS_COMMENT_AUTHOR,
+  BEADS_INTEGRATION_ID,
+  BEADS_META,
+  beadsClaimKey,
+  descriptionBody,
+  MAX_COMMENT_BODY,
+} from './integration';
 export type {
   BeadsIntegrationOptions,
   BeadsSourceControl,

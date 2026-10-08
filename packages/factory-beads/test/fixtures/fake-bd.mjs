@@ -61,7 +61,19 @@ switch (words[0]) {
   case 'ready': {
     const excludeEpic = flags.includes('--exclude-type=epic');
     const ready = state.beads.filter(b => isOpen(b) && !blocked(b) && !(excludeEpic && b.issue_type === 'epic'));
-    out = JSON.stringify(ready.map(({ id, title, status, priority, issue_type }) => ({ id, title, status, priority, issue_type })));
+    // Like bd 1.3.0: --brief drops the free-form text, and an empty
+    // description is omitted from the row either way.
+    const brief = flags.includes('--brief');
+    out = JSON.stringify(
+      ready.map(({ id, title, status, priority, issue_type, description }) => ({
+        id,
+        title,
+        ...(!brief && description ? { description } : {}),
+        status,
+        priority,
+        issue_type,
+      })),
+    );
     break;
   }
   case 'show': {
