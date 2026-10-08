@@ -47,12 +47,22 @@ npm ls @mastra/core     # one copy for the app; the docs MCP server may keep its
 Moving factory alone leaves two copies of `@mastra/core` and fails type-checking
 with identity mismatches on `LibSQLVector`, `LibSQLFactoryStorage`, `PubSub` and
 `MastraWorker`. That is a dedupe failure, not a code change. Take the CLI version
-released alongside the factory: 0.15.0 shipped with CLI 1.30.0, and 0.16.0 with
-CLI 1.31.0, minutes apart (`npm view mastra time`).
+released alongside the factory: 0.15.0 shipped with CLI 1.30.0, 0.16.0 with
+CLI 1.31.0, and 0.20.0 with CLI 1.33.0, minutes apart (`npm view mastra time`).
 
 The other `@mastra/*` packages (libsql, memory, auth providers, e2b,
 redis-streams) are pinned on their own schedule. Move them only when the new
-core requires it.
+core requires it. Check whether it does from the factory and code-sdk
+dependency lists:
+
+```bash
+npm view @mastra/factory@<version> dependencies --json    # core, code-sdk, auth-workos
+npm view @mastra/code-sdk@<sdk> dependencies --json       # libsql, memory
+```
+
+At 0.20.0 that moved three more: `@mastra/auth-workos` 1.6.6 (pinned in
+factory), `@mastra/libsql` 1.25.1 and `@mastra/memory` 1.36.0 (pinned in
+code-sdk 1.11.0). Leaving them behind installs a second copy beside the app's.
 
 `npm run check` catches removed and renamed exports, which is how most breaking
 changes surface here. It will not catch behaviour changes.
@@ -93,6 +103,43 @@ across a version before:
 Verify against the **built** output as well as source when a change touches
 configuration. `mastra build` folds `process.env.NODE_ENV` at build time, so a
 branch that reads one way in source can compile to a constant.
+
+## Behaviour changes in 0.20.0
+
+Moving from 0.16.0 to 0.20.0 changes runtime behaviour that type-checking does
+not show. Each item below was checked against the installed package.
+
+- **Plan gate (#25329).** `boards/work-transition-policy.js:15` rejects
+  Planning to Building for every non-human actor unless plans auto-approve or
+  the transition carries `planApproved`. The valid human actor type is
+  `'human'` (`rules/types.d.ts:74`), not `'user'`. The approved-plan rule
+  runs as a `system` actor, and `rules/processor.js:402` stamps
+  `planApproved` only for an approved `submit_plan` result, on any board.
+  The Requests board shares this policy; `tests/boards/requests-board.test.ts`
+  covers the agent, system and human cases.
+- **The Work board no longer auto-triages Intake arrivals (0.17.2, #24983).**
+  Its Intake phase has no `onEnter` (`boards/work.js:147`). The Requests
+  board keeps its `onArrival` triage rule, so auto-start candidates on it
+  still triage themselves.
+- **Work cards go to Review when a pull request opens, and to Done when it
+  merges (#25377).** The rules are in
+  `integrations/github/default-rules.js:110` and `:129`. Both hardcode
+  `board: "work"`, so they do not move Requests cards: a Requests card stays
+  in Building when its pull request opens, and the merge transition targets
+  Work and is refused as cross-board. The policy also stops an agent moving a
+  card to Done while `openPullRequestNumber` is set; the merge clears it.
+  Verify the Work board behaviour when real work starts.
+- **Multi-repo runs stop when the repository is ambiguous (#25116).**
+  `routes/surface.js:189` throws `source_repository_ambiguous` instead of
+  picking one. A project with more than one linked repository needs the
+  repository chosen.
+- **Tenant subagents no longer fall back to server env keys (code-sdk 1.9.0,
+  #25482).** With a tenant credential store registered, provider keys come
+  from the org or user store only (`agents/credential-resolver.js`). A key
+  that exists only in the server environment no longer reaches tenant runs.
+- **`/web/config/model-packs` is replaced by `/web/config/default-model`
+  (#25997)** (`routes/config.js:560`). Nothing in this repository calls
+  either route.
 
 ## Rolling back
 
