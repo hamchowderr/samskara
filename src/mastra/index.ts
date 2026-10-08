@@ -41,6 +41,7 @@ import { LinearIntegration } from '@mastra/factory/integrations/linear/integrati
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { requestsBoard } from './boards/requests-board';
+import { requestsGithubRules } from './boards/requests-github-rules';
 import { createTeamRoutes } from './team/routes';
 
 /**
@@ -196,6 +197,9 @@ const github =
         // Extra reviewer bot logins this deployment trusts to trigger
         // review/comment notifications, on top of the built-in defaults.
         authorizedBots: parseAuthorizedBotsEnv(process.env.MASTRACODE_GITHUB_AUTHORIZED_BOTS),
+        // Requests cards follow their PRs (opened -> Review, merged -> Done);
+        // the defaults only move Work cards. See boards/requests-github-rules.ts.
+        rules: requestsGithubRules,
       })
     : undefined;
 
@@ -668,6 +672,14 @@ export const factory = new MastraFactory({
     // comparing against `undefined[bot]` on every Platform deployment, where
     // this is legitimately unset.
     githubAppSlug,
+    // Same Requests-board PR rules for the Platform-installed GitHub
+    // integration. MastraFactory installs that one only when Platform
+    // credentials are set and no explicit `github` integration was passed
+    // (factory.js:100, :205-212), and warns about `platform.github` otherwise
+    // (:218) — so the option is passed only in that case.
+    ...(!github && (process.env.MASTRA_PLATFORM_ACCESS_TOKEN?.trim() || process.env.MASTRA_PLATFORM_SECRET_KEY?.trim())
+      ? { github: { rules: requestsGithubRules } }
+      : {}),
   },
   // Browser-facing origin. On the platform the SPA is hosted separately, so
   // this MUST be set to the public API origin.
