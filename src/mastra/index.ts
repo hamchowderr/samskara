@@ -30,7 +30,6 @@ import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 
-import { watchDatabaseClient } from './db-diagnostics';
 import { keepOutboundConnectionsAlive } from './keep-alive';
 import { buildBetterAuth } from './auth/better-auth';
 import { SessionCache } from './auth/session-cache';
@@ -328,8 +327,6 @@ const storage = new LibSQLFactoryStorage({
   authToken: tursoAuthToken,
   retention: DEFAULT_RETENTION,
 });
-// Temporary diagnostic for samskara-lx1; see db-diagnostics.ts.
-watchDatabaseClient((storage.authDatabase() as { client: object }).client);
 
 // Self-hosted sign-in, wired here rather than at the selection above because a
 // bring-your-own Better Auth instance needs the host's auth database — the same
