@@ -6,7 +6,7 @@ import { defineConfig } from 'vitest/config';
 // mocked.
 export default defineConfig({
   test: {
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'packages/*/test/**/*.test.ts'],
     environment: 'node',
     // Each auth test builds a Better Auth instance and migrates a fresh
     // database, which is slower than a unit test.

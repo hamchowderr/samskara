@@ -24,6 +24,8 @@
   },
   "include": [
     "src/**/*",
+    "packages/*/src/**/*",
+    "packages/*/test/**/*",
     "tests/**/*",
     "vitest.config.ts",
     "e2e/**/*",

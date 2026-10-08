@@ -5,6 +5,9 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "predev": "node scripts/ensure-dev-secrets.mjs && node scripts/build-branded-ui.mjs",
     "dev": "cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
@@ -34,6 +37,7 @@
     "@mastra/memory": "1.36.0",
     "@mastra/platform-workspace": "1.6.1",
     "@mastra/redis-streams": "0.4.3",
+    "@samskara/factory-beads": "0.1.0",
     "better-auth": "1.7.5",
     "resend": "6.28.1",
     "undici": "7.30.0",
