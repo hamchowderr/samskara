@@ -210,6 +210,8 @@ export interface Harness {
   ctx: IntegrationContext;
   state(): FakeState;
   setState(update: (s: FakeState) => void): void;
+  /** Add or delete refs/dolt/data on the remote. */
+  setBeadsData(present: boolean): void;
   integration(options?: Partial<BeadsIntegrationOptions>): BeadsIntegration;
   cleanup(): void;
 }
@@ -223,6 +225,8 @@ export function createHarness(beads: FakeBead[]): Harness {
     execFileSync('git', ['-C', remote, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { stdio: 'ignore' });
   git('add', '.');
   git('commit', '-q', '-m', 'init');
+  // A beads repository publishes its Dolt data here; the integration checks it with git ls-remote.
+  git('update-ref', 'refs/dolt/data', 'HEAD');
 
   const statePath = join(dir, 'fake-bd-state.json');
   const initial: FakeState = { beads, syncExits: [], pullExits: [], closeFail: [], calls: [] };
@@ -298,6 +302,10 @@ export function createHarness(beads: FakeBead[]): Harness {
       const s = harness.state();
       update(s);
       writeFileSync(statePath, JSON.stringify(s));
+    },
+    setBeadsData(present) {
+      if (present) git('update-ref', 'refs/dolt/data', 'HEAD');
+      else git('update-ref', '-d', 'refs/dolt/data');
     },
     integration(options = {}) {
       const integration = new BeadsIntegration({

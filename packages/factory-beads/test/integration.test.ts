@@ -238,7 +238,7 @@ describe('write-back and ordering', () => {
     h.setState(s => (s.syncExits = [2]));
 
     const summary = await sweep(integration);
-    expect(summary.repos[0]?.state).toBe('blocked');
+    expect(summary.repos[0]?.state).toBe('parked');
     expect(summary.repos[0]?.diagnostic).toContain('bd sync exit 2');
     expect(summary.repos[0]?.diagnostic).not.toContain(TOKEN);
     expect(commands(h).filter(c => c === 'sync')).toHaveLength(1);
@@ -250,7 +250,7 @@ describe('write-back and ordering', () => {
     // Parked: the next sweep runs no bd command at all for this repo.
     const callsBefore = h.state().calls.length;
     const parked = await sweep(integration);
-    expect(parked.repos[0]?.state).toBe('blocked');
+    expect(parked.repos[0]?.state).toBe('parked');
     expect(h.state().calls).toHaveLength(callsBefore);
 
     // Reset: the lease holder drops the copy, re-bootstraps, and syncs again.

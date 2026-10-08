@@ -58,7 +58,7 @@ Three settings sit outside those four:
 - **HTTP keep-alive.** `keepOutboundConnectionsAlive()` (`keep-alive.ts`) runs
   before any client is created and keeps idle outbound connections open for
   20s. Without it every Turso query after 4s idle opens a new TLS connection.
-- **`BEADS_INTEGRATION`** (optional, off). When `1`, ready beads in linked
+- **`BEADS_INTEGRATION`** (on by default; `0` turns it off). Ready beads in linked
   repositories become Work cards and Done cards close their bead. The code is
   the `packages/factory-beads` workspace package. With more than one server
   process it requires `REDIS_URL`. See

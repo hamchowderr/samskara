@@ -10,14 +10,22 @@ bead that another open bead blocks is not ready, so its card appears only after
 the blocker is closed. Factory has no dependency model of its own, and the
 integration does not add one.
 
-It is **off** unless `BEADS_INTEGRATION=1`.
+It is **on by default**. `BEADS_INTEGRATION=0` (or `false` or `off`, any case)
+turns it off; any other value, or no value, leaves it on (samskara-iz6.8).
+Startup prints one line that says which, and how to turn it off:
+
+```
+[beads] on by default; set BEADS_INTEGRATION=0 to turn it off.
+[beads] off (BEADS_INTEGRATION is set to turn it off).
+```
 
 Code:
 
 - Package: `packages/factory-beads` (`@samskara/factory-beads`), a workspace
   package. It is not published to npm.
-- Wiring: `src/mastra/index.ts:469-497` (construction and the `integrations`
-  list), Done rule at `src/mastra/boards/requests-board.ts:63-69`.
+- Wiring: `src/mastra/index.ts:469-501` (the switch, construction and the
+  `integrations` list; the switch is `beadsSetting` in
+  `packages/factory-beads/src/setting.ts`), Done rule at `src/mastra/boards/requests-board.ts:63-69`.
 - Image: the `bd-cli` stage of the `Dockerfile`.
 
 ## What it does
@@ -25,6 +33,14 @@ Code:
 Each tick, for every repository linked to a Factory project through the GitHub
 App:
 
+0. **Does origin have beads data?** `git ls-remote --exit-code <clone url>
+   refs/dolt/data`, with the App token. Exit 2 means no such ref: the
+   repository does not publish beads data, so it gets the state
+   `no-beads-data` and nothing else runs for it (see
+   [Repository states](#repository-states)). This runs every tick for a
+   repository that has the ref, so a ref deleted on origin, or a copy
+   bootstrapped before this check existed, is caught too
+   (`packages/factory-beads/src/integration.ts:433-451`).
 1. **Bootstrap, first time only.** `git clone --depth 1`, then
    `bd --sandbox bootstrap --yes`, in `<BEADS_CACHE_DIR>/<owner>__<name>`. A
    marker file in `.git/` records that the copy is ready. The copy is kept
@@ -32,11 +48,11 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:331-395`).
+   (`packages/factory-beads/src/integration.ts:457-521`).
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
 4. **Intake.** `bd --readonly ready --json --exclude-type=epic -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed
-   (`integration.ts:404-448`). See [What the agent sees](#what-the-agent-sees).
+   (`integration.ts:530-575`). See [What the agent sees](#what-the-agent-sees).
 
 A project connection whose GitHub installation no longer exists (an orphaned
 link, samskara-1ra) is skipped with one warning per connection, and the other
@@ -48,6 +64,35 @@ applies the same test and returns `null`.
 
 Epics are excluded because `bd ready` lists an unblocked epic beside its first
 child. Epics are containers, not work.
+
+### Startup preconditions
+
+Two things cannot change while the server runs. Each is checked once, at the
+first tick, and a failure logs **one** line and leaves the integration idle
+(`#checkPreconditions`, `integration.ts:221-238`). Nothing is synced until the
+server restarts; `GET /web/beads/status` shows `state: 'idle'` and the reason.
+
+| Precondition | Log line |
+|--------------|----------|
+| The GitHub App is configured | Samskara does not construct the integration at all; the startup line says `[beads] on by default, but the GitHub App is not configured, so the integration is idle.` The package logs `integration idle: source control "github" has no versionControl capability` if it is constructed without one. |
+| `bd` can be started | `[factory-beads] integration idle: bd binary not found ("bd"; set BEADS_BD_PATH or put bd on PATH): spawn bd ENOENT. Nothing is synced; restart after fixing it.` The check runs `bd --version`; only "could not start" (the runner's exit 127) idles. |
+
+### Repository states
+
+`GET /web/beads/status` lists each linked repository with one of these states
+and `checkedAt`, when it was last checked:
+
+| State | Meaning | Logged |
+|-------|---------|--------|
+| `ok` | Synced this tick. | No |
+| `no-beads-data` | origin has no `refs/dolt/data`, so the repository does not use beads, or has not pushed its beads data yet. Not an error. Nothing is cloned or bootstrapped, and a copy left from before is deleted, because a copy bootstrapped without beads data has no remote and every `bd dolt pull` fails with `no remote`. origin is checked again every 15 minutes (`remoteCheckIntervalMs`); in between, the tick does not contact GitHub for that repository. `nextCheckAt` says when. | One info line when a repository enters the state, and one when `refs/dolt/data` appears. Never a warning. |
+| `error` | This tick failed for the repository: `git ls-remote` failed (auth, network), or clone, bootstrap, pull, close or sync failed. `reason` says why; the token is removed from it. The next tick tries again. | `sweep finished with problems` |
+| `parked` | A write-back conflict (`bd sync` exit 2 or 4). Nothing runs for the repository until an operator resets it; see [Write-back failures](#write-back-failures). | `sweep finished with problems` |
+
+To make a `no-beads-data` repository a beads repository, give it a git remote
+and push its beads data (`bd dolt remote add origin <git url>`, then
+`bd dolt push`). The next re-check, at most 15 minutes later, bootstraps it.
+Restarting the server re-checks at once.
 
 ### Cards
 
@@ -163,8 +208,8 @@ is off, the rule does nothing.
    can block that push.
 2. **The repository must already use beads with a git remote.**
    `refs/dolt/data` must exist on `origin`; `bd bootstrap` clones from it. A
-   repository without it gets a fresh empty database, which never reaches
-   GitHub.
+   repository without it is reported as `no-beads-data` and is not
+   bootstrapped (see [Repository states](#repository-states)).
 3. **`bd` on the host.** The Docker image installs bd 1.3.0 from the
    official `gastownhall/beads` release and checks its sha256 against the
    release's `checksums.txt` (Dockerfile, `bd-cli` stage). This adds about
@@ -175,11 +220,12 @@ is off, the rule does nothing.
    ```
    For local development, install bd yourself; `BEADS_BD_PATH` overrides the
    path.
-4. **Turn it on.** Set `BEADS_INTEGRATION=1`. Optional settings:
-   `BEADS_POLL_INTERVAL_MS` (default 60000), `BEADS_CACHE_DIR` (default
-   `<tmpdir>/factory-beads`) and `BEADS_BD_PATH`. Startup prints `beads` in the
-   `[integrations]` line. If the GitHub App is not configured, startup prints a
-   warning and the integration stays off.
+4. **It is on by default.** To turn it off, set `BEADS_INTEGRATION=0`.
+   Optional settings: `BEADS_POLL_INTERVAL_MS` (default 60000),
+   `BEADS_CACHE_DIR` (default `<tmpdir>/factory-beads`) and `BEADS_BD_PATH`.
+   Startup prints the `[beads]` line and, when the integration is constructed,
+   `beads` in the `[integrations]` line. If the GitHub App is not configured,
+   the `[beads]` line is a warning and the integration does nothing.
 
 Agent sandboxes do not need bd. They never write beads data: the host is the
 only automated writer. A repository that wants agents to read beads can
@@ -250,12 +296,12 @@ second process.
 ## Write-back failures
 
 `bd sync` exit codes (from `bd sync --help`), and what the integration does with
-each (`integration.ts:364-395`, retries at `:451-460`):
+each (`integration.ts:490-521`, retries at `:577-586`):
 
 | Exit | Meaning | Action |
 |------|---------|--------|
 | 0 | synced | card gets `beadsWriteback: 'synced'` and `beadsSyncedAt` |
-| 2 | merge conflict, nothing pushed | card gets `beadsWriteback: 'conflict'` and `beadsDiagnostic` (token removed); the **repository is parked** |
+| 2 | merge conflict, nothing pushed | card gets `beadsWriteback: 'conflict'` and `beadsDiagnostic` (token removed); the **repository is parked** (state `parked`) |
 | 4 | working set is stuck | same as 2 |
 | 3 | push race, bd's own retries used up | up to 2 more attempts in the same tick (2 s, then 4 s); if those fail, the card stays pending and the next tick tries again |
 | 1 | transport or auth error | card stays pending; the next tick tries again |
@@ -266,8 +312,25 @@ them, so a parked repository runs no bd command until it is reset. If
 the integration stops trying it.
 
 To see problems, call `GET /web/beads/status`. Any member of the organization
-can call it, and it returns the last sweep for that organization's
-repositories. To recover a parked repository, an organization admin calls:
+can call it. It returns the last sweep for that organization's repositories:
+
+```json
+{
+  "diagnostics": { "board": "work", "donePhase": "done", "sourceControl": "github",
+                   "lease": "noop", "state": "running", "remoteCheckIntervalMs": 900000 },
+  "repos": [
+    { "repo": "owner/app", "projectId": "…", "state": "ok", "checkedAt": "…" },
+    { "repo": "owner/docs", "projectId": "…", "state": "no-beads-data",
+      "reason": "origin has no refs/dolt/data: this repository does not publish beads data",
+      "checkedAt": "…", "nextCheckAt": "…" }
+  ],
+  "lastSweep": { "at": "…", "durationMs": 1234, "repos": [ … ] }
+}
+```
+
+`diagnostics.state` is `idle` with an `idleReason` when a
+[startup precondition](#startup-preconditions) failed. `repos` is empty before
+the first tick. To recover a parked repository, an organization admin calls:
 
 ```
 POST /web/beads/reset   {"repo": "owner/name"}
@@ -286,9 +349,13 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   following: the token never appears in argv; the server environment does not
   reach bd; exit codes 2 and 3; idempotent intake across sweeps and restarts;
   epic exclusion; claim conflicts; ordering (B is carded only after A's card
-  reaches Done and A is closed and synced); the lease; and the description
+  reaches Done and A is closed and synced); the lease; the description
   comment (one per card across sweeps and restarts, back-fill, no comment for
-  an empty description, no feed, a failing feed, truncation). The fake feed
+  an empty description, no feed, a failing feed, truncation); and, in
+  `test/states.test.ts`, the on/off switch, both startup preconditions, the
+  `no-beads-data` state across repeated sweeps and its re-check, and the
+  status route. The harness remote carries `refs/dolt/data` unless a test
+  removes it (`setBeadsData`). The fake feed
   (`MemoryFeed` in `test/harness.ts`) copies the store's replay behaviour.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote. It is

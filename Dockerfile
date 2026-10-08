@@ -50,7 +50,7 @@ RUN apt-get update \
  && infisical --version
 
 # ── bd (beads) ───────────────────────────────────────────────────────────────
-# The beads integration (packages/factory-beads, off unless BEADS_INTEGRATION=1)
+# The beads integration (packages/factory-beads, on unless BEADS_INTEGRATION=0)
 # shells out to `bd` on the host. Pinned release binary from the official
 # gastownhall/beads releases, verified against the release's checksums.txt;
 # bumping BD_VERSION without the matching checksums fails the build. Needs
