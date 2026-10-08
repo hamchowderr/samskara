@@ -7,13 +7,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import { FACTORY_RULE_SOURCES } from '@mastra/factory/rules/types';
+import type { FactoryRuleActor } from '@mastra/factory/rules/types';
+import type { BoardTransitionPolicyContext } from '@mastra/factory/boards/transition-policy';
 
 import { requestsBoard } from '../../src/mastra/boards/requests-board';
 
 type Board = {
   id: string;
   phases: Record<string, { onEnter?: Record<string, unknown> }>;
-  transitionPolicy?: (context: unknown) => { type: string; code?: string } | undefined;
   tools?: Record<string, { onResult: (context: unknown) => unknown }>;
 };
 const board = requestsBoard as unknown as Board;
@@ -35,30 +36,66 @@ describe('Requests board source keys', () => {
 });
 
 describe('plan approval gate (samskara-e6z)', () => {
-  const base = {
-    item: { triageType: 'bug', acceptedAt: new Date() },
-    requestedTriageType: undefined,
+  // @mastra/factory 0.20 (#25329): boards/work-transition-policy.js rejects
+  // Planning -> Building for every non-human actor unless plans auto-approve
+  // or the transition carries planApproved. The approved-plan rule runs as a
+  // system actor (rules/processor.js), and the processor stamps planApproved
+  // only for an approved submit_plan result.
+  const policy = requestsBoard.transitionPolicy;
+  const planToBuild = (
+    actor: FactoryRuleActor,
+    flags: Partial<Pick<BoardTransitionPolicyContext, 'planApproved' | 'plansAutoApproved'>> = {},
+  ): BoardTransitionPolicyContext => ({
+    tenant: { orgId: 'org-1', projectId: 'proj-1' },
+    actor,
+    ingress: { type: 'rule', id: 'ing-1' },
+    cause: 'test',
+    causalChain: [],
+    configVersion: 'test',
+    board: 'requests',
     fromStage: 'planning',
     toStage: 'execute',
-  };
+    source: 'manual',
+    initialEntry: false,
+    reenter: false,
+    itemRevision: 1,
+    isHumanTransition: actor.type === 'human',
+    plansAutoApproved: false,
+    planApproved: false,
+    ...flags,
+    item: {
+      id: 'wi-1',
+      source: 'manual',
+      sourceKey: null,
+      parentWorkItemId: null,
+      title: 'A request',
+      url: null,
+      stages: ['planning'],
+      acceptedAt: new Date().toISOString(),
+      metadata: null,
+      triageType: 'bug',
+    },
+  });
 
-  it('stops the plan agent moving work into Building when auto-approve is off', () => {
-    const result = board.transitionPolicy?.({
-      ...base,
-      actor: { type: 'agent', role: 'plan' },
-      isHumanTransition: false,
-      plansAutoApproved: false,
-    });
+  it('rejects the plan agent moving work into Building without an approved plan', async () => {
+    const result = await policy?.(planToBuild({ type: 'agent', bindingId: 'b-1', role: 'plan' }));
     expect(result).toMatchObject({ type: 'reject', code: 'approval_required' });
   });
 
-  it('lets a maintainer move it', () => {
-    const result = board.transitionPolicy?.({
-      ...base,
-      actor: { type: 'user', id: 'u1' },
-      isHumanTransition: true,
-      plansAutoApproved: false,
-    });
+  it('rejects the tool-result rule when planApproved is not stamped', async () => {
+    const result = await policy?.(planToBuild({ type: 'system', id: 'factory-tool-result-rule' }));
+    expect(result).toMatchObject({ type: 'reject', code: 'approval_required' });
+  });
+
+  it('lets a maintainer move it', async () => {
+    const result = await policy?.(planToBuild({ type: 'human', id: 'u1' }));
+    expect(result?.type).toBe('allow');
+  });
+
+  it('advances via submit_plan once planApproved is stamped', async () => {
+    const result = await policy?.(
+      planToBuild({ type: 'system', id: 'factory-tool-result-rule' }, { planApproved: true }),
+    );
     expect(result?.type).toBe('allow');
   });
 });
