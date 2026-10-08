@@ -9,6 +9,8 @@
  * Factory extension points used (@mastra/factory 0.20.0, dist/):
  *   - FactoryIntegration.workers / routes / diagnostics   integrations/base.d.ts:180-270
  *   - IntegrationContext.runtime.{workItems, boards}      integrations/base.d.ts:137-143
+ *   - IntegrationContext.feed.createComment               integrations/base.d.ts:94-95
+ *       (idempotent on externalSource, storage/domains/comments/base.js:180-191)
  *   - IntegrationContext.storage.{sourceControls, projects} integrations/base.d.ts:109-111
  *   - VersionControl.getRepositoryAccess                  capabilities/version-control.d.ts:231
  *       (GitHub: plain https cloneUrl + installation token, integrations/github/integration.js:199-213)
@@ -38,6 +40,7 @@ import { join } from 'node:path';
 
 import { registerLive } from './done-rule';
 import { BdRepo, cacheDirFor, resultTail } from './repo';
+import type { ReadyBead } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
 import { BeadsSyncWorker } from './worker';
@@ -138,6 +141,9 @@ export class BeadsIntegration implements FactoryIntegration {
   #last: SweepSummary | undefined;
   /** Orphaned connection ids already logged, so each is reported once per process. */
   readonly #orphansLogged = new Set<string>();
+  /** Card ids whose description comment is confirmed in this process. */
+  readonly #described = new Set<string>();
+  #feedMissingLogged = false;
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -395,14 +401,17 @@ export class BeadsIntegration implements FactoryIntegration {
       }
     }
 
-    // 2. Intake: one card per ready bead, idempotently.
+    // 2. Intake: one card per ready bead, idempotently, and its description
+    //    on the card's feed (back-filled for cards that predate it).
     for (const bead of await repo.ready()) {
       const source: ExternalWorkItemSource = { integrationId: BEADS_INTEGRATION_ID, type: 'issue', externalId: bead.id };
       // No `workspaceId`: POST /web/factory/projects/:id/work-items drops it
       // (routes/contracts.js externalSourceSchema), so a key carrying it would
       // never match a card made through that route. The repo is in claimKey.
-      if (await runtime.workItems.getByProjectSource({ orgId, factoryProjectId: projectId, source })) {
+      const existing = await runtime.workItems.getByProjectSource({ orgId, factoryProjectId: projectId, source });
+      if (existing) {
         report.existing++;
+        await this.#postDescription(existing, bead);
         continue;
       }
       try {
@@ -427,6 +436,7 @@ export class BeadsIntegration implements FactoryIntegration {
         });
         if (result.created) report.created++;
         else report.existing++;
+        await this.#postDescription(result.item, bead);
       } catch (error) {
         // Another project in the org already carries this bead.
         if (error instanceof WorkItemClaimConflictError) {
@@ -447,6 +457,54 @@ export class BeadsIntegration implements FactoryIntegration {
       result = await repo.sync(credentials);
     }
     return result;
+  }
+
+  /**
+   * Put the bead's description on the card's feed as one integration-authored
+   * comment. Every invokeSkill kickoff (triage, plan, build) appends the
+   * card's recent feed as a `<work-item-feed>` block (rules/dispatcher.js:635-639,
+   * storage/domains/comments/feed-context.js), so this is how the agent sees it.
+   *
+   * Idempotent on `externalSource`: the store returns the existing row for a
+   * repeated source key (storage/domains/comments/base.js:180-191). The
+   * in-memory set only saves the repeat call (and its feed refresh) within one
+   * process; after a restart each card is replayed once, harmlessly.
+   *
+   * The first description posted is kept. Integrations get only
+   * `feed.createComment` (integrations/base.d.ts:94-95), not `editComment`, so
+   * a later edit to the bead is not mirrored; see docs/operations/beads.md.
+   *
+   * Never throws: a feed failure must not stop intake or write-back.
+   */
+  async #postDescription(card: WorkItemRow, bead: ReadyBead): Promise<void> {
+    const description = typeof bead.description === 'string' ? bead.description : '';
+    if (!description.trim() || this.#described.has(card.id)) return;
+    const feed = this.#ctx?.feed;
+    if (!feed) {
+      if (!this.#feedMissingLogged) {
+        this.#feedMissingLogged = true;
+        this.#log.warn('[factory-beads] the Factory feed is not available; bead descriptions are not posted to cards');
+      }
+      return;
+    }
+    try {
+      const result = await feed.createComment({
+        orgId: card.orgId,
+        workItemId: card.id,
+        author: BEADS_COMMENT_AUTHOR,
+        body: descriptionBody(description),
+        externalSource: { integrationId: BEADS_INTEGRATION_ID, type: 'description', externalId: bead.id },
+        // Placed at the card's creation, like an issue body: it reads first in
+        // the feed, and back-filling an old card does not bump its activity.
+        occurredAt: new Date(card.createdAt),
+      });
+      if (result.status === 'created') this.#described.add(card.id);
+      else this.#log.warn(`[factory-beads] description for ${bead.id} not posted to card ${card.id}: ${result.status}`);
+    } catch (error) {
+      this.#log.warn(
+        `[factory-beads] description for ${bead.id} not posted to card ${card.id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   #closeReason(item: WorkItemRow): string {
@@ -528,6 +586,23 @@ export class BeadsIntegration implements FactoryIntegration {
       }),
     ];
   }
+}
+
+/** Author of the description comment. Ids with a `:` are never mentionable (comments/actor.d.ts). */
+export const BEADS_COMMENT_AUTHOR = { kind: 'integration', id: `integration:${BEADS_INTEGRATION_ID}`, displayName: 'beads' } as const;
+
+/** Factory rejects a comment body over this many UTF-16 code units (storage/domains/comments/base.js:33,37-40). */
+export const MAX_COMMENT_BODY = 16_000;
+
+/** The comment body for a description, cut to fit the body limit with a note when it is too long. */
+export function descriptionBody(description: string): string {
+  if (description.length <= MAX_COMMENT_BODY) return description;
+  const note = `\n\n[Truncated: the bead's description is ${description.length} characters; the full text is in beads.]`;
+  let cut = MAX_COMMENT_BODY - note.length;
+  // Never split a surrogate pair.
+  const code = description.charCodeAt(cut - 1);
+  if (code >= 0xd800 && code <= 0xdbff) cut--;
+  return description.slice(0, cut) + note;
 }
 
 /** The org-wide claim for one bead: a repo's bead is carded by one project at a time. */

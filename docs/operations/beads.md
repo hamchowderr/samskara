@@ -32,10 +32,11 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:308-379`).
+   (`packages/factory-beads/src/integration.ts:331-395`).
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
-4. **Intake.** `bd --readonly ready --json --brief --exclude-type=epic -n 0`,
-   then one card per bead (`integration.ts:381-422`).
+4. **Intake.** `bd --readonly ready --json --exclude-type=epic -n 0`, then one
+   card per bead, and the bead's description as one comment on the card's feed
+   (`integration.ts:404-448`). See [What the agent sees](#what-the-agent-sees).
 
 A project connection whose GitHub installation no longer exists (an orphaned
 link, samskara-1ra) is skipped with one warning per connection, and the other
@@ -72,6 +73,74 @@ Cards are created with `workItems.upsert` and not with a rule decision.
 `upsert` is the call that `POST /web/factory/projects/:id/work-items` makes, and
 it accepts any external source. A card with an unknown source classifies as
 `manual` (`rules/types.d.ts:12`), so the board's `manual` rules apply to it.
+
+### What the agent sees
+
+A Factory work item has no description field. The plan skill gets the card's
+URL or, when it has none, its title (`@mastra/factory` 0.20.0
+`dist/boards/work.js:102-108`), and beads cards have no URL. So the card title
+alone, `<bead id>: <bead title>`, is all the kickoff carries.
+
+The bead's **description** reaches the agent through the card's feed. Every
+`invokeSkill` kickoff (triage, plan, build) has the card's recent comments
+appended as a `<work-item-feed>` block (`dist/rules/dispatcher.js:635-639`,
+reader wired at `dist/factory.js:686`). The integration posts the description
+as one comment through `IntegrationContext.feed.createComment`
+(`dist/integrations/base.d.ts:94-95`, given to workers at
+`dist/factory.js:847`), the same call Slack uses to ingest thread asides
+(`dist/integrations/slack/slack.js:712-718`). Code:
+`packages/factory-beads/src/integration.ts`, `#postDescription`.
+
+| Field | Value |
+|-------|-------|
+| `author` | `{ kind: 'integration', id: 'integration:beads', displayName: 'beads' }` |
+| `externalSource` | `{ integrationId: 'beads', type: 'description', externalId: <bead id> }` |
+| `body` | the description as it is in beads |
+| `occurredAt` | the card's `createdAt`, so the description reads first, like an issue body, and a back-filled comment does not bump the card's feed activity |
+
+Only the description is posted. Design, acceptance criteria and notes are not.
+To get the description, intake runs `bd ready` without `--brief`: in bd 1.3.0
+`--brief` omits description, design, acceptance criteria and notes
+(`bd ready --help`). bd leaves an empty description out of the JSON row, and a
+bead with an empty or whitespace-only description gets no comment.
+
+**Idempotent.** The comment store returns the existing row when a comment with
+the same `externalSource` already exists in the project
+(`dist/storage/domains/comments/base.js:180-191`). So the integration checks
+every ready bead's card on every sweep, and this is safe across sweeps,
+restarts and replicas. Cards created before this change get their comment on
+the next sweep. Within one process, a card whose comment is confirmed is not
+checked again. After a restart, each card is checked once more, and the store
+returns the existing comment.
+
+**Edits are not mirrored. The first description posted stays.** Integrations
+get only `feed.createComment`, not `editComment` (`integrations/base.d.ts:95`
+is `Pick<CommentsDomain, 'createComment'>`), so the integration cannot update
+the comment. Keying `externalId` by a description hash would post a new
+comment for each edit. The agent would then see every version, and the older
+ones would use up the feed's 20-comment window. If a bead's description changes
+after its card exists, add a comment on the card by hand. This matches the
+existing rule that cards do not follow later bead edits.
+
+**Limits.** These come from `@mastra/factory` 0.20.0.
+
+- The comment body can be at most 16,000 characters
+  (`dist/storage/domains/comments/base.js:33`, `:37-40`). A longer
+  description is cut to fit and ends with
+  `[Truncated: the bead's description is N characters; the full text is in beads.]`
+  (`descriptionBody`). The cut never splits a UTF-16 surrogate pair.
+- The agent sees less than the comment holds. The feed block has the newest
+  **20** comments, each cut to **2,000** characters (Factory adds `…`), and at
+  most **12,000** characters in total. Older comments are dropped first
+  (`dist/storage/domains/comments/feed-context.js:4-6`, `:36-72`). So the agent
+  sees the first 2,000 characters of the description. On a card with more than
+  20 newer comments, the agent does not see the description at all.
+- The feed preamble tells the agent that comments are data written by
+  collaborators, not instructions (`feed-context.js:9`).
+
+If the Factory gives the integration no feed (`ctx.feed` is undefined), cards
+are still created, and the integration logs one warning per process. A failed
+`createComment` is logged and does not fail the sweep.
 
 ### The Done rule
 
@@ -181,7 +250,7 @@ second process.
 ## Write-back failures
 
 `bd sync` exit codes (from `bd sync --help`), and what the integration does with
-each (`integration.ts:342-372`, retries at `:424-433`):
+each (`integration.ts:364-395`, retries at `:451-460`):
 
 | Exit | Meaning | Action |
 |------|---------|--------|
@@ -217,7 +286,10 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   following: the token never appears in argv; the server environment does not
   reach bd; exit codes 2 and 3; idempotent intake across sweeps and restarts;
   epic exclusion; claim conflicts; ordering (B is carded only after A's card
-  reaches Done and A is closed and synced); and the lease.
+  reaches Done and A is closed and synced); the lease; and the description
+  comment (one per card across sweeps and restarts, back-fill, no comment for
+  an empty description, no feed, a failing feed, truncation). The fake feed
+  (`MemoryFeed` in `test/harness.ts`) copies the store's replay behaviour.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote. It is
   **local-only**: it is skipped when `bd` is not on PATH, and the CI workflow
@@ -252,8 +324,12 @@ build never runs bd.
   automated writer.
 - **No live plan-gate run yet.** The gate is proven by unit tests only. The
   transition API always acts as a person, and a live agent run costs credits.
-- **Cards do not follow later bead edits.** If a bead's title changes, or the
-  bead is closed outside Factory, its card stays as it is.
+- **Cards do not follow later bead edits.** If a bead's title or description
+  changes, or the bead is closed outside Factory, its card and its description
+  comment stay as they are.
+- **The description reaches the agent live only in unit tests so far.** The
+  feed path is native Mastra, but no planning run on a beads card has been
+  checked end to end since this change.
 - **Client repositories have not been exercised.** Each needs the App
   installed, `refs/dolt/data` on `origin`, and the
   `DOLT_REMOTE_INFO_BRANCH` setting described above.

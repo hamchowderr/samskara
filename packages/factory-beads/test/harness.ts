@@ -29,6 +29,7 @@ export interface FakeBead {
   status?: string;
   priority?: number;
   issue_type?: string;
+  description?: string;
   blockedBy?: string[];
   closeReason?: string | null;
 }
@@ -123,6 +124,73 @@ export class MemoryWorkItems {
   }
 }
 
+export interface FeedComment {
+  id: string;
+  orgId: string;
+  factoryProjectId: string;
+  workItemId: string;
+  author: { kind: string; id: string; displayName?: string };
+  body: string;
+  externalSource: ExternalWorkItemSource | null;
+  occurredAt: Date;
+}
+
+/**
+ * The `feed` slice integrations get (`Pick<CommentsDomain, 'createComment'>`),
+ * with the semantics the integration relies on (@mastra/factory 0.20.0):
+ * body policy (comments/base.js:37-40), unknown work item
+ * (comments/domain.js:49-53), and the externalSource replay that returns the
+ * existing row as `created` (comments/base.js:180-191, domain.js:94-99).
+ */
+export class MemoryFeed {
+  comments: FeedComment[] = [];
+  calls = 0;
+  #seq = 0;
+  constructor(private readonly workItems: MemoryWorkItems) {}
+
+  async createComment(input: {
+    orgId: string;
+    workItemId: string;
+    author: FeedComment['author'];
+    body: string;
+    externalSource?: ExternalWorkItemSource;
+    occurredAt?: Date;
+  }) {
+    this.calls++;
+    if (!input.body.trim()) return { status: 'invalid' as const, message: 'Comment body must not be empty.' };
+    if (input.body.length > 16_000) return { status: 'invalid' as const, message: 'Comment body must be at most 16000 characters.' };
+    const workItem = this.workItems.items.find(i => i.orgId === input.orgId && i.id === input.workItemId);
+    if (!workItem) return { status: 'work_item_not_found' as const };
+    const key = (s: ExternalWorkItemSource) => `${s.integrationId}:${s.type}:${s.externalId}`;
+    const replay = input.externalSource
+      ? this.comments.find(
+          c =>
+            c.orgId === input.orgId &&
+            c.factoryProjectId === workItem.factoryProjectId &&
+            c.externalSource !== null &&
+            key(c.externalSource) === key(input.externalSource!),
+        )
+      : undefined;
+    if (replay) return { status: 'created' as const, comment: structuredClone(replay), workItem, mirrored: Promise.resolve() };
+    const comment: FeedComment = {
+      id: `comment_${++this.#seq}`,
+      orgId: input.orgId,
+      factoryProjectId: workItem.factoryProjectId,
+      workItemId: input.workItemId,
+      author: input.author,
+      body: input.body,
+      externalSource: input.externalSource ?? null,
+      occurredAt: input.occurredAt ?? new Date(),
+    };
+    this.comments.push(comment);
+    return { status: 'created' as const, comment: structuredClone(comment), workItem, mirrored: Promise.resolve() };
+  }
+
+  on(workItemId: string) {
+    return this.comments.filter(c => c.workItemId === workItemId);
+  }
+}
+
 /** Source-control rows the fake handle serves; tests mutate it to add projects and links. */
 export interface FakeSourceControl {
   projects: Array<{ id: string; orgId: string }>;
@@ -137,6 +205,7 @@ export interface Harness {
   cacheDir: string;
   statePath: string;
   workItems: MemoryWorkItems;
+  feed: MemoryFeed;
   sourceControl: FakeSourceControl;
   ctx: IntegrationContext;
   state(): FakeState;
@@ -160,6 +229,7 @@ export function createHarness(beads: FakeBead[]): Harness {
   writeFileSync(statePath, JSON.stringify(initial));
 
   const workItems = new MemoryWorkItems();
+  const feed = new MemoryFeed(workItems);
   const board = {
     id: 'work',
     initialPhase: 'intake',
@@ -210,6 +280,7 @@ export function createHarness(beads: FakeBead[]): Harness {
       projects: { listAll: async () => sourceControl.projects.map(p => ({ ...p })) },
     },
     runtime: { configVersion: 'test', workItems, boards: new Map([['work', board]]) },
+    feed,
   } as unknown as IntegrationContext;
 
   const cacheDir = join(dir, 'cache');
@@ -219,6 +290,7 @@ export function createHarness(beads: FakeBead[]): Harness {
     cacheDir,
     statePath,
     workItems,
+    feed,
     sourceControl,
     ctx,
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as FakeState,
