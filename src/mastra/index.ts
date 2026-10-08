@@ -33,6 +33,7 @@ import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 import { watchDatabaseClient } from './db-diagnostics';
 import { keepOutboundConnectionsAlive } from './keep-alive';
 import { buildBetterAuth } from './auth/better-auth';
+import { SessionCache } from './auth/session-cache';
 import { mailConfigured } from './auth/mailer';
 import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
@@ -338,7 +339,11 @@ if (betterAuthSelected && betterAuthSecret) {
   // Owning the instance means owning its schema: the provider only migrates
   // instances it built itself (dist/index.js:509). buildBetterAuth() migrates
   // before constructing, so a fresh clone gets its auth tables.
+  // The gate authenticates every request; this keeps most of them off the
+  // database (samskara-lx1). Per container: see auth/session-cache.ts.
+  const sessionCache = new SessionCache();
   const betterAuthInstance = await buildBetterAuth({
+    sessionCache,
     secret: betterAuthSecret,
     database: storage.authDatabase(),
     publicUrl: process.env.MASTRACODE_PUBLIC_URL?.trim().replace(/\/+$/, ''),
@@ -347,7 +352,7 @@ if (betterAuthSelected && betterAuthSecret) {
       .map(o => o.trim())
       .filter(Boolean),
   });
-  auth = new MastraAuthBetterAuth({ auth: betterAuthInstance });
+  auth = new MastraAuthBetterAuth({ auth: sessionCache.wrap(betterAuthInstance) });
 }
 
 // Which auth provider actually resolved. Worth a permanent boot line: when auth

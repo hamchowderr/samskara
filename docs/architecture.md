@@ -25,7 +25,9 @@ model; this repository decides which implementations they run against.
 Read in this order — each depends on the ones above it.
 
 **Authentication.** Better Auth, self-hosted. Constructed early so a
-misconfiguration fails before anything else initialises.
+misconfiguration fails before anything else initialises. The Factory gate's
+session lookups go through a short in-process cache; see
+[operations/session-cache.md](operations/session-cache.md).
 
 **Storage.** A `LibSQLFactoryStorage` instance, pointed at a local file or at
 Turso. `DATABASE_URL` is read only to warn that it is being ignored: deploy
