@@ -186,9 +186,9 @@ that implements it, so the next reader does not have to re-derive it.
 - **Verify against the BUILT output, not only source.** The bundler folds
   `process.env.NODE_ENV` at build time, so a NODE_ENV-dependent branch can
   compile to a constant and behave differently from the source you read.
-- Before anything goes to the Mastra team or a public issue, have it
-  independently audited (a fresh subagent and Codex, separately) and report
-  only what survives. Overstating a claim gets it dismissed.
+- Issue reports to Mastra follow the `mastra` skill's feedback process
+  (`references/feedback.md`). Claims must still be verified first-hand
+  before reporting.
 
 ## Build & Test
 
