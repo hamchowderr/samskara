@@ -30,6 +30,7 @@ import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 
+import { keepOutboundConnectionsAlive } from './keep-alive';
 import { buildBetterAuth } from './auth/better-auth';
 import { mailConfigured } from './auth/mailer';
 import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
@@ -91,6 +92,10 @@ function credentialEncryption() {
     }),
   });
 }
+
+// Before any client is created: Turso queries otherwise reconnect after 4s
+// idle, which made each request's auth gate take 1-2.5s (samskara-lx1).
+keepOutboundConnectionsAlive();
 
 // Distributed pub/sub: when `REDIS_URL` is set, events (streams, workflows,
 // signals) ride Redis Streams so multiple web server processes can share one
