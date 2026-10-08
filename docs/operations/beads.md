@@ -37,6 +37,14 @@ App:
 4. **Intake.** `bd --readonly ready --json --brief --exclude-type=epic -n 0`,
    then one card per bead (`integration.ts:381-422`).
 
+A project connection whose GitHub installation no longer exists (an orphaned
+link, samskara-1ra) is skipped with one warning per connection, and the other
+links still sweep. `connections.list` returns such a connection, but
+`projectRepositories.list` throws `SourceControlConnectionNotFoundError` for it
+(`@mastra/factory` 0.20.0 `dist/storage/domains/source-control/base.js:306-309`,
+`:510-515`), so the integration first checks it with `connections.get`, which
+applies the same test and returns `null`.
+
 Epics are excluded because `bd ready` lists an unblocked epic beside its first
 child. Epics are containers, not work.
 

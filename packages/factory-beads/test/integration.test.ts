@@ -224,3 +224,41 @@ describe('repository cache', () => {
     expect(existsSync(join(cacheDirFor(h.cacheDir, SLUG), '.git', 'factory-beads-bootstrapped'))).toBe(true);
   });
 });
+
+describe('linked repositories', () => {
+  it('skips an orphaned connection and an unlinked project, and still sweeps the valid link', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    // The owner's case: one project with a valid connection and one whose
+    // installation was pruned (samskara-1ra), plus a project with no connection.
+    h.sourceControl.connections.push({ id: 'conn_orphan', factoryProjectId: PROJECT, installationId: 'inst_pruned', repositoryIds: ['repo_2'] });
+    h.sourceControl.repositories.set('repo_2', 'acme/gone');
+    h.sourceControl.projects.push({ id: 'proj_unlinked', orgId: ORG });
+    const warnings: string[] = [];
+    const integration = h.integration({
+      logger: { info: () => undefined, warn: (...args: unknown[]) => void warnings.push(args.join(' ')), error: () => undefined },
+    });
+
+    const first = await sweep(integration);
+    expect(first.error).toBeUndefined();
+    expect(first.repos).toEqual([expect.objectContaining({ projectId: PROJECT, repo: SLUG, created: 1, state: 'ok' })]);
+    expect(ids(h)).toEqual(['w-1']);
+
+    const second = await sweep(integration);
+    expect(second.error).toBeUndefined();
+    expect(second.repos).toEqual([expect.objectContaining({ repo: SLUG, existing: 1, state: 'ok' })]);
+
+    const orphanWarnings = warnings.filter(w => w.includes('conn_orphan'));
+    expect(orphanWarnings).toHaveLength(1);
+    expect(orphanWarnings[0]).toMatch(/orphaned source-control connection conn_orphan on project proj_1/);
+    expect(warnings.some(w => w.includes('sweep finished with problems'))).toBe(false);
+  });
+
+  it('without the guard, the orphaned connection is what throws', async () => {
+    h = createHarness([]);
+    h.sourceControl.connections.push({ id: 'conn_orphan', factoryProjectId: PROJECT, installationId: 'inst_pruned', repositoryIds: ['repo_2'] });
+    const handle = (h.ctx.storage as unknown as { sourceControls: Array<{ projectRepositories: { list(a: object): Promise<unknown> } }> }).sourceControls[0]!;
+    await expect(handle.projectRepositories.list({ orgId: ORG, connectionId: 'conn_orphan' })).rejects.toThrow(
+      'Project source-control connection not found for this organization and integration.',
+    );
+  });
+});
