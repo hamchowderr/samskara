@@ -231,8 +231,10 @@ dependency, not a fork. Entry point: `src/mastra/index.ts`.
 - **Sandbox** — `local | e2b | platform` via `FACTORY_SANDBOX_PROVIDER`,
   auto-detected when unset. An explicit choice missing its credentials THROWS;
   it must never silently downgrade to a less isolated provider.
-- **Boards** — `src/mastra/boards/requests-board.ts` wires `manual` work items
-  into triage, which the built-in Work board does not do.
+- **Boards** — `src/mastra/boards/requests-board.ts` is the built-in Work
+  board plus `manual` triage, installed under the id `work` with
+  `includeDefaultBoards: false` so it replaces the built-in (Review is
+  reinstalled as-is). Keep the id: the GitHub rules key on it. See docs/boards.md.
 
 ## Conventions & Patterns
 

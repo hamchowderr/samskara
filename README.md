@@ -80,7 +80,7 @@ A Factory scaffolded with `npm create factory` behaves as the left column descri
 | **Database** | `DATABASE_URL` set → Postgres; unset → local libSQL file in dev/test, and a hard throw outside them | libSQL and Turso. `DATABASE_URL` is read, ignored, and warned about |
 | **Vector store** | `PgVector` when `DATABASE_URL` is set; otherwise **none at all** | `LibSQLVector` always — its own file locally, sharing the Turso database unless `TURSO_VECTOR_DATABASE_URL` splits them |
 | **Sandbox** | Only `FACTORY_SANDBOX_PROVIDER=local` is read. Otherwise platform → E2B → local, silently | The value is validated. An explicit choice missing its credentials throws at startup |
-| **Chat-sourced work** | The Work board declares triage for `issue` and `linearIssue` only | A Requests board declares it for `manual` too. See the caveat below — Slack cards do not reach it automatically |
+| **Chat-sourced work** | The Work board declares triage for `issue` and `linearIssue` only | Samskara's Work board, which replaces the built-in by id, declares it for `manual` too. See the caveat below — Slack cards skip Triage |
 
 **Database.** Most deploy platforms inject `DATABASE_URL` automatically. On the stock scaffold that repoints the whole backend at a Postgres instance you did not pick — and with `NODE_ENV` set to anything but `development` or `test`, its absence is a startup error rather than a libSQL fallback. Samskara ignores the variable and logs a warning.
 
@@ -114,22 +114,20 @@ triage: {
 
 A chat message classifies as `manual`, so it reaches Triage, matches no handler, and gets a generic stage message instead of the triage skill. Planning and every phase after it already handle `manual`, so the card then continues normally.
 
-`src/mastra/boards/requests-board.ts` is a copy of the Work board with `manual` added wherever `issue` appears. Both boards stay installed, so GitHub work is untouched.
+`src/mastra/boards/requests-board.ts` is the exported Work board with `manual` added to Triage. It is installed under the id `work` with `includeDefaultBoards: false`, the replacement path Mastra documents, so it takes the built-in's place and everything keyed to `work` (the GitHub PR rules, plan approval, triage classification, the UI's Work page) applies to it unchanged. Review is reinstalled as-is. See [docs/boards.md](docs/boards.md).
 
-### The caveat: Slack cards do not reach it on their own
+### The caveat: Slack cards skip Triage
 
-Installing the board is not the same as routing work to it. In `@mastra/factory` 0.16.0 a dispatched Slack thread creates its card directly at Building with no board assigned:
+In `@mastra/factory` 0.20.0 a dispatched Slack thread creates its card directly at Building with no board assigned:
 
 ```js
 // integrations/slack/slack.js
 input: { title, externalSource: {...}, stages: ["execute"] }   // no `board`
 ```
 
-With `board` unset, `boardForWorkItem()` resolves it to the built-in Work board, and nothing routes it elsewhere: intake bindings are an issue-tracker contract Slack does not implement, the rules dispatcher knows no Slack source, and cross-board transitions are rejected outright. The Slack integration exposes no option for either value.
+With `board` unset, `boardForWorkItem()` resolves it to `work`, which is Samskara's board, so the card is on the right board, but it never passes through Triage. The Slack integration exposes no option for the stage.
 
-A card can be moved by hand — `PATCH /web/factory/work-items/:id` with `{"board":"requests","stages":["triage"]}` is accepted while its board is still null — but that is one call per card, after the run has already started.
-
-So today the Requests board serves manual items created in the UI. Chat-sourced triage needs routing that upstream does not yet provide; the Slack integration's own comment calls it a planned follow-up.
+A card can be re-filed by hand — `PATCH /web/factory/work-items/:id` with `{"board":"work","stages":["triage"]}` is accepted while its board is still null — but that is one call per card, after the run has already started. Filing Slack work into Triage needs routing upstream does not yet provide; the Slack integration's own comment calls it a planned follow-up.
 
 ## 🚀 Setup
 

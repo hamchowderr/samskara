@@ -7,23 +7,31 @@ This page covers what that page does not.
 
 ## What ships
 
-`includeDefaultBoards` stays on, so the built-in **Work** and **Review** boards
-are installed. Samskara adds one more: **Requests**
-(`src/mastra/boards/requests-board.ts`).
+Two boards are installed, both under the built-in ids:
 
-All three share the same six phases:
+- **Work** (id `work`) — Samskara's own definition, titled **Requests**
+  (`src/mastra/boards/requests-board.ts`). It replaces the built-in Work board.
+- **Review** (id `review`) — the stock `reviewBoard`, unchanged.
+
+`src/mastra/index.ts` sets `includeDefaultBoards: false` and passes
+`boards: [requestsBoard, reviewBoard]`. Disabling the defaults removes BOTH
+built-ins (`@mastra/factory` 0.20.0 `dist/boards/registry.js:4-6`), which is why
+Review is installed again explicitly.
+
+Both boards keep Work's phases:
 
 ```
 intake → triage → planning → execute (Building) → review → done
 ```
 
-## Why Requests exists
+## Why our Work board exists
 
 Each phase declares `onEnter` handlers keyed by where the item came from (see
-[Source keys](#source-keys)). Work created in the UI or by chat is `manual`.
+[Source keys](#source-keys)). Work created in the UI, by chat or from Slack is
+`manual`.
 
-The Work board runs triage for every tracker source but not for `manual`
-(`@mastra/factory` 0.16.0, `dist/boards/work.js`):
+The built-in Work board runs triage for every tracker source but not for
+`manual` (`@mastra/factory` 0.20.0, `dist/boards/work.js:155-161`):
 
 ```js
 triage: {
@@ -39,138 +47,127 @@ triage: {
 
 A `manual` card entering Triage there matches no handler and receives a generic
 stage message instead of running the triage skill. Planning and Building
-already declare `manual`, so only that one phase is affected — and it is the
+already declare `manual`, so only that one phase is affected, and it is the
 phase that decides what the work is.
 
-Requests is a custom board, built with `defineBoard()` as Mastra's README
-describes. It was modelled on the 0.15.0 Work board and handles the sources this
-deployment uses: `issue`, `linearIssue` and `manual`. It is not derived
-from `workBoard` at runtime, and should not be: the README says *"Built-in
-customization is deferred; there is no built-in override or replacement API."*
+Our board is the exported `workBoard` with one change: Triage also declares
+`manual`, using Work's own `issue` handler (it already formats a `manual` item's
+reference and handles the needs-approval case). Everything else (phases, roles,
+transition policy, the `submit_plan` tool rule, other sources' handlers) is
+read from `workBoard` at runtime, so upstream changes flow through.
+
+## Replacing Work by id
+
+This is the pattern Mastra documents for customizing Work:
+
+- `README.md:88-100`: "To replace Work or Review, disable both default boards
+  and install a board with the same ID. You can reinstall the exported
+  `workBoard` and `reviewBoard` definitions unchanged, or use their phases as
+  the starting point for a customized definition." It also says to keep the
+  built-in phase names and roles.
+- `factory-skills/configure-factory-rules/SKILL.md:23`: "To customize Work or
+  Review, set `includeDefaultBoards: false` and install a same-ID board,
+  preferably using the exported `workBoard` or `reviewBoard` phases as the
+  starting point."
+- Added upstream in mastra-ai/mastra#25595 (Factory 0.19.0). A same-id board
+  still throws `duplicate board id` while the defaults are enabled.
+
+`README.md:118` still says "there is no built-in override or replacement API".
+That sentence predates #25595 and contradicts `:88`. Follow `:88` and SKILL.md.
+
+Keeping the id `work` matters because a lot of runtime and UI behaviour is
+keyed to that literal string, and none of it reaches a board with another id:
+
+| Keyed to `work` | Where (0.20.0 `dist/`) |
+|---|---|
+| Default GitHub rules: PR opened → Review, merged → Done, changes-requested review and PR comments sent to the builder, issue closed → Done/Canceled | `integrations/github/default-rules.js:69, :113, :148, :155, :207` |
+| `submit_plan` advances an approved plan with `board: "work"` | `boards/work-tool-rules.js:13` |
+| The triage agent gets the classification schema | `rules/tools.js:44, :69` |
+| Cards with no stored board (Slack threads, legacy rows) belong to `work` | `boards/semantics.js:8` |
+| UI: the `/factories/:id/work` page, the GitHub issue triage feed, card actions | Factory UI bundle |
+
+The triage row matters: `workTransitionPolicy` rejects any triage-agent
+transition that carries no classification (`boards/work-transition-policy.js:4-8`),
+and only a board with the id `work` is offered the field. Under the old `requests`
+id, a triage agent could never move a card.
+
+### No arrival automation
+
+Arrivals rest in Intake without starting a run. That is Mastra's preferred
+behaviour (`README.md:102`), and SKILL.md:25 says: "Do not restore default
+arrival automation on the built-in boards." Guarded arrival triage
+(`README.md:104-116`, SKILL.md:27) is sanctioned for custom boards only. This
+board is the built-in Work by id, so it declares none. A person moves a card
+into Triage to start it.
+
+The earlier `requests` board did restore guarded arrival triage on Intake for
+`issue`, `linearIssue` and `manual`. That was removed with the switch.
 
 ## Source keys
 
 Mastra's README and its types disagree about which keys exist.
 
-| Source | README (0.16.0, line 88) | `rules/types.d.ts` `FACTORY_RULE_SOURCES` | Requests handles it |
+| Source | README (0.20.0, line 88) | `rules/types.d.ts` `FACTORY_RULE_SOURCES` | Our Work board's Triage handles it |
 |---|---|---|---|
 | `issue` | yes | yes | yes |
 | `pullRequest` | yes | yes | no (Review board) |
 | `linearIssue` | yes | yes | yes |
-| `manual` | yes | yes | yes |
-| `gitlabIssue` | no | yes | no |
+| `manual` | yes | yes | yes (our addition) |
+| `gitlabIssue` | no | yes | yes (from `workBoard`) |
 | `gitlabPullRequest` | no | yes | no |
-| `jiraIssue` | no | yes | no |
-| `incidentioFollowUp` | no | yes | no |
+| `jiraIssue` | no | yes | yes (from `workBoard`) |
+| `incidentioFollowUp` | no | yes | yes (from `workBoard`) |
 
-Treat `FACTORY_RULE_SOURCES` as the list the runtime uses. None of the last
-four integrations is connected here, so Requests does not declare them. A card
-from one of them would get a generic stage message on this board. If GitLab,
-Jira or incident.io intake is ever connected, add its key to Requests first,
-modelled on the Work board's handler for it.
+Treat `FACTORY_RULE_SOURCES` as the list the runtime uses.
 
-## Five things that will catch you
+## Things that will catch you
 
 ### `defineBoard()` does not validate handler keys
 
 A misspelled source — `pull-request` for `pullRequest` — type-checks, is stored,
-and never fires. No error, no warning — 0.16.0 validates phases, roles and
-tools, but copies `onEnter` as given (`dist/boards/define-board.js:68`). Check
-keys against [Source keys](#source-keys).
+and never fires. No error, no warning: `defineBoard()` validates phases, roles
+and tools, but copies `onEnter` as given (`dist/boards/define-board.js`). Check
+keys against [Source keys](#source-keys); `tests/boards/requests-board.test.ts`
+does this for our board.
 
-### The SDK's plan-advance rule only works on the Work board
+### A board with any other id loses the Work behaviour above
 
-`advanceApprovedPlan` moves a card from Planning to Building when the plan agent
-reports success. Its return type pins the destination:
+`advanceApprovedPlan` returns `board: "work"`, the default GitHub rules guard on
+`context.board === "work"`, and the transition service refuses a transition
+whose board differs from the card's (`rules/validation.js:76`). A custom board
+with its own id therefore needs wrappers for each of those. Samskara had two
+(`requests-github-rules.ts` for PR opened/merged, and a `submit_plan` override)
+until the board took the id `work`; both are gone.
 
-```ts
-readonly board: "work";        // boards/work-tool-rules.d.ts
-```
-
-The transition service rejects any transition whose board does not match the
-item's. On a board with any other id the rule fires, asks for a transition on
-`work`, and is refused — the plan sits in Planning with no error.
-
-No parameterised variant is exported. `requests-board.ts` wraps the SDK rule and
-overrides the board, keeping upstream's approval detection:
-
-```ts
-function advanceApprovedPlanOnThisBoard(context: FactoryToolResultRuleContext) {
-  const transition = advanceApprovedPlan(context);
-  if (!transition) return;
-  return { ...transition, board: BOARD_ID } as const;
-}
-```
-
-If upstream adds a board-aware variant, delete the wrapper.
-
-### Requests cards follow their PRs through a GitHub rule override
-
-The default GitHub rules (`@mastra/factory` 0.20.0) only move Work cards. On PR
-open, `pullRequestOpened` returns nothing for any other board
-(`integrations/github/default-rules.js:113`). On merge, `pullRequestMerged`
-asks for `board: "work", stage: "done"` (`:145-150`), and the validator refuses
-it because a transition may not change a card's board
-(`rules/validation.js:76`).
-
-`GithubIntegration` merges `rules` overrides over the defaults with
-`resolveGithubRules` (`default-rules.js:279-288`, called at
-`integrations/github/integration.js:264`).
-`src/mastra/boards/requests-github-rules.ts` overrides `pullRequestOpened` and
-`pullRequestMerged` with a wrapper around the SDK handlers. For a Requests card,
-the wrapper runs the default rule as if the card were on Work. The stage names
-`execute`, `review` and `done` are the same on both boards. The wrapper then
-retargets a resulting Work transition to `requests`. Every other card gets the
-default decision unchanged. The result:
-
-- PR opened: Building → Review.
-- PR merged: → Done.
-
-The overrides are wired into `new GithubIntegration({ rules })` in
-`src/mastra/index.ts`. They are also passed as `platform.github.rules` when
-the Factory installs its Platform GitHub integration instead.
-`tests/boards/requests-github-rules.test.ts` drives the resolved rules through
-the SDK's own validators for Requests, Work and Review cards.
-
-Other GitHub events stay Work-only: review feedback, PR comments and issue
-closed. The status messages also still say "Work card".
-
-### A custom board inherits nothing from Work
-
-Not its transition policy, not its tool rules. Both are passed explicitly.
-`workTransitionPolicy` and the tool rules are not re-exported from the package
-root — they come through the `./*` wildcard export, which is why those imports
-carry deeper paths.
+`tests/boards/work-board-github-rules.test.ts` drives the stock
+`GithubIntegration` rules through the SDK's own validators against the
+installed registry, for `manual` cards, GitHub-issue cards and Review cards.
 
 ### Installing a board is not routing work to it
 
-Nothing sends chat-sourced work to a custom board. A dispatched Slack thread is
-created at Building with no board assigned, and no mechanism moves it: intake
-bindings are an issue-tracker contract Slack does not implement, label routes
-skip non-issue sources, the rules dispatcher has no Slack source, and
-cross-board transitions are rejected.
+A dispatched Slack thread is created at Building with no board assigned
+(`integrations/slack/slack.js:570-585`). A card with no board belongs to `work`
+(`boards/semantics.js:8`), which is now our board, so Slack cards land on it
+without routing.
 
-Moving one card by hand works while its board is still unset:
+A card can be assigned a board by hand while its board is still unset:
 
 ```bash
 curl -X PATCH "$FACTORY/web/factory/work-items/<id>" \
   -H 'content-type: application/json' \
-  -d '{"board":"requests","stages":["triage"]}'
+  -d '{"board":"work","stages":["triage"]}'
 ```
 
 A second attempt returns `board_already_assigned`.
 
-So Requests currently serves manual items created in the UI. Routing
-chat-sourced work needs support upstream does not yet provide.
+## Adding another board
 
-## Adding a board
-
-1. Copy `requests-board.ts` as a starting point — it already handles the
-   transition policy, the tool rule and the source keys this deployment uses.
-2. Give it a new id, and use a constant for it so the definition and any rule
-   cannot drift apart.
+1. Start from `workBoard`'s phases, as `requests-board.ts` does.
+2. Give it a new id, and remember that everything in
+   [Replacing Work by id](#replacing-work-by-id) keyed to `work` will not reach
+   it: you need your own tool rule, GitHub rule overrides and transition policy.
 3. Pass it in the `boards` array in `src/mastra/index.ts`.
-4. Check every `onEnter` key against the four valid values.
+4. Check every `onEnter` key against `FACTORY_RULE_SOURCES`.
 5. Start the server and move a card through every phase. Type-checking proves
    nothing here — a wrong key compiles.
 

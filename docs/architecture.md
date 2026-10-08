@@ -6,7 +6,7 @@ that makes this deployment what it is lives in `src/mastra/index.ts`.
 ```
 src/mastra/
   index.ts                  the whole configuration surface
-  boards/requests-board.ts  the one custom board
+  boards/requests-board.ts  our Work board (replaces the built-in by id)
   auth/                     Better Auth instance, its migrations, and the mailer
   team/                     the team and invitation pages
 scripts/                    setup and maintenance, not runtime

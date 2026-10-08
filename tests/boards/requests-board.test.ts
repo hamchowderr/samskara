@@ -1,11 +1,12 @@
 /**
- * The Requests board — a custom board built with defineBoard().
+ * The Requests board — Work's definition plus manual triage, installed as `work`.
  *
  * defineBoard() does not validate onEnter keys (dist/boards/define-board.js),
  * so a misspelled or retired source key compiles and silently never fires.
  * These tests are the validation it does not do.
  */
 import { describe, expect, it } from 'vitest';
+import { workBoard } from '@mastra/factory';
 import { FACTORY_RULE_SOURCES } from '@mastra/factory/rules/types';
 import type { FactoryRuleActor } from '@mastra/factory/rules/types';
 import type { BoardTransitionPolicyContext } from '@mastra/factory/boards/transition-policy';
@@ -31,7 +32,16 @@ describe('Requests board source keys', () => {
 
   it('runs triage for manual work — the reason this board exists', () => {
     expect(board.phases.triage?.onEnter).toHaveProperty('manual');
-    expect(board.phases.intake?.onEnter).toHaveProperty('manual');
+  });
+
+  it('keeps Work\'s phases and roles, and adds no arrival automation (SKILL.md:23-25)', () => {
+    const work = workBoard as unknown as Board & { phases: Record<string, { kind: string; role?: string }> };
+    const ours = board as Board & { phases: Record<string, { kind: string; role?: string }> };
+    expect(Object.keys(ours.phases)).toEqual(Object.keys(work.phases));
+    for (const [id, phase] of Object.entries(work.phases)) {
+      expect({ kind: ours.phases[id]?.kind, role: ours.phases[id]?.role }).toEqual({ kind: phase.kind, role: phase.role });
+    }
+    expect(board.phases.intake?.onEnter).toEqual(work.phases.intake?.onEnter);
   });
 });
 
@@ -52,7 +62,7 @@ describe('plan approval gate (samskara-e6z)', () => {
     cause: 'test',
     causalChain: [],
     configVersion: 'test',
-    board: 'requests',
+    board: 'work',
     fromStage: 'planning',
     toStage: 'execute',
     source: 'manual',
@@ -109,10 +119,10 @@ describe('approved plan advances on THIS board', () => {
     ingress: { id: 'ing-1' },
   };
 
-  it('targets the requests board, not the SDK default "work"', () => {
-    // The SDK rule hardcodes board "work"; the transition service rejects
-    // cross-board moves, so without the override an approved plan never moves.
-    expect(onResult?.(approved)).toMatchObject({ type: 'transition', board: 'requests', stage: 'execute' });
+  it('targets this board (id "work"), which the SDK rule hardcodes', () => {
+    // The SDK rule hardcodes board "work" and the transition service rejects
+    // cross-board moves; sharing Work's id is what lets it fire here unwrapped.
+    expect(onResult?.(approved)).toMatchObject({ type: 'transition', board: 'work', stage: 'execute' });
   });
 
   it('does nothing for a plan that was not approved', () => {

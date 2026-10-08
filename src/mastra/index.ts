@@ -34,14 +34,13 @@ import { keepOutboundConnectionsAlive } from './keep-alive';
 import { buildBetterAuth } from './auth/better-auth';
 import { SessionCache } from './auth/session-cache';
 import { mailConfigured } from './auth/mailer';
-import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
+import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory, reviewBoard } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
 import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webhook';
 import { LinearIntegration } from '@mastra/factory/integrations/linear/integration';
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { requestsBoard } from './boards/requests-board';
-import { requestsGithubRules } from './boards/requests-github-rules';
 import { createTeamRoutes } from './team/routes';
 
 /**
@@ -197,9 +196,6 @@ const github =
         // Extra reviewer bot logins this deployment trusts to trigger
         // review/comment notifications, on top of the built-in defaults.
         authorizedBots: parseAuthorizedBotsEnv(process.env.MASTRACODE_GITHUB_AUTHORIZED_BOTS),
-        // Requests cards follow their PRs (opened -> Review, merged -> Done);
-        // the defaults only move Work cards. See boards/requests-github-rules.ts.
-        rules: requestsGithubRules,
       })
     : undefined;
 
@@ -672,14 +668,6 @@ export const factory = new MastraFactory({
     // comparing against `undefined[bot]` on every Platform deployment, where
     // this is legitimately unset.
     githubAppSlug,
-    // Same Requests-board PR rules for the Platform-installed GitHub
-    // integration. MastraFactory installs that one only when Platform
-    // credentials are set and no explicit `github` integration was passed
-    // (factory.js:100, :205-212), and warns about `platform.github` otherwise
-    // (:218) — so the option is passed only in that case.
-    ...(!github && (process.env.MASTRA_PLATFORM_ACCESS_TOKEN?.trim() || process.env.MASTRA_PLATFORM_SECRET_KEY?.trim())
-      ? { github: { rules: requestsGithubRules } }
-      : {}),
   },
   // Browser-facing origin. On the platform the SPA is hosted separately, so
   // this MUST be set to the public API origin.
@@ -693,13 +681,17 @@ export const factory = new MastraFactory({
   // Deployment-stable secret for OAuth `state` signing (GitHub/Linear connect
   // flows). See `stateSecret` above.
   stateSecret,
-  // Samskara's own lane. The built-in Work board declares its triage handler
-  // for `issue` and `linearIssue` only, so a chat-submitted card — which
-  // classifies as `manual` — reaches Triage and gets a generic stage message
-  // instead of the triage skill. `requestsBoard` wires `manual` everywhere
-  // Work wires `issue`. Work and Review stay installed (`includeDefaultBoards`
-  // defaults true) and keep serving GitHub-sourced work unchanged.
-  boards: [requestsBoard],
+  // Samskara's Work board. The built-in one declares no triage handler for
+  // `manual`, so a chat- or Slack-submitted card reached Triage and got a
+  // generic stage message instead of the triage skill. `requestsBoard` is
+  // Work's own definition plus `manual` triage, installed under the id
+  // `work` so it REPLACES the built-in (upstream #25595). Keeping the id means
+  // every behaviour keyed to `work` — the default GitHub rules, submit_plan,
+  // triage classification, Slack cards, the UI's Work page — applies to it with
+  // no wrapper. `includeDefaultBoards: false` drops BOTH built-ins, so the
+  // stock Review board is re-added explicitly.
+  includeDefaultBoards: false,
+  boards: [requestsBoard, reviewBoard],
 });
 
 const preparedArgs = await factory.prepare();
