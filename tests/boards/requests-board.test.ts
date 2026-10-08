@@ -43,6 +43,17 @@ describe('Requests board source keys', () => {
     }
     expect(board.phases.intake?.onEnter).toEqual(work.phases.intake?.onEnter);
   });
+
+  it("wakes the beads worker on Done for manual cards and keeps Work's issue rule (samskara-iz6)", () => {
+    const work = workBoard as unknown as Board;
+    const done = board.phases.done?.onEnter ?? {};
+    expect(done.issue).toBe(work.phases.done?.onEnter?.issue);
+    expect(typeof done.manual).toBe('function');
+    // Only signals: never a decision, beads card or not.
+    const rule = done.manual as (context: unknown) => unknown;
+    expect(rule({ item: { metadata: { beadsId: 'x-1' } } })).toBeUndefined();
+    expect(rule({ item: { metadata: null } })).toBeUndefined();
+  });
 });
 
 describe('plan approval gate (samskara-e6z)', () => {

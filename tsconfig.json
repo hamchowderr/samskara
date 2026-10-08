@@ -15,6 +15,9 @@
     "module": "Preserve",
     "moduleResolution": "bundler",
     "noEmit": true,
+    "paths": {
+      "@samskara/factory-beads": ["./packages/factory-beads/src/index.ts"]
+    },
     "lib": [
       "ES2023"
     ],
@@ -24,6 +27,8 @@
   },
   "include": [
     "src/**/*",
+    "packages/*/src/**/*",
+    "packages/*/test/**/*",
     "tests/**/*",
     "vitest.config.ts",
     "e2e/**/*",

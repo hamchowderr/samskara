@@ -41,6 +41,7 @@ import { LinearIntegration } from '@mastra/factory/integrations/linear/integrati
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { requestsBoard } from './boards/requests-board';
+import { BeadsIntegration } from '@samskara/factory-beads';
 import { createTeamRoutes } from './team/routes';
 
 /**
@@ -465,7 +466,35 @@ const slack = slackSigningSecret
     })
   : undefined;
 
-const integrations = [...(github ? [github] : []), ...(linear ? [linear] : []), ...(slack ? [slack] : [])];
+// Beads intake and write-back (samskara-iz6): ready beads in each linked repo
+// become Work cards; a card reaching Done closes its bead and publishes it to
+// refs/dolt/data. OFF unless BEADS_INTEGRATION=1, and only with the GitHub App,
+// whose installation tokens read and write each repository. The host needs the
+// `bd` binary (the Docker image installs a pinned one). Single writer: with
+// more than one server process, REDIS_URL must be set so the writer lease is
+// shared. See docs/operations/beads.md.
+const beadsRequested = process.env.BEADS_INTEGRATION === '1';
+if (beadsRequested && !github) {
+  console.warn('[beads] BEADS_INTEGRATION=1 but the GitHub App is not configured; the beads integration is OFF.');
+}
+const beads =
+  beadsRequested && github
+    ? new BeadsIntegration({
+        sourceControl: github,
+        // From the board definition, so a board change follows.
+        board: requestsBoard.id,
+        pollIntervalMs: positiveInt(process.env.BEADS_POLL_INTERVAL_MS),
+        cacheDir: process.env.BEADS_CACHE_DIR?.trim() || undefined,
+        bdPath: process.env.BEADS_BD_PATH?.trim() || undefined,
+      })
+    : undefined;
+
+const integrations = [
+  ...(github ? [github] : []),
+  ...(linear ? [linear] : []),
+  ...(slack ? [slack] : []),
+  ...(beads ? [beads] : []),
+];
 
 // Which integrations actually constructed. Each is built only from a COMPLETE
 // credential group — a partial group stays undefined and the surface it powers
@@ -474,7 +503,9 @@ const integrations = [...(github ? [github] : []), ...(linear ? [linear] : []), 
 console.log(
   '[integrations] ' +
     (integrations.length
-      ? [github ? 'github' : null, linear ? 'linear' : null, slack ? 'slack' : null].filter(Boolean).join(', ')
+      ? [github ? 'github' : null, linear ? 'linear' : null, slack ? 'slack' : null, beads ? 'beads' : null]
+          .filter(Boolean)
+          .join(', ')
       : 'NONE configured'),
 );
 
