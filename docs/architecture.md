@@ -9,6 +9,7 @@ src/mastra/
   boards/requests-board.ts  our Work board (replaces the built-in by id)
   auth/                     Better Auth instance, its migrations, and the mailer
   team/                     the team and invitation pages
+packages/factory-beads/     beads intake and write-back (workspace package)
 scripts/                    setup and maintenance, not runtime
 docs/setup/                 runbooks, written to be followed by an agent
 ```
@@ -48,7 +49,7 @@ provider whose credentials are missing throws rather than falling back to a less
 isolated one. See [boards.md](boards.md) for the board wiring and
 [troubleshooting.md](troubleshooting.md) for the isolation caveats.
 
-Two settings sit outside those four:
+Three settings sit outside those four:
 
 - **`REDIS_URL`** (optional). When set, events and thread leases go through
   Redis Streams (`RedisStreamsPubSub`), so several server processes can share
@@ -57,6 +58,11 @@ Two settings sit outside those four:
 - **HTTP keep-alive.** `keepOutboundConnectionsAlive()` (`keep-alive.ts`) runs
   before any client is created and keeps idle outbound connections open for
   20s. Without it every Turso query after 4s idle opens a new TLS connection.
+- **`BEADS_INTEGRATION`** (optional, off). When `1`, ready beads in linked
+  repositories become Work cards and Done cards close their bead. The code is
+  the `packages/factory-beads` workspace package. With more than one server
+  process it requires `REDIS_URL`. See
+  [operations/beads.md](operations/beads.md).
 
 ## Principles the file follows
 
