@@ -41,7 +41,7 @@ import { LinearIntegration } from '@mastra/factory/integrations/linear/integrati
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { requestsBoard } from './boards/requests-board';
-import { BeadsIntegration } from '@samskara/factory-beads';
+import { BeadsIntegration, beadsSetting, beadsStartupLine } from '@samskara/factory-beads';
 import { createTeamRoutes } from './team/routes';
 
 /**
@@ -468,17 +468,21 @@ const slack = slackSigningSecret
 
 // Beads intake and write-back (samskara-iz6): ready beads in each linked repo
 // become Work cards; a card reaching Done closes its bead and publishes it to
-// refs/dolt/data. OFF unless BEADS_INTEGRATION=1, and only with the GitHub App,
-// whose installation tokens read and write each repository. The host needs the
-// `bd` binary (the Docker image installs a pinned one). Single writer: with
-// more than one server process, REDIS_URL must be set so the writer lease is
-// shared. See docs/operations/beads.md.
-const beadsRequested = process.env.BEADS_INTEGRATION === '1';
-if (beadsRequested && !github) {
-  console.warn('[beads] BEADS_INTEGRATION=1 but the GitHub App is not configured; the beads integration is OFF.');
-}
+// refs/dolt/data. ON by default; BEADS_INTEGRATION=0 (or false/off) turns it
+// off (samskara-iz6.8). It needs the GitHub App, whose installation tokens read
+// and write each repository: without it, one startup line and nothing runs. The
+// host needs the `bd` binary (the Docker image installs a pinned one); a
+// missing bd is logged once at the first sweep and the integration idles. A
+// linked repository with no refs/dolt/data on origin is reported as
+// 'no-beads-data', not as an error. Single writer: with more than one server
+// process, REDIS_URL must be set so the writer lease is shared. See
+// docs/operations/beads.md.
+const beadsSwitch = beadsSetting(process.env.BEADS_INTEGRATION);
+const beadsLine = beadsStartupLine(beadsSwitch, Boolean(github));
+if (beadsSwitch.enabled && !github) console.warn(beadsLine);
+else console.log(beadsLine);
 const beads =
-  beadsRequested && github
+  beadsSwitch.enabled && github
     ? new BeadsIntegration({
         sourceControl: github,
         // From the board definition, so a board change follows.

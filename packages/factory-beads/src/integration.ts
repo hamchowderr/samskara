@@ -97,8 +97,28 @@ export interface BeadsIntegrationOptions {
   env?: NodeJS.ProcessEnv;
   /** A preconfigured runner; overrides bdPath, gitPath, actor and env. */
   runner?: BdRunner;
+  /**
+   * How long a repository without `refs/dolt/data` on origin waits before the
+   * next look. Default 15 min. Such a repository is not using beads yet; it is
+   * reported as `no-beads-data`, not as an error.
+   */
+  remoteCheckIntervalMs?: number;
   logger?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
+
+/**
+ * One linked repository's state after a sweep.
+ *
+ * - `ok`: synced.
+ * - `no-beads-data`: origin has no `refs/dolt/data`, so the repository does not
+ *   use beads (yet). Not an error: nothing is cloned or bootstrapped, and the
+ *   remote is looked at again every `remoteCheckIntervalMs`.
+ * - `error`: this sweep failed for the repository; `diagnostic` says why. The
+ *   next sweep tries again.
+ * - `parked`: a write-back conflict needs an operator; nothing runs for the
+ *   repository until `POST /web/beads/reset`.
+ */
+export type RepoState = 'ok' | 'no-beads-data' | 'error' | 'parked';
 
 export interface RepoSyncReport {
   orgId: string;
@@ -107,8 +127,12 @@ export interface RepoSyncReport {
   created: number;
   existing: number;
   closed: number;
-  state: 'ok' | 'blocked' | 'error';
+  state: RepoState;
   diagnostic?: string;
+  /** When the repository was last checked: its sync, or for `no-beads-data` the last look at origin. */
+  checkedAt: string;
+  /** `no-beads-data` only: when origin is looked at again. */
+  nextCheckAt?: string;
 }
 
 export interface SweepSummary {
@@ -116,7 +140,14 @@ export interface SweepSummary {
   durationMs: number;
   repos: RepoSyncReport[];
   error?: string;
+  /** Set when a startup precondition failed; the integration does nothing until restarted. */
+  idle?: string;
 }
+
+const DEFAULT_REMOTE_CHECK_INTERVAL_MS = 15 * 60_000;
+
+/** The ref beads publishes its Dolt data to (bd's git remote). */
+export const BEADS_DATA_REF = 'refs/dolt/data';
 
 interface LinkedRepo {
   orgId: string;
@@ -144,6 +175,11 @@ export class BeadsIntegration implements FactoryIntegration {
   /** Card ids whose description comment is confirmed in this process. */
   readonly #described = new Set<string>();
   #feedMissingLogged = false;
+  /** Startup preconditions, checked once (first sweep): undefined = ok, else the idle reason. */
+  #preflight: Promise<string | undefined> | undefined;
+  #idle: string | undefined;
+  /** Repositories last seen without refs/dolt/data, by slug: when origin was checked. */
+  readonly #noData = new Map<string, number>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -168,7 +204,37 @@ export class BeadsIntegration implements FactoryIntegration {
       donePhase: this.donePhase,
       sourceControl: this.#options.sourceControl.id,
       lease: this.#worker?.leaseSource ?? 'not-started',
+      state: this.#idle ? 'idle' : 'running',
+      ...(this.#idle ? { idleReason: this.#idle } : {}),
+      remoteCheckIntervalMs: this.#remoteCheckIntervalMs,
     };
+  }
+
+  get #remoteCheckIntervalMs(): number {
+    return this.#options.remoteCheckIntervalMs ?? DEFAULT_REMOTE_CHECK_INTERVAL_MS;
+  }
+
+  /**
+   * Preconditions that cannot change while the server runs. Each failure logs
+   * ONE line and leaves the integration idle, instead of an error per sweep.
+   */
+  #checkPreconditions(): Promise<string | undefined> {
+    this.#preflight ??= (async () => {
+      let reason: string | undefined;
+      if (!this.#options.sourceControl.versionControl) {
+        reason = `source control "${this.#options.sourceControl.id}" has no versionControl capability (is the GitHub App configured?)`;
+      } else {
+        const probe = await this.#runner.bd(['--version'], { cwd: tmpdir(), timeoutMs: 30_000 });
+        // 127: the runner's code for a binary that could not be started (ENOENT).
+        if (probe.code === 127) {
+          reason = `bd binary not found ("${this.#runner.bdPath}"; set BEADS_BD_PATH or put bd on PATH): ${resultTail(probe, 200)}`;
+        }
+      }
+      this.#idle = reason;
+      if (reason) this.#log.warn(`[factory-beads] integration idle: ${reason}. Nothing is synced; restart after fixing it.`);
+      return reason;
+    })();
+    return this.#preflight;
   }
 
   workers(ctx: IntegrationContext): MastraWorker[] {
@@ -236,6 +302,14 @@ export class BeadsIntegration implements FactoryIntegration {
     const ctx = this.#ctx;
     const runtime = ctx?.runtime;
     const vc = this.#options.sourceControl.versionControl;
+    const idle = await this.#checkPreconditions();
+    if (idle) {
+      // Logged once by the precondition check; an idle sweep is silent.
+      summary.idle = idle;
+      summary.durationMs = Date.now() - started;
+      this.#last = summary;
+      return summary;
+    }
     try {
       if (!ctx || !runtime) throw new Error('work-item runtime is not available');
       if (!vc) throw new Error(`source control "${this.#options.sourceControl.id}" has no versionControl capability`);
@@ -251,8 +325,16 @@ export class BeadsIntegration implements FactoryIntegration {
           existing: 0,
           closed: 0,
           state: 'ok',
+          checkedAt: new Date().toISOString(),
         };
         summary.repos.push(report);
+        // Seen without beads data recently: report it again without touching
+        // GitHub, until the slower re-check is due.
+        const lastNoData = this.#noData.get(linked.slug);
+        if (lastNoData !== undefined && Date.now() - lastNoData < this.#remoteCheckIntervalMs) {
+          this.#reportNoData(report, lastNoData);
+          continue;
+        }
         try {
           const access = await vc.getRepositoryAccess({ orgId: linked.orgId, repositoryId: linked.repositoryId });
           const credentials: RepoCredentials | undefined = access.authorization
@@ -269,11 +351,35 @@ export class BeadsIntegration implements FactoryIntegration {
     }
     summary.durationMs = Date.now() - started;
     this.#last = summary;
-    const problems = summary.repos.filter(r => r.state !== 'ok');
+    // Only real problems: a repository without beads data is a state, not an error.
+    const problems = summary.repos.filter(r => r.state === 'error' || r.state === 'parked');
     if (summary.error || problems.length > 0) {
       this.#log.warn('[factory-beads] sweep finished with problems', JSON.stringify({ error: summary.error, problems }));
     }
     return summary;
+  }
+
+  #reportNoData(report: RepoSyncReport, checkedAt: number): void {
+    report.state = 'no-beads-data';
+    report.checkedAt = new Date(checkedAt).toISOString();
+    report.nextCheckAt = new Date(checkedAt + this.#remoteCheckIntervalMs).toISOString();
+    report.diagnostic = `origin has no ${BEADS_DATA_REF}: this repository does not publish beads data`;
+  }
+
+  /**
+   * Whether origin carries beads data. `git ls-remote --exit-code` exits 2
+   * when no ref matches (git ls-remote --help), so 0 = yes, 2 = no, and
+   * anything else (auth, network) is an error for this sweep.
+   */
+  async #hasBeadsData(cloneUrl: string, credentials: RepoCredentials | undefined): Promise<boolean> {
+    const res = await this.#runner.git(['ls-remote', '--exit-code', cloneUrl, BEADS_DATA_REF], {
+      cwd: tmpdir(),
+      credentials,
+      timeoutMs: 60_000,
+    });
+    if (res.code === 0) return true;
+    if (res.code === 2) return false;
+    throw new Error(`git ls-remote exit ${res.code}: ${resultTail(res, 300)}`);
   }
 
   #repo(slug: string, cloneUrl: string): BdRepo {
@@ -319,10 +425,30 @@ export class BeadsIntegration implements FactoryIntegration {
     // further writes until an operator resolves it and resets the copy.
     const conflicted = cards.filter(item => item.metadata?.[BEADS_META.writeback] === 'conflict');
     if (conflicted.length > 0) {
-      report.state = 'blocked';
+      report.state = 'parked';
       report.diagnostic = `bd sync conflict on ${conflicted.map(c => c.metadata?.[BEADS_META.id]).join(', ')}; resolve it, then POST /web/beads/reset`;
       return;
     }
+
+    // A repository that does not publish beads data is not bootstrapped:
+    // bootstrap would build an empty database with no remote, and every later
+    // `bd dolt pull` would fail with "no remote". Checked every sweep, so a
+    // copy left from before (or a ref deleted on origin) is caught too.
+    const checkedAt = Date.now();
+    if (!(await this.#hasBeadsData(cloneUrl, credentials))) {
+      if (!this.#noData.has(slug)) {
+        this.#log.info(
+          `[factory-beads] ${slug}: origin has no ${BEADS_DATA_REF}, so it is not a beads repository yet; state no-beads-data, re-checked every ${Math.round(this.#remoteCheckIntervalMs / 60_000)} min`,
+        );
+      }
+      this.#noData.set(slug, checkedAt);
+      // Drop a copy bootstrapped without beads data: it has no remote to pull.
+      await this.#repo(slug, cloneUrl).discard();
+      this.#repos.delete(slug);
+      this.#reportNoData(report, checkedAt);
+      return;
+    }
+    if (this.#noData.delete(slug)) this.#log.info(`[factory-beads] ${slug}: ${BEADS_DATA_REF} found on origin; syncing`);
 
     const repo = this.#repo(slug, cloneUrl);
     const boot = await repo.ensure(credentials);
@@ -383,7 +509,7 @@ export class BeadsIntegration implements FactoryIntegration {
               [BEADS_META.diagnostic]: diagnostic,
             });
           }
-          report.state = 'blocked';
+          report.state = 'parked';
           report.diagnostic = diagnostic;
           return;
         } else {
@@ -558,7 +684,20 @@ export class BeadsIntegration implements FactoryIntegration {
         handler: async c => {
           const tenant = await tenantOf(c);
           if (!tenant?.orgId) return c.json({ error: 'unauthorized' }, 401);
-          return c.json({ diagnostics: this.diagnostics(), lastSweep: forOrg(this.#last, tenant.orgId) });
+          const lastSweep = forOrg(this.#last, tenant.orgId);
+          return c.json({
+            diagnostics: this.diagnostics(),
+            // One row per linked repository: ok | no-beads-data | error | parked.
+            repos: (lastSweep?.repos ?? []).map(r => ({
+              repo: r.repo,
+              projectId: r.projectId,
+              state: r.state,
+              ...(r.diagnostic ? { reason: r.diagnostic } : {}),
+              checkedAt: r.checkedAt,
+              ...(r.nextCheckAt ? { nextCheckAt: r.nextCheckAt } : {}),
+            })),
+            lastSweep,
+          });
         },
       }),
       registerApiRoute('/web/beads/sync', {

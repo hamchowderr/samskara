@@ -50,7 +50,12 @@ const blocked = bead =>
     return blocker && isOpen(blocker);
   });
 
+if (words.length === 0 && flags.includes('--version')) words.push('version');
+
 switch (words[0]) {
+  case 'version':
+    out = 'bd version 0.0.0-fake';
+    break;
   case 'bootstrap':
     out = 'bootstrapped';
     break;

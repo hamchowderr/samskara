@@ -1,6 +1,7 @@
 export {
   BeadsIntegration,
   BEADS_COMMENT_AUTHOR,
+  BEADS_DATA_REF,
   BEADS_INTEGRATION_ID,
   BEADS_META,
   beadsClaimKey,
@@ -10,11 +11,14 @@ export {
 export type {
   BeadsIntegrationOptions,
   BeadsSourceControl,
+  RepoState,
   RepoSyncReport,
   SweepSummary,
   WritebackState,
 } from './integration';
 export { createBeadsDoneRule } from './done-rule';
+export { beadsSetting, beadsStartupLine } from './setting';
+export type { BeadsSetting } from './setting';
 export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runner';
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
 export { BdRepo, cacheDirFor } from './repo';
