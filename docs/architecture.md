@@ -32,7 +32,9 @@ session lookups go through a short in-process cache; see
 **Storage.** A `LibSQLFactoryStorage` instance, pointed at a local file or at
 Turso. `DATABASE_URL` is read only to warn that it is being ignored: deploy
 platforms inject it automatically, and honouring it would repoint the entire
-backend at a database nobody chose.
+backend at a database nobody chose. Region choice, stall measurement and
+moving a database between groups are in
+[operations/turso.md](operations/turso.md).
 
 **Vector.** A `LibSQLVector` instance, passed explicitly. It has to be — the
 SDK's default-vector resolution is gated on `storageConfig`, which is undefined

@@ -1,16 +1,17 @@
 /**
  * Keep idle outbound HTTP connections open for 20 seconds (samskara-lx1).
  *
- * Turso is reached over HTTPS through `@libsql/isomorphic-fetch`, which calls
- * the global `fetch` with a node-fetch style `agent: { keepAlive: true }`
- * option (`@libsql/isomorphic-fetch/node.js:7-20`). Node's `fetch` is undici
- * and ignores `agent`, so connections fall back to undici's default: closed
- * after 4 seconds idle. Turso sends no Keep-Alive header to extend that.
+ * Turso is reached over HTTPS by `@libsql/client` 0.18, whose transport
+ * (`@libsql/hrana-client` 0.10) calls the plain global `fetch`
+ * (`hrana-client/lib-esm/http/client.js:46`). Node's `fetch` is undici, and
+ * undici closes an idle socket after 4 seconds by default. Turso sends no
+ * Keep-Alive header to extend that, so every query after a gap of more than
+ * 4 seconds opens a new TLS connection, which costs about 150-400ms.
  *
- * In production the Factory UI polls about every 5 seconds, so nearly every
- * query opened a fresh TLS connection. Measured 2026-10-07/08 inside the
- * container: Better Auth's two per-request queries took 0.6-1.1s each, and
- * the auth gate 1.1-2.5s; a request on a reused connection took 41-45ms.
+ * Measured 2026-10-08 against the production database with 6-second gaps
+ * between queries: by default, median 217ms and a new TCP connection for
+ * every query; with this 20-second keep-alive, median 43.5ms on one
+ * connection.
  *
  * The dispatcher is process-wide, so this applies to every outbound fetch
  * (GitHub, Slack, model providers). 20s keeps a 5-second poll on one

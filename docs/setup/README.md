@@ -60,7 +60,9 @@ the only shape that works when other people use your Factory.
   agent commands on the host (see `FACTORY_SANDBOX_PROVIDER` in `.env`).
 - **A Turso database** for anything beyond a single machine. Without it,
   Samskara writes to a local libSQL file, which does not survive a container
-  restart and cannot be shared across replicas.
+  restart and cannot be shared across replicas. Measure a region for stalls
+  before creating the database there; see
+  [operations/turso.md](../operations/turso.md).
 
 ## After setup
 

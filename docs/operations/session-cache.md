@@ -4,8 +4,8 @@ The Factory auth gate is served from a short in-process cache in front of
 Better Auth's `getSession`. Tracked in beads `samskara-lx1`.
 
 Code: `src/mastra/auth/session-cache.ts`, wired in
-`src/mastra/index.ts:344-355` and cleared from
-`src/mastra/auth/better-auth.ts:129` and `:220-223`.
+`src/mastra/index.ts:341-352` and cleared from
+`src/mastra/auth/better-auth.ts:92` and `:183-186`.
 
 ## Why
 
@@ -15,10 +15,12 @@ calls the provider, and the provider calls `auth.api.getSession({ headers })`
 on every call (`@mastra/auth-better-auth` `dist/index.js:819`). Each call sends
 two statements: one for the session row, one for the user row.
 
-Production uses Turso in `aws-us-west-2`. Every connection to it stalls for
-about one second roughly every six seconds (see `samskara-lx1`). A page that
-fires a dozen API calls waits on a dozen pairs of queries, and any of them can
-land in a stall.
+Production used Turso in `aws-us-west-2`, where every connection stalled for
+about one second every six seconds (see `samskara-lx1` and
+[turso.md](turso.md)). A page that fires a dozen API calls waits on a dozen
+pairs of queries, and any of them could land in a stall. Production now runs
+in `aws-us-east-1`, which does not stall, and the cache still removes most of
+those queries.
 
 With the cache, a repeat request from the same session sends no statements
 until the entry expires. `tests/auth/session-cache.test.ts` measures this
@@ -73,7 +75,7 @@ database.
   first.
 - **Invalidation.** `buildBetterAuth` registers `after` hooks on `session`
   update and delete and on `user` update and delete
-  (`better-auth.ts:220-223`). Each one clears the whole cache. That covers
+  (`better-auth.ts:183-186`). Each one clears the whole cache. That covers
   sign-out, revoking a session, revoking all sessions, a password change that
   revokes other sessions, switching the active organization, profile edits,
   deleting a user and the `updateAge` refresh. Better Auth runs `after` hooks

@@ -32,7 +32,10 @@ happens to provide.
   production gets its own apps, separate from your local ones.
 - Two [Turso](https://turso.tech) databases: one for the app, one for vectors.
   The container's disk does not survive a redeploy, so a local libSQL file is
-  not an option in production.
+  not an option in production. Choose the region by measuring it for stalls
+  from the server, not by distance alone: `aws-us-west-2` stalled about 1s
+  every 6s on every connection, and production uses `aws-us-east-1`. See
+  [operations/turso.md](../operations/turso.md).
 - An [E2B](https://e2b.dev) API key. Agent commands run in the sandbox, and the
   host sandbox must never serve clients.
 - A [Resend](https://resend.com) API key and a verified sending address, for
@@ -52,6 +55,12 @@ Create the project with a `prod` environment and a `/samskara` folder.
 The secrets are the ones in [secrets-infisical.md](secrets-infisical.md#which-variables-are-secret).
 Generate fresh values for `BETTER_AUTH_SECRET` and
 `FACTORY_CREDENTIAL_ENCRYPTION_KEY`. Do not reuse your development values.
+
+The four Turso keys are `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`,
+`TURSO_VECTOR_DATABASE_URL` and `TURSO_VECTOR_AUTH_TOKEN`. Create both databases
+in a group whose region passed the stall check in
+[operations/turso.md](../operations/turso.md#measuring-a-region-before-using-it),
+and mint tokens with no expiry.
 
 Production also needs these settings in the same folder, because there is no
 `.env` to hold them:
