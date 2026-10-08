@@ -11,6 +11,10 @@ dist/
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
+# Empty SQLite files named db / db-wal have appeared in the repo root during
+# local dev:secure sessions; the source is untraced (samskara-38x).
+/db
+/db-wal
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
