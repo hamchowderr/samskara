@@ -36,6 +36,7 @@
 
 import { defineBoard, workBoard } from '@mastra/factory';
 import type { FactoryRuleHandler, FactoryStageRuleContext } from '@mastra/factory/rules/types';
+import { createBeadsDoneRule } from '@samskara/factory-beads';
 
 const workTriage = workBoard.phases.triage.onEnter ?? {};
 
@@ -58,6 +59,13 @@ export const requestsBoard = defineBoard({
       ...workBoard.phases.triage,
       // The line this board exists for: `manual` gets the triage skill.
       onEnter: { ...workTriage, manual: triageEntry },
+    },
+    done: {
+      ...workBoard.phases.done,
+      // Beads cards (`manual`) wake the beads worker, which closes and syncs
+      // the bead. It only signals: board rules have a 5 s limit, and it does
+      // nothing while BEADS_INTEGRATION is off. See docs/operations/beads.md.
+      onEnter: { ...workBoard.phases.done.onEnter, manual: createBeadsDoneRule() },
     },
   },
 });

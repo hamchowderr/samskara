@@ -5,10 +5,10 @@
 # only the machine-identity pair. The entrypoint is the shared Otaku one (see the
 # Coolify + Infisical cutover note), copied unchanged.
 
-# Base image, identical in all three stages: Node 24.21.0 on Debian bookworm
+# Base image, identical in all four stages: Node 24.21.0 on Debian bookworm
 # (glibc 2.36, the reason this is slim and not Alpine), pinned by digest so a
 # retagged image cannot change a build. Dependabot (.github/dependabot.yml)
-# refreshes the digest on all three lines together and never bumps the Node
+# refreshes the digest on all four lines together and never bumps the Node
 # version. The lines are literal because Dependabot skips `FROM ${ARG}`.
 
 # ── build ────────────────────────────────────────────────────────────────────
@@ -19,6 +19,8 @@
 FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
+# npm workspaces: `npm ci` needs each workspace's manifest to link it.
+COPY packages/factory-beads/package.json packages/factory-beads/
 # npm's download cache lives in a BuildKit cache mount: it persists between
 # builds on the same builder but is never written into a layer, so a rebuild
 # only downloads packages that changed (docs.docker.com/build/cache/optimize).
@@ -47,6 +49,27 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends "infisical=${INFISICAL_CLI_VERSION}" \
  && infisical --version
 
+# ── bd (beads) ───────────────────────────────────────────────────────────────
+# The beads integration (packages/factory-beads, off unless BEADS_INTEGRATION=1)
+# shells out to `bd` on the host. Pinned release binary from the official
+# gastownhall/beads releases, verified against the release's checksums.txt;
+# bumping BD_VERSION without the matching checksums fails the build. Needs
+# glibc >= 2.34 (bookworm has 2.36). See docs/operations/beads.md.
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS bd-cli
+ARG BD_VERSION=1.3.0
+ARG BD_SHA256_AMD64=2f92b904ecf35b607e44dc5c39229173af69c54f1183e8d709f1773540cdcf3b
+ARG BD_SHA256_ARM64=4ce9446a68edc13202b76c84a47d66fb3dad2787b6464c9522a108faf9c1c608
+ARG TARGETARCH
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && arch="${TARGETARCH:-amd64}" \
+ && case "$arch" in amd64) sum="$BD_SHA256_AMD64" ;; arm64) sum="$BD_SHA256_ARM64" ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac \
+ && curl -fsSL -o /tmp/bd.tar.gz "https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}/beads_${BD_VERSION}_linux_${arch}.tar.gz" \
+ && echo "${sum}  /tmp/bd.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/bd.tar.gz -C /usr/local/bin bd \
+ && /usr/local/bin/bd --version
+
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
 
@@ -57,6 +80,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=infisical-cli /usr/bin/infisical /usr/local/bin/infisical
+COPY --from=bd-cli /usr/local/bin/bd /usr/local/bin/bd
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # Strip CRLF: a Windows checkout would otherwise break the shebang.
