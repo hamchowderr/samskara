@@ -71,7 +71,7 @@ none of those repositories is linked in the other environment.
 | Database | `MASTRA_DB_PATH` in `.env`, an absolute path under `data/`, directory created | Two Turso databases ([deploy-coolify.md](deploy-coolify.md#2-put-the-keys-in-it--human), [operations/turso.md](../operations/turso.md)) |
 | Sandbox | `local` is acceptable for your own work | `FACTORY_SANDBOX_PROVIDER=e2b` with `E2B_API_KEY` |
 | Mail | Optional | `RESEND_API_KEY` and `MAIL_FROM` ([operations/mail.md](../operations/mail.md)) |
-| `bd` on the host | Install it, or set `BEADS_BD_PATH` | In the image (bd 1.3.0) |
+| `bd` on the host | Install it, or set `BEADS_BD_PATH` | In the image (bd 1.3.1) |
 
 Each environment has its own GitHub App and Slack app
 ([environments.md](environments.md)).
@@ -302,7 +302,7 @@ For each linked repository that uses beads:
    PowerShell deletes a variable set to `''`, so it uses one space, which Dolt
    trims away. A persistent User-level variable holding one space works the
    same way. `refs/dolt/data` must then exist on `origin`.
-2. **The host has `bd`.** Production: the image installs bd 1.3.0. Local:
+2. **The host has `bd`.** Production: the image installs bd 1.3.1. Local:
    install bd, or set `BEADS_BD_PATH`.
 3. **The integration is on.** The `[beads]` startup line says `on`, and
    `[integrations]` includes `beads`. It is on unless `BEADS_INTEGRATION` is

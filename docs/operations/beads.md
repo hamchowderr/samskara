@@ -288,7 +288,7 @@ is off, the rule does nothing.
    5. `GET /web/beads/status`, from a signed-in session, shows the repository
       with `state: "ok"` after the next tick (at most 15 minutes for a
       repository that was `no-beads-data`; restarting re-checks at once).
-3. **`bd` on the host.** The Docker image installs bd 1.3.0 from the
+3. **`bd` on the host.** The Docker image installs bd 1.3.1 from the
    official `gastownhall/beads` release and checks its sha256 against the
    release's `checksums.txt` (Dockerfile, `bd-cli` stage). This adds about
    150 MB to the image. The binary needs glibc 2.34 or later; bookworm has 2.36.
