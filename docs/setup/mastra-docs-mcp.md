@@ -7,6 +7,13 @@ documentation. This project requires both — see the verification rule in
 
 Do this first. Every other runbook assumes an agent can check its own claims.
 
+This server is one of four sources, and not the first. In descending order of
+authority: the `mastra` skill (`npx skills add mastra-ai/skills --skill '*' -y`),
+the docs each package embeds under `node_modules/@mastra/<pkg>/dist/docs/`, the
+installed package itself, and this server for packages that embed none —
+`@mastra/factory` and `@mastra/code-sdk` among them. The ladder is in
+[CLAUDE.md](../../CLAUDE.md#never-answer-mastra-from-memory).
+
 ## Two sources, and why the distinction matters
 
 | Source | Tools | Reads |
@@ -25,13 +32,18 @@ They run an interactive tutorial and are not used for verification.
 
 ## Install
 
-Install the package rather than launching it with `npx`:
+Nothing to do in this repository: `@mastra/mcp-docs-server` is already a
+devDependency (`package.json:48`), so `npm install` installs it, and
+`.mcp.json` is checked in. This section records how it was set up, for another
+project.
+
+The package is installed rather than launched with `npx`:
 
 ```bash
 npm i -D @mastra/mcp-docs-server
 ```
 
-Then check in `.mcp.json` at the repo root:
+and `.mcp.json` at the repo root calls `node` on it:
 
 ```json
 {
@@ -56,13 +68,20 @@ A configuration like this looks simpler and does not work reliably:
 ```
 
 `npx -y ...@latest` re-resolves the package from the registry every time the
-server starts. A cold install of this package measured **102 seconds** on a
-normal connection. MCP clients give a server about **30 seconds** to connect, so
-the server fails to start, and because the failure happens at client startup it
-usually cannot be reconnected without restarting the whole session.
+server starts, and `npx` itself is the cost even without `@latest`. Measured
+from spawn to a valid `initialize` response, as recorded in
+[CLAUDE.md](../../CLAUDE.md#setting-up-the-tooling): `npx mcp-docs-server`
+took **35.1 s** cold and 2.0–2.5 s warm. Claude Code gives a server about
+**30 seconds** to connect, so the cold start fails, and because the failure
+happens at client startup it usually cannot be reconnected without restarting
+the whole session. A manual retest hits a warm cache and passes, which hides
+the problem.
 
-Installed locally, the same server completes its handshake in **2–7 seconds**
-depending on disk cache, and reports 13 tools.
+Called with `node` on the installed file, the same server answered `initialize`
+in 0.7–0.9 s in that measurement, and in 2.8 s on the first start and
+0.56–0.58 s after that when re-measured on 2026-10-08 (Windows 11, Node
+24.16.0, three consecutive starts).
+It reports 13 tools.
 
 ### Requirements
 

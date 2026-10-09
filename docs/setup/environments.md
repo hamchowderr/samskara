@@ -4,6 +4,10 @@ Run Samskara in two places: on your own machine while you work on it, and on a
 server for the people who use it. Each place needs its **own** GitHub App and
 its **own** Slack app. Do not share one app between them.
 
+Each **repository** is worked in exactly one of the two. Never link the same
+repository to a factory in both; see
+[One environment per repository](#one-environment-per-repository).
+
 ## Why one app per environment
 
 A GitHub App and a Slack app each store exactly one public address. GitHub sends
@@ -27,18 +31,42 @@ With one app per environment, each one talks only to its own Factory.
 | `MASTRACODE_PUBLIC_URL` | The tunnel hostname | The domain |
 | GitHub App | "Samskara Dev", URLs on the tunnel hostname | "Samskara", URLs on the domain |
 | Slack app | "Samskara Dev", request URLs on the tunnel hostname | "Samskara", request URLs on the domain |
-| Secrets | Infisical `dev` environment | Infisical `prod` environment, read by the container at start |
-| Database | Local libSQL file under `data/` | Turso (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`) |
+| Secrets | Your Infisical project, `dev:/samskara` | The server's own Infisical project, `prod:/samskara`, read by the container at start ([deploy-coolify.md](deploy-coolify.md#1-create-an-infisical-project-for-the-server--human); `Dockerfile:127`) |
+| Database | Local libSQL file at `MASTRA_DB_PATH` (set it to an absolute path under `data/`) | Turso (`TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and the `TURSO_VECTOR_*` pair) |
 | Sandbox | `local` is acceptable for your own work | `e2b` — never run client work on the host |
-| Started by | `npm run dev:secure` | The Docker image (for example, deployed by Coolify) |
+| Model credentials | Subscription sign-in is acceptable for your own work, at organization scope | An organization API key only ([new-project.md](new-project.md#4-connect-models)) |
+| Repositories linked | Only repositories no production factory links | Only repositories no local factory links |
+| Started by | `npm run dev` or `npm run dev:secure` | The Docker image (for example, deployed by Coolify) |
 
 The two environments never share a key. Each app's credentials live only in the
 environment that uses it.
 
+## One environment per repository
+
+A repository is linked to a factory in local development **or** in production,
+never in both.
+
+The reason is the beads integration, which is on by default in every instance.
+Each instance that links a repository runs its own automated beads writer
+against that repository's `refs/dolt/data`, with its own lease. Locally there is
+no Redis, so the lease is core's no-op lease, which always grants it
+(`packages/factory-beads/src/worker.ts:100-103` logs this at start). Two
+deployments never share a lease, even with Redis, because each has its own
+Redis. Beads claims are atomic only inside one database, so two writable copies
+can claim the same bead twice without an error (see
+[operations/beads.md](../operations/beads.md#single-writer)). The same split
+also keeps GitHub events, Slack threads and board runs for one repository in
+one place.
+
+If a second instance must see a repository that another instance owns, turn
+beads off on it with `BEADS_INTEGRATION=0`. To move a repository from one
+environment to the other, unlink it from the first factory, then link it in the
+second.
+
 ## Creating the apps
 
 Create each app twice: once with the local address and the `dev` environment,
-once with the production address and the `prod` environment. The runbooks
+once with the production address and the server's `prod` environment. The runbooks
 [github-app.md](github-app.md) and [slack-app.md](slack-app.md) cover each step;
 the only differences are the name, the address and where the keys go.
 

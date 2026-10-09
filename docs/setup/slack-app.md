@@ -6,9 +6,10 @@ optionally a card on a board.
 
 Slack is optional. Samskara boots without it; the startup line simply omits it.
 
-Complete [tunnel.md](tunnel.md) first. Slack only accepts HTTPS request URLs and
-verifies them at save time, so the tunnel has to be running before you create
-the app.
+Slack only accepts HTTPS request URLs and verifies them at save time. Locally,
+complete [tunnel.md](tunnel.md) first and keep the tunnel running while you
+create the app. In production, use the server's domain, with the server
+running.
 
 Throughout, replace `https://samskara.example.com` with your own public URL.
 
@@ -100,13 +101,32 @@ If the browser lands on a page from your tunnel provider rather than Slack, the
 tunnel is serving an interstitial — see the ngrok note in
 [tunnel.md](tunnel.md). The OAuth callback cannot complete through one.
 
+### Set the default factory — **HUMAN**
+
+Slack has no per-channel routing. Each linked Slack account sends its runs to
+that account's **default factory** (`@mastra/factory` 0.20.0
+`dist/integrations/slack/slack.js:103-145`):
+
+1. the link's default factory, when it still exists;
+2. otherwise, when the organization has exactly one factory, that one, which
+   is then saved as the link's default (`slack.js:128-141`; a stored default is used first, `:117-127`);
+3. otherwise the bot posts a **Pick a default factory** card in the thread and
+   the run does not start.
+
+**Adding a factory does not change existing links.** A link that was stamped
+with the first factory under rule 2 keeps routing its runs there, silently: it
+has a default, so no **Pick a default factory** card appears. After adding a
+factory, every linked person who should work in it must change their
+**Default factory** explicitly. In the Factory, open **Settings → Connections → Slack**
+(`/factories/<factoryId>/settings/connections/slack`); under **Session
+behavior**, set **Default factory**. The card's **Open settings** button opens
+the Connections settings.
+
 ## 7. Add an organization model credential — **HUMAN**
 
-Connecting a model provider through OAuth on your own account is **not enough
-for Slack-triggered runs**. A message arriving from Slack starts a background
-run, and background runs resolve credentials organization-first. A personal
-OAuth connection is not visible to them, so the run fails at the model layer
-with:
+A message arriving from Slack starts a run on a factory session, and those runs
+resolve credentials organization-first. A connection scoped to your own user is
+not something they can rely on, so the run can fail at the model layer with:
 
 ```
 No usable anthropic credential is configured for this signed-in Factory
@@ -117,33 +137,35 @@ again.
 Everything up to that point works — the thread is created, the session starts,
 the branch is cut — so it reads like a Slack problem when it is not.
 
-In the Factory UI, open **Settings → Models** and add an **API key** scoped to
-the organization, rather than signing in to the provider. This is also the right
-shape for serving other people: the runs bill to your account, and nobody needs
-their own provider subscription.
+Add an **organization-scoped** credential: in the factory's settings, open
+**Factory models → Provider access**, whose scope is fixed to the organization,
+and use **Connect with API key**. In production and for client organizations,
+use an API key only, never **Sign in with a provider**: that connects one
+person's subscription, which provider terms may not permit for other people's
+work (`samskara-nn2`). Keys in the server's environment do not reach these runs.
+The full rules are in [new-project.md](new-project.md#4-connect-models).
+
+Then set the model Slack sessions start on: **Settings → Factory models →
+Factory defaults → Factory default model**, which applies to factory runs and
+channel sessions. See [new-project.md](new-project.md#5-set-the-default-model).
 
 ### The memory model needs that key too
 
 Every run also calls the observational-memory model, which also writes session
-titles. If its provider has no organization key, memory and titles fail with
-the same "No usable … credential" error while chat keeps working, so the failure
-is easy to miss.
+titles. If its provider has no organization credential, memory and titles fail
+with the same "No usable … credential" error while chat keeps working, so the
+failure is easy to miss.
 
-The memory model is stored in two places, in the `memory_settings` table:
+The memory model is stored in two rows of the `memory_settings` table:
 
-- **Your own row.** **Settings → Memory** edits this one, and only this one.
-- **The factory-wide row** (`user_id` = `factory-project:<factoryId>`). Board
-  runs and Slack sessions read this one. The Settings page cannot edit it.
+- **Your own row.** The **Your memory** settings page edits it. It applies to
+  your interactive chats.
+- **The factory-wide row** (`user_id` = `factory-project:<factoryId>`,
+  `dist/storage/domains/memory-settings/base.js:10-12`). Board runs and Slack
+  sessions read this one. The **Factory memory** settings page edits it.
 
-Set the factory-wide row through the API, once per role, while signed in:
-
-```
-PUT /web/config/om/observer/model    {"modelId": "<provider/model>", "factoryId": "<factoryId>"}
-PUT /web/config/om/reflector/model   {"modelId": "<provider/model>", "factoryId": "<factoryId>"}
-```
-
-Use a model from the provider the organization key covers. The route is in
-`@mastra/factory` `dist/routes/config.js` (`/web/config/om/:role/model`).
+Set both, to models from the provider the organization credential covers. See
+[new-project.md](new-project.md#6-set-both-memory-model-rows).
 
 ## 8. Use it
 
@@ -187,14 +209,34 @@ Slack does not allow removing scopes from an installed app.
 
 ## Where Slack work lands
 
-A dispatched thread creates a card at the **Building** stage on the built-in
-Work board. This is fixed in `@mastra/factory` 0.16.0:
-`upsertThreadWorkItem` passes `stages: ["execute"]` and no board, so chat work
-does not pass through triage and cannot be routed to a custom board.
+A thread creates a card only when its factory's **Create work items for new
+Slack threads** setting is on (`dist/integrations/slack/slack.js:658`). The
+setting is off by default (`slack_work_items_enabled` defaults to `false`,
+`dist/storage/domains/projects/base.js:74`). Turn it on in either of two ways:
 
-Enable the cards per project with `slack_work_items_enabled`.
+- In the Factory: **Settings → Connections → Slack**, the **Work items**
+  section, **Create work items for new Slack threads**. It applies to the
+  factory whose settings you are in.
+- Through the API, from a signed-in session:
+  `PATCH /web/factory/projects/<factoryId>` with `{"slackWorkItemsEnabled": true}`
+  (`dist/routes/contracts.js:31-38`, `:260-266`). See
+  [troubleshooting.md](../troubleshooting.md#calling-the-factory-api-by-hand).
+
+In `@mastra/factory` 0.20.0 the card is created at the **Building** stage
+(`upsertThreadWorkItem` passes `stages: ["execute"]` and no board,
+`slack.js:584`). A card with no board belongs to `work`
+(`dist/boards/semantics.js:8`), which is Samskara's Work board, so the card is on
+the right board but skips Triage (`samskara-ylt`). See
+[boards.md](../boards.md#installing-a-board-is-not-routing-work-to-it).
 
 ## Troubleshooting
+
+**The bot posts "Pick a default factory".** Set the default factory; see
+[Set the default factory](#set-the-default-factory--human).
+
+**Threads run, but no card appears on the board.** The factory's **Create work
+items for new Slack threads** setting is off. See
+[Where Slack work lands](#where-slack-work-lands).
 
 **`slack` missing from the startup line.** `SLACK_APP_SIGNING_SECRET` is unset
 or empty. It alone gates whether the integration is constructed.
@@ -210,4 +252,4 @@ written. Complete step 6, and check the tunnel is not serving an interstitial.
 that Event Subscriptions shows Verified.
 
 **"No usable anthropic credential is configured".** See step 7 — the run needs
-an organization-scoped API key, not a personal OAuth connection.
+an organization-scoped credential, and production uses an organization API key.

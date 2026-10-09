@@ -4,8 +4,17 @@ Samskara connects to repositories through a GitHub App you own. The app gives
 signed-in users a way to install it, pick repositories, and turn each repository
 into a Factory project.
 
-Complete [tunnel.md](tunnel.md) first. The app's URLs are built from
+Locally, complete [tunnel.md](tunnel.md) first. In production, use the
+server's domain; no tunnel is needed. The app's URLs are built from
 `MASTRACODE_PUBLIC_URL`, and changing that address later means editing the app.
+
+Decide who owns the app before creating it. The script creates a **private**
+app (`public: false`, `scripts/create-github-app.mjs:123`), and GitHub lets a
+private app be installed only on the account that owns it. To link
+repositories that belong to an organization, such as a client's, create the
+app under that organization with `--org <login>` (you need permission to
+create apps there), or make the app public. See
+[Installation scope](#installation-scope).
 
 Throughout, replace `https://samskara.example.com` with your own
 `MASTRACODE_PUBLIC_URL`.
@@ -137,7 +146,17 @@ still will not arrive.
 
 ### Installation scope
 
-Choose **Only on this account** unless you intend other people to install it.
+**Only on this account** makes the app private: it can be installed only on the
+account that owns it (the script's default). An app owned by your personal
+account cannot then reach repositories in an organization, and an app owned by
+one organization cannot reach another's.
+
+- Repositories in one organization: create the app under that organization
+  (`--org <login>` with the script, or the organization's **Developer
+  settings**), and keep it private.
+- Repositories across several accounts, such as several clients: either one
+  app per owning account, or choose **Any account** to make it public, so each
+  owner can install it.
 
 ## 3. Collect the credentials — **HUMAN**
 
@@ -178,28 +197,49 @@ and the `.pem`.
 ## 5. Install the app — **HUMAN**
 
 On the app's page, press **Install App**, choose the account, and select which
-repositories to grant. You can change this later.
+repositories to grant. You can change this later: the installation's settings
+on GitHub add or remove repositories, and the Factory's repository picker links
+**Add installations or grant access to more repositories** there.
+
+Installing the app grants access; it does not put a repository on a board. A
+repository is linked to a factory in the Factory UI, which
+[new-project.md](new-project.md#3-create-the-factory-and-link-repositories)
+covers, together with the caveats for a factory with more than one repository.
 
 ## 6. Verify
 
-Restart Samskara. The startup line lists active integrations:
+Restart Samskara. The startup lines list active integrations and the beads
+state (`src/mastra/index.ts:480-514`):
 
 ```
-[integrations] github, slack
+[beads] on by default; set BEADS_INTEGRATION=0 to turn it off.
+[integrations] github, slack, beads
 ```
 
-Then sign in and check that repositories appear when creating a project. The
-status endpoint reports what the server sees:
+`slack` appears only when Slack is configured, and `beads` only while the
+integration is on.
 
-```bash
-curl -s https://samskara.example.com/web/github/status
+Then sign in and check that repositories appear when linking one to a factory.
+The status endpoint reports what the server sees. It needs a signed-in session
+(the Factory gate answers a bare request with 401, `@mastra/factory`
+`dist/auth.js:540-560`), so open it in a signed-in browser tab:
+
+```
+https://samskara.example.com/web/github/status
 ```
 
 ## Troubleshooting
 
-**`github` missing from the startup line.** One of the six `GITHUB_APP_*`
-variables is unset or empty. An empty value in `.env` shadows the one injected
-from Infisical — delete the line rather than leaving it blank.
+**`github` missing from the startup line.** One of the five required
+`GITHUB_APP_*` variables (`ID`, `PRIVATE_KEY`, `CLIENT_ID`, `CLIENT_SECRET`,
+`SLUG`; `src/mastra/index.ts:188-189`) is unset or empty.
+`GITHUB_APP_WEBHOOK_SECRET` is not required to construct the integration
+(`:196`), but without it every webhook delivery is rejected with 401
+(`@mastra/factory` `dist/integrations/github/webhook.js:27-34`). An empty value in `.env` shadows the
+one injected from Infisical — delete the line rather than leaving it blank.
+
+**The account you want is not offered when installing.** The app is private
+and owned by a different account. See [Installation scope](#installation-scope).
 
 **Webhook deliveries failing.** The app's Advanced tab shows every delivery with
 its response. A 401 means `GITHUB_APP_WEBHOOK_SECRET` does not match the secret

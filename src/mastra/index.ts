@@ -468,7 +468,7 @@ const slack = slackSigningSecret
 
 // Beads intake and write-back (samskara-iz6): ready beads in each linked repo
 // become Work cards; a card reaching Done closes its bead and publishes it to
-// refs/dolt/data. ON by default; BEADS_INTEGRATION=0 (or false/off) turns it
+// refs/dolt/data. ON by default; BEADS_INTEGRATION=0 (or false/off/no) turns it
 // off (samskara-iz6.8). It needs the GitHub App, whose installation tokens read
 // and write each repository: without it, one startup line and nothing runs. The
 // host needs the `bd` binary (the Docker image installs a pinned one); a
@@ -689,10 +689,10 @@ export const factory = new MastraFactory({
   dispatcher: {
     maxInFlight: positiveInt(process.env.MASTRACODE_DISPATCH_MAX_IN_FLIGHT),
   },
-  // Agent state (threads, messages, memory, OM, recall vectors) lives in the
-  // single app Postgres alongside the github/app tables — one shared DB (and
-  // pg pool) for all users, separated by `resourceId` scoping. Unset (bare
-  // local dev) → default storage resolution applies (local libSQL file).
+  // Agent state (threads, messages, memory, OM) and the factory app tables live
+  // in the one libSQL `storage` built above — a local file, or Turso when
+  // TURSO_DATABASE_URL is set — shared by all users and separated by
+  // `resourceId` scoping. Recall vectors go to `vector` (see above).
   storage,
   vector,
   pubsub,

@@ -65,8 +65,8 @@ the watcher ignores it.
 
 **It pins `MASTRACODE_UI_DIST` itself.** `mastra factory dev` sets that variable
 to its *own* copy of the SPA unless it is already present
-(`mastra/dist/index.js:4496`), which would silently win over everything the
-script does.
+(`mastra/dist/index.js:4652`, CLI 1.33.0), which would silently win over
+everything the script does.
 
 ## Supplying real brand assets
 
@@ -78,10 +78,8 @@ are **deleted** — and every reference to them is removed with them:
 - the manifest's `icons` array is repointed at the SVG, which is valid there
   and scales to any size
 
-So nothing 404s and nothing shows Mastra's mark. Supply real files in `brand/`
-and the script uses them instead, restoring the normal raster references.
-
-Put real files in `brand/` and they are used instead:
+So nothing 404s and nothing shows Mastra's mark. Put real files in `brand/` and
+the script uses them instead, restoring the normal raster references:
 
 ```
 brand/mastra.svg              the favicon — see the filename note below
@@ -92,7 +90,7 @@ brand/pwa-512.png             512x512
 
 ### Why the favicon is still called `mastra.svg`
 
-The pre-auth allow-list in `@mastra/factory/dist/auth.js:537` is hardcoded to
+The pre-auth allow-list in `@mastra/factory/dist/auth.js:548` is hardcoded to
 an exact set of paths:
 
 ```js
@@ -122,9 +120,10 @@ agent-browser eval "JSON.stringify({title:document.title, mastra:document.docume
 
 ## Production
 
-`MASTRACODE_UI_DIST` must be set for the deployed server too. `.env.local` is
-local-only and gitignored, so a deploy needs the variable set in its own
-environment, pointing at the `.branded-ui` produced by `npm run build`.
+The Docker image already handles this (`Dockerfile:111-112`); nothing needs
+setting in Coolify or Infisical. A deploy that does not use the image must set
+`MASTRACODE_UI_DIST` in its own environment, pointing at the `.branded-ui`
+produced by `npm run build`, because `.env.local` is local-only and gitignored.
 
 **Verified 2026-09-23:** `mastra build` does NOT carry the branding. It copies
 Mastra's stock UI into `.mastra/output/factory` (title "Mastra Factory"), and

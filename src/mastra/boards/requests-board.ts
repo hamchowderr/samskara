@@ -5,7 +5,7 @@
  *
  * WHY THIS EXISTS
  * The built-in Work board declares its triage handler for tracker items only
- * (`@mastra/factory` 0.20.0 boards/work.js:155-161):
+ * (`@mastra/factory` 0.20.0 boards/work.js:157-163):
  *
  *   triage:   onEnter: { issue, gitlabIssue, linearIssue, jiraIssue, incidentioFollowUp }  <- no `manual`
  *   planning: onEnter: { …, manual }                                                     <- `manual` present

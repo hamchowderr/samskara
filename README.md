@@ -80,7 +80,7 @@ A Factory scaffolded with `npm create factory` behaves as the left column descri
 | **Database** | `DATABASE_URL` set → Postgres; unset → local libSQL file in dev/test, and a hard throw outside them | libSQL and Turso. `DATABASE_URL` is read, ignored, and warned about |
 | **Vector store** | `PgVector` when `DATABASE_URL` is set; otherwise **none at all** | `LibSQLVector` always — its own file locally, sharing the Turso database unless `TURSO_VECTOR_DATABASE_URL` splits them |
 | **Sandbox** | Only `FACTORY_SANDBOX_PROVIDER=local` is read. Otherwise platform → E2B → local, silently | The value is validated. An explicit choice missing its credentials throws at startup |
-| **Chat-sourced work** | The Work board declares triage for `issue` and `linearIssue` only | Samskara's Work board, which replaces the built-in by id, declares it for `manual` too. See the caveat below — Slack cards skip Triage |
+| **Chat-sourced work** | The Work board declares triage for every tracker source but not `manual` | Samskara's Work board, which replaces the built-in by id, declares it for `manual` too. See the caveat below — Slack cards skip Triage |
 
 **Database.** Most deploy platforms inject `DATABASE_URL` automatically. On the stock scaffold that repoints the whole backend at a Postgres instance you did not pick — and with `NODE_ENV` set to anything but `development` or `test`, its absence is a startup error rather than a libSQL fallback. Samskara ignores the variable and logs a warning.
 
@@ -94,6 +94,8 @@ Work enters at Intake and moves through five more phases. Each phase runs a hand
 flowchart LR
     GH["GitHub issue"] --> IN
     LN["Linear issue"] --> IN
+    OT["GitLab, Jira and<br/>incident.io items"] --> IN
+    BD["Beads (bd ready)<br/>(classifies as manual)"] --> IN
     CH["Chat message<br/>(classifies as manual)"] --> IN
 
     IN["Intake"] --> TR["Triage"] --> PL["Planning"] --> BU["Building"] --> RV["Review"] --> DN["Done"]
@@ -101,20 +103,23 @@ flowchart LR
     style TR fill:#8a4a2a,stroke:#8a4a2a,color:#fff
 ```
 
-Triage is the phase that matters here. On the stock Work board it declares handlers for `issue` and `linearIssue` only:
+Triage is the phase that matters here. On the stock Work board it declares a handler for every tracker source, but not for `manual` (`@mastra/factory` 0.20.0 `dist/boards/work.js:157-163`):
 
 ```js
 triage: {
   onEnter: {
     issue: triageIssueEntry,
+    gitlabIssue: investigateTriagedGitLabIssue,
     linearIssue: investigateTriagedLinearIssue,
+    jiraIssue: investigateTriagedJiraIssue,
+    incidentioFollowUp: investigateTriagedIncidentioFollowUp,
   },
 },
 ```
 
-A chat message classifies as `manual`, so it reaches Triage, matches no handler, and gets a generic stage message instead of the triage skill. Planning and every phase after it already handle `manual`, so the card then continues normally.
+A chat message classifies as `manual`, so it reaches Triage, matches no handler, and gets a generic stage message instead of the triage skill. Planning and Building already handle `manual`, so the card then continues normally. A beads card also classifies as `manual` ([docs/operations/beads.md](docs/operations/beads.md)).
 
-`src/mastra/boards/requests-board.ts` is the exported Work board with `manual` added to Triage. It is installed under the id `work` with `includeDefaultBoards: false`, the replacement path Mastra documents, so it takes the built-in's place and everything keyed to `work` (the GitHub PR rules, plan approval, triage classification, the UI's Work page) applies to it unchanged. Review is reinstalled as-is. See [docs/boards.md](docs/boards.md).
+`src/mastra/boards/requests-board.ts` is the exported Work board with two changes: Triage also declares `manual`, and its Done phase declares a `manual` handler that wakes the beads write-back (`requests-board.ts:63-69`). It is installed under the id `work` with `includeDefaultBoards: false`, the replacement path Mastra documents, so it takes the built-in's place and everything keyed to `work` (the GitHub PR rules, plan approval, triage classification, the UI's Work page) applies to it unchanged. Review is reinstalled as-is. See [docs/boards.md](docs/boards.md).
 
 ### The caveat: Slack cards skip Triage
 
@@ -125,9 +130,9 @@ In `@mastra/factory` 0.20.0 a dispatched Slack thread creates its card directly 
 input: { title, externalSource: {...}, stages: ["execute"] }   // no `board`
 ```
 
-With `board` unset, `boardForWorkItem()` resolves it to `work`, which is Samskara's board, so the card is on the right board, but it never passes through Triage. The Slack integration exposes no option for the stage.
+With `board` unset, `boardForWorkItem()` resolves it to `work`, which is Samskara's board, so the card is on the right board, but it never passes through Triage. The Slack integration exposes no option for the stage. A card is created at all only when the factory's **Create work items for new Slack threads** setting is on; it is off by default ([docs/setup/slack-app.md](docs/setup/slack-app.md#where-slack-work-lands)).
 
-A card can be re-filed by hand — `PATCH /web/factory/work-items/:id` with `{"board":"work","stages":["triage"]}` is accepted while its board is still null — but that is one call per card, after the run has already started. Filing Slack work into Triage needs routing upstream does not yet provide; the Slack integration's own comment calls it a planned follow-up.
+A card can be re-filed by hand — `PATCH /web/factory/work-items/:id` with `{"board":"work","stages":["triage"]}`, sent from a signed-in session, is accepted while its board is still null — but that is one call per card, after the run has already started. Filing Slack work into Triage needs routing upstream does not yet provide; the Slack integration's own comment calls it a planned follow-up.
 
 ## 🚀 Setup
 
@@ -140,14 +145,24 @@ The runbooks in [`docs/setup/`](docs/setup/) take a fresh clone to a running Fac
 | 3 | [tunnel.md](docs/setup/tunnel.md) | A public HTTPS address, for local development only |
 | 4 | [github-app.md](docs/setup/github-app.md) | Repository access and issue intake |
 | 5 | [slack-app.md](docs/setup/slack-app.md) | Chat intake (optional) |
+| 6 | [deploy-coolify.md](docs/setup/deploy-coolify.md) | An always-on server deployment (optional) |
+| 7 | [new-project.md](docs/setup/new-project.md) | A factory with its repositories, models, Slack routing and beads, ready for work |
+
+Running Samskara both locally and on a server? Read [environments.md](docs/setup/environments.md) first: each environment needs its own GitHub App and Slack app, and a repository is worked in one environment only.
 
 ```bash
 npm install
+cp .env.example .env # then set MASTRA_DB_PATH in it (below)
+mkdir data           # libSQL does not create the folder
 npm run dev          # plain .env; generates dev auth secrets on first run
 npm run dev:secure   # secrets injected from Infisical
 ```
 
+Before the first `npm run dev`, set `MASTRA_DB_PATH` in `.env` to an absolute path inside this repository, for example `<repo>/data/samskara.db`. Unset, the server opens the Mastra Code CLI's shared `mastra.db` and `mastra-vectors.db`; see `.env.example`.
+
 UI and API serve together on <http://localhost:4111>. Requires Node.js 24.21.0+.
+
+Once the server is running, [new-project.md](docs/setup/new-project.md) takes you from an empty organization to a card moving across the board.
 
 ## 🛠️ Working on it
 
@@ -167,24 +182,29 @@ The docs MCP server needs nothing: `.mcp.json` is checked in and `@mastra/mcp-do
 
 ```bash
 npm run check        # tsc --noEmit
+npm run check:auth-parity   # fails if @mastra/auth-better-auth's init() changed (CI runs it)
 npm test             # vitest: tier-1, real temp libSQL, no server
 npm run test:e2e     # playwright: invite flow on port 4199, throwaway DB
 npm run build        # bundles to .mastra/output
-npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
+npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO); needs MASTRA_DB_PATH
 ```
 
-> **`mastra build` deletes the whole `.mastra/` directory.** Nothing worth keeping belongs there — the database lives in `data/` for exactly that reason, and backups are written outside the repository.
+`npm start` (varlock) and `npm run start:secure` (development secrets from Infisical) run the built output; neither is how production starts, which is the Docker image running `node index.mjs`. `npm run deploy` (`mastra deploy`) is not used by this project.
+
+> **`mastra build` deletes the whole `.mastra/` directory.** Nothing worth keeping belongs there — the database lives in `data/` when `MASTRA_DB_PATH` points there, which is the reason to set it, and backups are written outside the repository.
 
 ## ⚙️ Configuration
 
-`.env.example` documents every variable. These four decide the shape of a deployment:
+`.env.example` documents every variable. These decide the shape of a deployment:
 
 | Variable | Effect |
 |----------|--------|
 | `MASTRACODE_PUBLIC_URL` | The origin users reach the Factory at. Builds OAuth callbacks and the links posted into chat, so a `localhost` value produces links nobody else can open |
 | `FACTORY_SANDBOX_PROVIDER` | `local`, `e2b` or `platform` — see above |
 | `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` | A hosted database. Without them, a local file that does not survive a container restart and cannot be shared across replicas |
+| `MASTRA_DB_PATH` | Local only: where that file lives. Unset, it is the Mastra Code CLI's own `mastra.db` in the user's app-data directory, shared with the CLI |
 | `FACTORY_CREDENTIAL_ENCRYPTION_KEY` | Encrypts stored provider credentials. Lose it and they are unreadable |
+| `BEADS_INTEGRATION` | Beads intake and write-back, on by default; `0`, `false`, `off` or `no` turns it off. See [docs/operations/beads.md](docs/operations/beads.md) |
 
 Secrets belong in a secret manager, not `.env` — see [secrets-infisical.md](docs/setup/secrets-infisical.md). An entry in `.env` shadows an injected value, so a key should live in one place.
 
@@ -195,7 +215,7 @@ Secrets belong in a secret manager, not `.env` — see [secrets-infisical.md](do
 | [docs/setup/](docs/setup/) | Getting a deployment running |
 | [docs/architecture.md](docs/architecture.md) | How `src/mastra/index.ts` is organised, and why |
 | [docs/boards.md](docs/boards.md) | Phases, handlers, and four things that will catch you |
-| [docs/operations/](docs/operations/) | Backup and restore, outbound mail, team invites, Better Auth migrations, white-labelling the UI, upgrading Mastra |
+| [docs/operations/](docs/operations/) | Backup and restore, the beads integration, Better Auth migrations, outbound mail, the session cache, team invites, Turso, upgrading Mastra, white-labelling the UI |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Failures that are hard to diagnose from the symptom |
 
 ## 🤝 Contributing

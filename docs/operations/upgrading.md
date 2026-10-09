@@ -18,11 +18,17 @@ Check the release notes for the packages you are moving, not only
 independently and are pinned independently.
 
 Snapshot the database first — an upgrade can run schema migrations that a
-downgrade will not undo:
+downgrade will not undo.
+
+Locally (needs `MASTRA_DB_PATH`):
 
 ```bash
 npm run db:backup
 ```
+
+In production, on Turso, `npm run db:backup` cannot reach the database. Export
+both Turso databases first, or note the time for a point-in-time restore; see
+[backup-and-restore.md](backup-and-restore.md#production-turso).
 
 ## Doing it
 
@@ -76,16 +82,19 @@ Start the server and read the startup lines:
 
 ```
 [auth] provider=MastraAuthBetterAuth
+[mail] Resend configured — password reset, email verification and invitations will send.
 [storage] app=… vectors=…
-[integrations] github, slack
-[sandbox] provider=… isolation=…
+[beads] on by default; set BEADS_INTEGRATION=0 to turn it off.
+[integrations] github, slack, beads
+[sandbox] provider=…
+[sandbox] isolation=…        (local provider only)
 ```
 
 A missing integration means its constructor now wants something different. A
 changed storage or sandbox line means selection logic moved.
 
-Then check the four things this deployment depends on, because each has broken
-across a version before:
+Then check the things this deployment depends on, because each has broken
+across a version before, or depends on code that reads the installed package:
 
 1. **The vector store is still constructed.** Omitting `vector` yields no vector
    store rather than a default — the SDK's fallback is gated on `storageConfig`,
@@ -104,6 +113,18 @@ across a version before:
    the literal `"work"`; see [boards.md](../boards.md#replacing-work-by-id).
    `tests/boards/work-board-github-rules.test.ts` drives the stock GitHub rules
    against the installed registry.
+5. **Beads still constructs and syncs.** `beads` is in the `[integrations]`
+   line, and `GET /web/beads/status`, from a signed-in session, shows each
+   beads repository with `state: "ok"`. Check that
+   `.mastra/output/package.json` does not list `@samskara/factory-beads` (see
+   [beads.md](beads.md#build-note)).
+6. **The Better Auth provider has not changed under us.** `npm run
+   check:auth-parity` passes; when it fails, follow
+   [better-auth-migrations.md](better-auth-migrations.md#how-drift-is-caught).
+7. **The UI branding still applies.** `scripts/build-branded-ui.mjs` patches
+   the CLI's UI bundle by anchors, and stops `npm run dev` and `npm run build`
+   when an anchor no longer matches. See
+   [white-label-ui.md](white-label-ui.md#the-team-link-in-the-sidebar).
 
 Verify against the **built** output as well as source when a change touches
 configuration. `mastra build` folds `process.env.NODE_ENV` at build time, so a
@@ -135,7 +156,8 @@ not show. Each item below was checked against the installed package.
 - **Multi-repo runs stop when the repository is ambiguous (#25116).**
   `routes/surface.js:189` throws `source_repository_ambiguous` instead of
   picking one. A project with more than one linked repository needs the
-  repository chosen.
+  repository chosen. Beads cards cannot carry that choice yet
+  (`samskara-srl`; [beads.md](beads.md#limitations)).
 - **Tenant subagents no longer fall back to server env keys (code-sdk 1.9.0,
   #25482).** With a tenant credential store registered, provider keys come
   from the org or user store only (`agents/credential-resolver.js`). A key
@@ -146,9 +168,18 @@ not show. Each item below was checked against the installed package.
 
 ## Rolling back
 
+Roll back the four packages together, as they moved together (see
+[Doing it](#doing-it)), plus any of `@mastra/libsql`, `@mastra/memory` and
+`@mastra/auth-workos` that moved with them:
+
 ```bash
-npm install --save-exact @mastra/factory@<previous-version>
+npm install --save-exact @mastra/factory@<previous> @mastra/core@<previous-core> @mastra/code-sdk@<previous-sdk> mastra@<previous-cli>
+npm run check
+npm ls @mastra/core
 ```
+
+Moving factory back alone leaves the same duplicate `@mastra/core` that moving
+it forward alone does.
 
 If the upgrade ran schema migrations, restore the snapshot you took — see
 [backup-and-restore.md](backup-and-restore.md). Reinstalling the old package

@@ -10,14 +10,23 @@ bead that another open bead blocks is not ready, so its card appears only after
 the blocker is closed. Factory has no dependency model of its own, and the
 integration does not add one.
 
-It is **on by default**. `BEADS_INTEGRATION=0` (or `false` or `off`, any case)
-turns it off; any other value, or no value, leaves it on (samskara-iz6.8).
-Startup prints one line that says which, and how to turn it off:
+It is **on by default**. `BEADS_INTEGRATION=0` (or `false`, `off` or `no`, any
+case) turns it off; any other value, or no value, leaves it on (samskara-iz6.8,
+`packages/factory-beads/src/setting.ts:6`). Startup prints one line that says
+which, and how to turn it off (`setting.ts:25-32`):
 
 ```
 [beads] on by default; set BEADS_INTEGRATION=0 to turn it off.
+[beads] on (BEADS_INTEGRATION is set); set BEADS_INTEGRATION=0 to turn it off.
 [beads] off (BEADS_INTEGRATION is set to turn it off).
+[beads] on by default, but the GitHub App is not configured, so the integration is idle. Set BEADS_INTEGRATION=0 to turn it off.
 ```
+
+**One environment per repository.** Every instance with this integration on is
+an automated writer for each repository it links. Never link a repository to
+both a local and a production Factory; see
+[setup/environments.md](../setup/environments.md#one-environment-per-repository)
+and [Single writer](#single-writer).
 
 Code:
 
@@ -74,7 +83,7 @@ server restarts; `GET /web/beads/status` shows `state: 'idle'` and the reason.
 
 | Precondition | Log line |
 |--------------|----------|
-| The GitHub App is configured | Samskara does not construct the integration at all; the startup line says `[beads] on by default, but the GitHub App is not configured, so the integration is idle.` The package logs `integration idle: source control "github" has no versionControl capability` if it is constructed without one. |
+| The GitHub App is configured | Samskara does not construct the integration at all; the startup line says `[beads] on by default, but the GitHub App is not configured, so the integration is idle. Set BEADS_INTEGRATION=0 to turn it off.` The package logs `integration idle: source control "github" has no versionControl capability` if it is constructed without one. |
 | `bd` can be started | `[factory-beads] integration idle: bd binary not found ("bd"; set BEADS_BD_PATH or put bd on PATH): spawn bd ENOENT. Nothing is synced; restart after fixing it.` The check runs `bd --version`; only "could not start" (the runner's exit 127) idles. |
 
 ### Repository states
@@ -89,9 +98,9 @@ and `checkedAt`, when it was last checked:
 | `error` | This tick failed for the repository: `git ls-remote` failed (auth, network), or clone, bootstrap, pull, close or sync failed. `reason` says why; the token is removed from it. The next tick tries again. | `sweep finished with problems` |
 | `parked` | A write-back conflict (`bd sync` exit 2 or 4). Nothing runs for the repository until an operator resets it; see [Write-back failures](#write-back-failures). | `sweep finished with problems` |
 
-To make a `no-beads-data` repository a beads repository, give it a git remote
-and push its beads data (`bd dolt remote add origin <git url>`, then
-`bd dolt push`). The next re-check, at most 15 minutes later, bootstraps it.
+To make a `no-beads-data` repository a beads repository, push its beads data
+with `bd dolt push --yes` (see the [per-repository checklist](#setup)). The
+next re-check, at most 15 minutes later, bootstraps it.
 Restarting the server re-checks at once.
 
 ### Cards
@@ -210,6 +219,35 @@ is off, the rule does nothing.
    `refs/dolt/data` must exist on `origin`; `bd bootstrap` clones from it. A
    repository without it is reported as `no-beads-data` and is not
    bootstrapped (see [Repository states](#repository-states)).
+
+   **Per-repository checklist, for a repository new to the integration:**
+
+   1. In a clone of the repository, if it has no beads database yet: `bd init`.
+   2. Publish its data with `bd dolt push --yes`. With no Dolt remote
+      configured, `--yes` consents to adopting the repository's `origin` as the
+      Dolt remote, then pushes (`bd dolt push --help`, bd 1.3.0). This creates
+      `refs/dolt/data` on `origin`. Do not use
+      `bd dolt remote add origin <url>`: bd 1.3.0 refuses a Dolt remote whose
+      URL matches the repository's origin unless `--allow-git-origin` is given.
+      Push with `DOLT_REMOTE_INFO_BRANCH` empty, so Dolt does not create a
+      `__dolt_remote_info__` branch on `origin` (see [Credentials](#credentials)
+      for why). Dolt reads the variable with `os.LookupEnv` and trims it, so a
+      value that is empty after trimming turns the branch off (Dolt
+      `store/blobstore/git_refs.go:36-41`).
+      - POSIX shell: `DOLT_REMOTE_INFO_BRANCH= bd dolt push --yes`
+      - PowerShell: `$env:DOLT_REMOTE_INFO_BRANCH=' '; bd dolt push --yes`
+        (one space: PowerShell deletes a variable set to `''`).
+
+      A persistent User-level variable holding one space works the same way.
+   3. The GitHub App is installed on the repository with Contents: Read and
+      write.
+   4. The repository is linked to exactly **one** factory, in exactly **one**
+      deployment ([one environment per repository](../setup/environments.md#one-environment-per-repository)).
+      In a factory with more than one repository, beads cards need a manual
+      repository pick; see [Limitations](#limitations).
+   5. `GET /web/beads/status`, from a signed-in session, shows the repository
+      with `state: "ok"` after the next tick (at most 15 minutes for a
+      repository that was `no-beads-data`; restarting re-checks at once).
 3. **`bd` on the host.** The Docker image installs bd 1.3.0 from the
    official `gastownhall/beads` release and checks its sha256 against the
    release's `checksums.txt` (Dockerfile, `bd-cli` stage). This adds about
@@ -256,11 +294,11 @@ processes **only through their environment**
 
 Two more settings go to every child process:
 
-- `DOLT_REMOTE_INFO_BRANCH=''` (`runner.ts:116`). Without it, Dolt can create
-  `refs/dolt/remote-info` branches on `origin`. On a host that builds every
+- `DOLT_REMOTE_INFO_BRANCH=''` (`runner.ts:131`). Without it, Dolt can create
+  `__dolt_remote_info__` branches on `origin` (the name in the bd 1.3.0 binary). On a host that builds every
   pushed branch (Vercel), each branch can start a deploy and use up the quota.
   This matters most for client repositories.
-- `core.longpaths=true`. Dolt's git cache is deeply nested under `.beads/dolt`.
+- `core.longpaths=true` (`runner.ts:116`). Dolt's git cache is deeply nested under `.beads/dolt`.
   On Windows, git rejects the lock paths ("Filename too long") without it.
   Keep `BEADS_CACHE_DIR` short on Windows, because git also rejects a very
   long `$GIT_DIR`.
@@ -288,6 +326,15 @@ The lease comes from the server's pubsub, resolved the same way as
 **Rule: never run more than one server process with this integration on unless
 `REDIS_URL` is set.** Samskara runs one container today.
 
+**Rule: one writer per repository across all deployments.** The lease covers
+the processes of one deployment only. A local development server and the
+production server are separate deployments, each with its own lease (and its
+own Redis, if any), so both would write to a repository that both link. Never
+link a repository to both a local and a production Factory. Turn beads off with
+`BEADS_INTEGRATION=0` on any instance that must link a repository another
+instance owns. See
+[setup/environments.md](../setup/environments.md#one-environment-per-repository).
+
 A database-row lease is not used as a fallback. On libSQL,
 `FactoryStorageOps.updateAtomic` runs inside a promise chain in one process
 (`@mastra/libsql` `dist/index.js:1395-1399`, `:14455`). It would not stop a
@@ -312,7 +359,10 @@ them, so a parked repository runs no bd command until it is reset. If
 the integration stops trying it.
 
 To see problems, call `GET /web/beads/status`. Any member of the organization
-can call it. It returns the last sweep for that organization's repositories:
+can call it, from a signed-in session: the Factory gate answers a request with
+no session with 401 (see
+[Calling the Factory API by hand](../troubleshooting.md#calling-the-factory-api-by-hand)).
+The same applies to the `POST` routes below. It returns the last sweep for that organization's repositories:
 
 ```json
 {
@@ -397,6 +447,14 @@ build never runs bd.
 - **The description reaches the agent live only in unit tests so far.** The
   feed path is native Mastra, but no planning run on a beads card has been
   checked end to end since this change.
+- **Beads cards cannot choose a repository in a multi-repository factory
+  (`samskara-srl`).** `@mastra/factory` 0.20.0 resolves a card's repository
+  from `metadata.repository`, then `githubRepositoryId`, then a Linear mapping
+  (`dist/session/work-item-repository.js:3-90`). Beads cards set only
+  `metadata.beadsRepo`, so in a factory with two or more linked repositories
+  every beads card stops with "Choose a repository for this work item"
+  (`dist/rules/start-coordinator.js:87-88`) until a person picks one. A factory
+  with one repository is not affected.
 - **Client repositories have not been exercised.** Each needs the App
   installed, `refs/dolt/data` on `origin`, and the
   `DOLT_REMOTE_INFO_BRANCH` setting described above.
