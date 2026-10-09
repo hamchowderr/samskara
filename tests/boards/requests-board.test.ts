@@ -15,7 +15,7 @@ import { requestsBoard } from '../../src/mastra/boards/requests-board';
 
 type Board = {
   id: string;
-  phases: Record<string, { onEnter?: Record<string, unknown> }>;
+  phases: Record<string, { kind?: string; onEnter?: Record<string, unknown> }>;
   tools?: Record<string, { onResult: (context: unknown) => unknown }>;
 };
 const board = requestsBoard as unknown as Board;
@@ -118,6 +118,94 @@ describe('plan approval gate (samskara-e6z)', () => {
       planToBuild({ type: 'system', id: 'factory-tool-result-rule' }, { planApproved: true }),
     );
     expect(result?.type).toBe('allow');
+  });
+});
+
+describe('beads overview cards (samskara-l2t.2.1)', () => {
+  // The board's transitionPolicy runs for every transition and every actor
+  // before any phase rule (@mastra/factory 0.20.0 rules/transition-service.js:245-262).
+  const policy = requestsBoard.transitionPolicy!;
+  const human: FactoryRuleActor = { type: 'human', id: 'u1' };
+  const agent: FactoryRuleActor = { type: 'agent', bindingId: 'b-1', role: 'work' };
+  const system: FactoryRuleActor = { type: 'system', id: 'factory-tool-result-rule' };
+  const move = (
+    actor: FactoryRuleActor,
+    fromStage: string,
+    toStage: string,
+    metadata: Record<string, unknown> | null,
+    flags: Partial<Pick<BoardTransitionPolicyContext, 'planApproved' | 'plansAutoApproved'>> = {},
+  ): BoardTransitionPolicyContext => ({
+    tenant: { orgId: 'org-1', projectId: 'proj-1' },
+    actor,
+    ingress: { type: 'rule', id: 'ing-1' },
+    cause: 'test',
+    causalChain: [],
+    configVersion: 'test',
+    board: 'work',
+    fromStage,
+    toStage,
+    source: 'manual',
+    initialEntry: false,
+    reenter: false,
+    itemRevision: 1,
+    isHumanTransition: actor.type === 'human',
+    plansAutoApproved: false,
+    planApproved: false,
+    ...flags,
+    item: {
+      id: 'wi-1',
+      source: 'manual',
+      sourceKey: null,
+      parentWorkItemId: null,
+      title: 'w-e: An epic',
+      url: null,
+      stages: [fromStage],
+      acceptedAt: null,
+      metadata,
+      triageType: null,
+    },
+  });
+  const overview = (openChildren: number) => ({ beadsId: 'w-e', beadsCardKind: 'overview', beadsOpenChildren: openChildren });
+
+  it('derives the working phases from the board: triage, planning, execute, review', () => {
+    const phases = board.phases as Record<string, { kind?: string }>;
+    expect(Object.keys(phases).filter(id => phases[id]?.kind === 'working')).toEqual(['triage', 'planning', 'execute', 'review']);
+  });
+
+  for (const actor of [human, agent, system]) {
+    for (const toStage of ['triage', 'planning', 'execute', 'review']) {
+      it(`rejects a ${actor.type} moving an overview card into ${toStage}`, async () => {
+        expect(await policy(move(actor, 'intake', toStage, overview(0), { planApproved: true, plansAutoApproved: true }))).toEqual({
+          type: 'reject',
+          code: 'forbidden',
+          reason: 'An overview card closes when its last child closes',
+        });
+      });
+    }
+  }
+
+  it('rejects Done while the overview card has open children, for every actor', async () => {
+    for (const actor of [human, agent, system]) {
+      expect(await policy(move(actor, 'intake', 'done', overview(2)))).toMatchObject({ type: 'reject', code: 'forbidden' });
+    }
+  });
+
+  it('allows Done once no child is open, and Canceled at any time', async () => {
+    expect((await policy(move(human, 'intake', 'done', overview(0))))?.type).toBe('allow');
+    expect((await policy(move(system, 'intake', 'done', overview(0))))?.type).toBe('allow');
+    expect((await policy(move(human, 'intake', 'canceled', overview(3))))?.type).toBe('allow');
+  });
+
+  it('leaves every other card to Work: the plan gate still holds, and work cards still move', async () => {
+    const workCard = { beadsId: 'w-e.1' };
+    expect(await policy(move(agent, 'planning', 'execute', workCard))).toMatchObject({ type: 'reject', code: 'approval_required' });
+    expect(await policy(move(agent, 'planning', 'execute', null))).toMatchObject({ type: 'reject', code: 'approval_required' });
+    expect((await policy(move(human, 'intake', 'triage', workCard)))?.type).toBe('allow');
+    expect((await policy(move(human, 'intake', 'done', { ...workCard, beadsOpenChildren: 5 })))?.type).toBe('allow');
+    // Same answers as Work's own policy.
+    for (const context of [move(agent, 'planning', 'execute', workCard), move(human, 'intake', 'execute', workCard)]) {
+      expect(await policy(context)).toEqual(await workBoard.transitionPolicy!(context));
+    }
   });
 });
 

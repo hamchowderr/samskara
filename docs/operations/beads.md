@@ -75,7 +75,13 @@ App:
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
 4. **Intake.** `bd --readonly ready --json --exclude-type=epic,milestone -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed
-   (`integration.ts:651-696`). See [What the agent sees](#what-the-agent-sees).
+   (`integration.ts:705-739`). See [What the agent sees](#what-the-agent-sees).
+   A bead whose parent is an epic, milestone or molecule root is put under
+   that container's overview card, which is made first; see
+   [Overview cards](#overview-cards).
+5. **Open-children counts.** Each overview card that intake did not reach
+   in this tick, and that is not in a terminal phase, gets its open-children
+   count read again (`integration.ts:741-756`).
 
 A project connection whose GitHub installation no longer exists (an orphaned
 link, samskara-1ra) is skipped with one warning per connection, and the other
@@ -85,12 +91,13 @@ links still sweep. `connections.list` returns such a connection, but
 `:510-515`), so the integration first checks it with `connections.get`, which
 applies the same test and returns `null`.
 
-Epics and milestones are excluded because they are containers, not work, and
-`bd ready` lists both (an unblocked epic appears beside its first child).
-Pinned beads, gates and workflow roots (`molecule`) bd ready already leaves
-out (bd v1.3.1 `internal/storage/sqlbuild/ready.go`: types at `:16-38`, the
-status filter at `:113`, the pinned flag at `:117`). Epics and
-milestones as parent cards is planned (samskara-l2t.2).
+Epics and milestones are excluded from `bd ready` because they are
+containers, not work, and `bd ready` lists both (an unblocked epic appears
+beside its first child). Pinned beads, gates and workflow roots (`molecule`)
+bd ready already leaves out (bd v1.3.1 `internal/storage/sqlbuild/ready.go`:
+types at `:16-38`, the status filter at `:113`, the pinned flag at `:117`).
+A container is carded only as the parent of a ready child, as an overview
+card.
 
 ### Startup preconditions
 
@@ -130,7 +137,8 @@ Restarting the server re-checks at once.
 | `externalSource` | `{ integrationId: 'beads', type: 'issue', externalId: <bead id> }` |
 | `claimKey` | `beads:<owner/name>:<bead id>` |
 | `title` | `<bead id>: <bead title>` |
-| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state |
+| `parentWorkItemId` | the overview card of the bead's parent container, if it has one |
+| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren` |
 
 Intake is idempotent. Before creating a card the integration looks it up by
 external source (`WorkItemsStorage.getByProjectSource`,
@@ -145,6 +153,82 @@ Cards are created with `workItems.upsert` and not with a rule decision.
 `upsert` is the call that `POST /web/factory/projects/:id/work-items` makes, and
 it accepts any external source. A card with an unknown source classifies as
 `manual` (`rules/types.d.ts:12`), so the board's `manual` rules apply to it.
+
+### Overview cards
+
+An epic, milestone or molecule root (the root bead of a `bd mol pour`) that
+has children gets an **overview card**: a card that groups its children's
+cards and is never run (owner decision, 2026-10-09, samskara-l2t.2). Its
+children's cards are linked under it with Factory's own
+`parentWorkItemId`, so they show under its linked items.
+
+**When it is made.** Intake makes a container's card when it first meets a
+ready child of it: the ready row's `parent` field names the container
+(bd 1.3.1 sets it from the parent-child edge). The integration reads the
+container with `bd --readonly show <id> --json` and its children with
+`bd --readonly list --parent=<id> --all --flat --json -n 0`
+(`repo.ts`, `BdRepo.children`). Checked on bd 1.3.1: `--parent` lists direct
+children only, so a grandchild is counted under its own parent; `--all` adds
+closed children; `-n 0` lifts the default limit of 50. A poured molecule's
+steps have parent-child edges to the root (bd v1.3.1 `cmd/bd/cook.go:643-649`),
+so a molecule root is handled like an epic.
+
+**Parent before child.** Factory checks a `parentWorkItemId` against the
+cards already in the project (`@mastra/factory` 0.20.0
+`dist/storage/domains/work-items/base.js:318-332`, called on create at
+`:2484`). The integration therefore resolves the chain top-down: for a
+grandchild under a nested epic, the outer epic's card is made first, then the
+nested epic's card under it, then the grandchild's card under that
+(`integration.ts`, `#overview` and `#resolveOverview`). Each container is
+resolved once per tick. A card made before its container's card (an older
+card, or a bead moved under an epic later) is linked on the next tick with
+`setParentWorkItemIfMissing` (`base.js:2512-2530`), which leaves a parent that
+is already set alone, so a link made by hand stays.
+
+**What it carries.** The same external source, claim key
+(`beads:<owner/name>:<bead id>`), title format, repository and description
+comment as a work card, plus `beadsCardKind: 'overview'` and
+`beadsOpenChildren`, the number of its direct children that are not closed.
+Metadata is written only when a value changes, because every metadata write
+bumps the card's revision. Overview cards rest in the board's initial phase
+(Intake).
+
+**When it is not made.**
+
+| Case | Result |
+|------|--------|
+| The container has no children | No card (owner decision: a childless epic will become a planning card in samskara-l2t.2.4; a childless milestone or molecule root never gets one). |
+| The child is already carded in another project of the organization | No overview card in this project, and one warning per process. The child's claim (`getByClaimKey`, `base.js:1220-1226`) says where its family lives. |
+| The container itself is carded in another project | The children are carded here without a parent, with one warning. |
+| The parent is not an epic, milestone or molecule, or it is closed | The child is carded without a parent. |
+| `bd show` or `bd list --parent` fails | The child is carded without a parent; the next tick tries again. |
+
+**The board policy.** An overview card must never run. A phase handler that
+returns no decision does not stop a run: a person's move into a working
+phase still starts one with a generic stage message
+(`dist/rules/transition-service.js:296-311`). So the Requests board's
+`transitionPolicy` refuses the move itself
+(`packages/factory-beads/src/board-rules.ts`,
+`createBeadsTransitionPolicy`, wired in `src/mastra/boards/requests-board.ts`).
+The policy runs for every transition and every actor before any phase rule,
+and a `reject` ends the transition (`transition-service.js:245-262`).
+
+| Move of an overview card | Result |
+|--------------------------|--------|
+| Into Triage, Planning, Building (`execute`) or Review, by a person, an agent or the system | Rejected, `forbidden`: "An overview card closes when its last child closes". |
+| Into Done while `beadsOpenChildren` is above 0 | Rejected, `forbidden`. |
+| Into Done with no open children, or into Canceled | Allowed (then Work's own policy decides). |
+
+The working phases are the board's phases declared `kind: 'working'`, read
+from Work's definition, not a hard-coded list. Every other card, and every
+other move, gets Work's own policy unchanged, including the plan gate. The
+policy reads only the card snapshot it is given: a policy must not read
+storage (`node_modules/@mastra/factory/factory-skills/configure-factory-rules/SKILL.md:61-63`),
+which is why the sync worker keeps the open-children count on the card.
+
+Closing an overview card when its last child closes is the next step
+(samskara-l2t.2.2). Until then, a person moves it to Done once its children
+are closed, and write-back closes the container bead like any other.
 
 ### Multi-repository factories: the card names its repository
 
@@ -605,7 +689,8 @@ repositories included. So:
 The formulas are read from the copy's checkout, taken when the copy was
 bootstrapped: a formula committed later is offered after the copy is next
 rebuilt. A pour's root bead is of type `molecule`, not `epic`; bd does not list
-it as ready, so it is never carded.
+it as ready, so it is carded only as the overview card of its steps (see
+[Overview cards](#overview-cards)).
 
 **The skill.** `src/mastra/public/factory-skills/factory-beads/SKILL.md` is a
 Factory skill: Factory loads a project's own skills from
@@ -721,15 +806,26 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   checked with `@mastra/factory`'s real `resolveWorkItemRepository`; and, in
   `test/states.test.ts`, the on/off switch, both startup preconditions, the
   `no-beads-data` state across repeated sweeps and its re-check, and the
-  status route. The harness remote carries `refs/dolt/data` unless a test
+  status route. Overview cards: an epic, a nested epic, a molecule root and a
+  milestone each carded before their children and linked to them; childless
+  containers and non-container parents; back-fill of a missing parent and a
+  hand-set parent kept; the open-children count, written only on change; a
+  child or a container carded in another project; a failed children read. The
+  harness store checks `parentWorkItemId` with Factory's own
+  `validateParentRelation`. The harness remote carries `refs/dolt/data` unless a test
   removes it (`setBeadsData`). The fake feed
   (`MemoryFeed` in `test/harness.ts`) copies the store's replay behaviour.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
-  repository in a temp directory, through a `git+file://` Dolt remote. It is
+  repository in a temp directory, through a `git+file://` Dolt remote, including
+  an epic with two children and a nested epic, and a real `bd mol pour` whose
+  root card is linked to its first step's card. It is
   **local-only**: it is skipped when `bd` is not on PATH, and the CI workflow
   does not install bd. Set `FACTORY_BEADS_REAL_BD=0` to skip it on a machine
   that has bd.
-- The plan gate for cards that are not created by a person is covered by
+- The plan gate for cards that are not created by a person, and the overview
+  card policy (every working phase refused for a person, an agent and the
+  system; Done refused with open children; Done and Canceled allowed
+  otherwise; other cards unchanged), are covered by
   `tests/boards/requests-board.test.ts`.
 
 ## Build note

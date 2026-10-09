@@ -36,9 +36,22 @@
 
 import { defineBoard, workBoard } from '@mastra/factory';
 import type { FactoryRuleHandler, FactoryStageRuleContext } from '@mastra/factory/rules/types';
-import { createBeadsDoneRule } from '@samskara/factory-beads';
+import { createBeadsDoneRule, createBeadsTransitionPolicy } from '@samskara/factory-beads';
 
 const workTriage = workBoard.phases.triage.onEnter ?? {};
+
+/**
+ * Work's own policy, wrapped so a beads overview card (an epic's, milestone's
+ * or molecule root's card) never enters a working phase and never reaches
+ * Done while a child is open; every other card gets Work's answer unchanged.
+ * The working phases are read from the phases' declared `kind`
+ * (configure-factory-rules/SKILL.md:65). See docs/operations/beads.md.
+ */
+const transitionPolicy = createBeadsTransitionPolicy(workBoard.transitionPolicy, {
+  workingPhases: Object.entries(workBoard.phases)
+    .filter(([, phase]) => phase.kind === 'working')
+    .map(([id]) => id),
+});
 
 /**
  * Work's own GitHub-issue triage entry. It already handles a `manual` item: its
@@ -51,7 +64,7 @@ export const requestsBoard = defineBoard({
   id: workBoard.id,
   title: 'Requests',
   initialPhase: workBoard.initialPhase,
-  ...(workBoard.transitionPolicy ? { transitionPolicy: workBoard.transitionPolicy } : {}),
+  transitionPolicy,
   tools: { ...workBoard.tools },
   phases: {
     ...workBoard.phases,
