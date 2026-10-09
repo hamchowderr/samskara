@@ -6,7 +6,7 @@ import type { LeaseProvider } from '@mastra/core/events';
 import type { RequestContext } from '@mastra/core/request-context';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { BeadsSyncWorker, LeaseWaitTimeoutError } from '../src/index';
+import { BeadsSyncWorker, formulaReferences, LeaseWaitTimeoutError } from '../src/index';
 import type { BeadsIntegration } from '../src/index';
 import { createHarness, ORG, PROJECT, SLUG, sweep, TOKEN } from './harness';
 import type { Harness } from './harness';
@@ -441,6 +441,71 @@ describe('workflows', () => {
     const result = await tools.beads_pour!.execute({ formula: 'gated', vars: { name: 'a', deliverable: 'b' } });
     expect(result.error).toMatch(/gated steps/);
     expect(callsOf(h, 'pour')).toHaveLength(0);
+  });
+
+  it('refuses a gate inherited through extends, checked on the cooked formula', async () => {
+    h = withGetById(createHarness([]));
+    h.setState(s =>
+      Object.assign(s, {
+        formulas: [
+          { ...formulas[0]!, name: 'parent', gated: true },
+          { ...formulas[0]!, name: 'child', extends: ['parent'] },
+        ],
+      }),
+    );
+    const tools = await toolsFor(h.integration());
+    for (const dry_run of [false, true]) {
+      const result = await tools.beads_pour!.execute({ formula: 'child', vars: { name: 'a', deliverable: 'b' }, dry_run });
+      expect(result.error).toMatch(/gated steps \(its own or inherited\)/);
+    }
+    expect(callsOf(h, 'cook')).toHaveLength(2);
+    expect(callsOf(h, 'pour')).toHaveLength(0);
+  });
+
+  it('refuses a formula that composes with one outside the repository, at any depth', async () => {
+    h = withGetById(createHarness([]));
+    h.setState(s =>
+      Object.assign(s, {
+        formulas: [
+          { ...formulas[0]!, name: 'outside', user: true },
+          { ...formulas[0]!, name: 'wrap', extends: ['outside'] },
+          { ...formulas[0]!, name: 'outer', extends: ['wrap'] },
+          { ...formulas[0]!, name: 'base' },
+          { ...formulas[0]!, name: 'fine', extends: ['base'] },
+        ],
+      }),
+    );
+    const tools = await toolsFor(h.integration());
+    expect((await tools.beads_pour!.execute({ formula: 'wrap', vars: { name: 'a', deliverable: 'b' } })).error).toMatch(
+      /composes with "outside" \(through itself\)/,
+    );
+    expect((await tools.beads_pour!.execute({ formula: 'outer', vars: { name: 'a', deliverable: 'b' } })).error).toMatch(
+      /"outer" composes with "outside" \(through "wrap"\)/,
+    );
+    expect(callsOf(h, 'pour')).toHaveLength(0);
+    // Extending another of the repository's own formulas is fine.
+    expect(await tools.beads_pour!.execute({ formula: 'fine', vars: { name: 'a', deliverable: 'b' } })).toMatchObject({ published: true });
+  });
+});
+
+describe('formulaReferences', () => {
+  it("finds every composition field bd's formula schema has", () => {
+    const formula = {
+      extends: ['a'],
+      compose: {
+        aspects: ['b'],
+        expand: [{ target: 'x', with: 'c' }],
+        map: [{ select: 'y', with: 'd' }],
+        hooks: [{ trigger: 'label:z', attach: 'e' }],
+      },
+      steps: [
+        { id: 's1', title: 't', expand: 'f' },
+        { id: 's2', title: 't', on_complete: { for_each: 'o', bond: 'g' } },
+        { id: 's3', title: 't', children: [{ id: 'c1', title: 't', expand: 'h' }] },
+        { id: 's4', title: 't', loop: { count: 2, body: [{ id: 'b1', title: 't', expand: 'i' }] } },
+      ],
+    };
+    expect(formulaReferences(formula).sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
   });
 });
 

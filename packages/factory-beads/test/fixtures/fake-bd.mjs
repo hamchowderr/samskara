@@ -86,6 +86,15 @@ const SECTIONS = {
   spike: ['## Goal', '## Findings'],
   story: ['## Acceptance Criteria'],
 };
+// Fake formulas: { name, steps: [title], vars: [name], gated?, extends?: [name], user? }.
+const ownSteps = f => f.steps.map((title, i) => ({ id: `${f.name}.s${i}`, title, ...(f.gated && i === 0 ? { gate: { type: 'human' } } : {}) }));
+const resolvedSteps = (f, seen = new Set()) => {
+  seen.add(f.name);
+  const parents = (f.extends ?? [])
+    .map(name => (state.formulas ?? []).find(x => x.name === name))
+    .filter(p => p && !seen.has(p.name));
+  return [...parents.flatMap(p => resolvedSteps(p, seen)), ...ownSteps(f)];
+};
 const nextId = () => {
   state.seq = (state.seq ?? 0) + 1;
   return `${state.prefix ?? 'fake'}-${state.seq}`;
@@ -244,6 +253,17 @@ switch (words[0]) {
     state.deps = [...(state.deps ?? []), { issue: words[2], dependsOn: words[3], type: flagValue('type') ?? 'blocks' }];
     out = JSON.stringify({ issue_id: words[2], depends_on_id: words[3], status: 'added', type: flagValue('type') ?? 'blocks' });
     break;
+  case 'cook': {
+    // Resolved like bd cook: `extends` applied, parents' steps (and gates) first.
+    const f = (state.formulas ?? []).find(x => x.name === words[1]);
+    if (!f) {
+      code = 1;
+      err = `formula ${words[1]} not found`;
+      break;
+    }
+    out = JSON.stringify({ formula: f.name, steps: resolvedSteps(f) });
+    break;
+  }
   case 'formula': {
     // A formula with `user: true` lives in ~/.beads/formulas, outside the repository.
     const source = f => (f.user ? `/home/someone/.beads/formulas/${f.name}.formula.toml` : `${process.cwd()}/.beads/formulas/${f.name}.formula.toml`);
@@ -254,11 +274,8 @@ switch (words[0]) {
         err = `formula ${words[2]} not found`;
         break;
       }
-      out = JSON.stringify({
-        formula: f.name,
-        source: source(f),
-        steps: f.steps.map((title, i) => ({ id: `s${i}`, title, ...(f.gated && i === 0 ? { gate: { type: 'human' } } : {}) })),
-      });
+      // As written: `extends` is listed, the parents' steps are not merged in.
+      out = JSON.stringify({ formula: f.name, source: source(f), ...(f.extends ? { extends: f.extends } : {}), steps: ownSteps(f) });
       break;
     }
     out = JSON.stringify(

@@ -236,31 +236,82 @@ function hasGate(value: unknown): boolean {
 }
 
 /**
- * Refuse a formula that is not the repository's own, or that has gated steps.
- * A gate step makes bd create a gate bead that blocks the step until it is
- * closed (bd formula schema gate). No tool closes a bead and the integration
- * never cards a gate, so a gated step would never become ready: refusing is
- * safer than pouring a molecule that silently stalls.
+ * Every formula name a formula refers to, from the fields bd composes with
+ * (bd formula schema Formula, ComposeRules, ExpandRule, MapRule, Hook, Step,
+ * OnCompleteSpec): `extends`, `compose.aspects`, `compose.expand[].with`,
+ * `compose.map[].with`, `compose.hooks[].attach`, a step's `expand` and
+ * `on_complete.bond`, at any depth (children, loop bodies). A reference built
+ * from a variable cannot be checked, so it is returned as-is and refused.
+ */
+export function formulaReferences(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    for (const item of value) formulaReferences(item, out);
+    return out;
+  }
+  if (!value || typeof value !== 'object') return out;
+  for (const [key, inner] of Object.entries(value)) {
+    if ((key === 'extends' || key === 'aspects') && Array.isArray(inner)) {
+      for (const name of inner) if (typeof name === 'string') out.push(name);
+    } else if ((key === 'with' || key === 'attach' || key === 'bond' || key === 'expand') && typeof inner === 'string') {
+      if (inner) out.push(inner);
+    }
+    formulaReferences(inner, out);
+  }
+  return out;
+}
+
+async function bdJson(repo: BdRepo, args: string[], what: string): Promise<unknown> {
+  const res = await repo.runner.bd(['--readonly', ...args, '--json'], { cwd: repo.dir });
+  if (res.code !== 0) throw new BeadsToolError(`bd ${what} failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(-300)}`);
+  try {
+    return JSON.parse(res.stdout) as unknown;
+  } catch {
+    throw new BeadsToolError(`bd ${what} did not return JSON`);
+  }
+}
+
+/**
+ * Refuse a formula unless it, and every formula it composes with, is the
+ * repository's own, and its RESOLVED form has no gate.
+ *
+ * - Composition is followed recursively through `bd formula show`, which
+ *   gives each formula as written. `extends`, an expansion or an aspect can
+ *   name a formula from the server user's `~/.beads/formulas` or `$GT_ROOT`,
+ *   whose steps would then be poured into this repository.
+ * - Gates are checked on `bd cook <name>` (bd cook --help: "outputs the
+ *   resolved formula as JSON"), not on `formula show`: an inherited gated
+ *   step appears only after `extends` is applied. A gate makes bd create a
+ *   gate bead that blocks its step until closed (bd formula schema gate); no
+ *   tool closes a bead and the integration never cards a gate, so a gated
+ *   step would never become ready.
  */
 export async function checkPourableFormula(repo: BdRepo, name: string): Promise<void> {
-  const own = await repositoryFormulas(repo);
-  if (!own.some(row => row.name === name)) {
-    const names = own.map(row => String(row.name));
+  const ownRows = await repositoryFormulas(repo);
+  const own = new Set(ownRows.map(row => String(row.name)));
+  if (!own.has(name)) {
     throw new BeadsToolError(
-      `"${name}" is not one of this repository's formulas (its .beads/formulas). ${names.length ? `Available: ${names.join(', ')}` : 'It has none.'}`,
+      `"${name}" is not one of this repository's formulas (its .beads/formulas). ${own.size ? `Available: ${[...own].join(', ')}` : 'It has none.'}`,
     );
   }
-  const res = await repo.runner.bd(['--readonly', 'formula', 'show', name, '--json'], { cwd: repo.dir });
-  if (res.code !== 0) throw new BeadsToolError(`bd formula show failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(-300)}`);
-  let shown: unknown;
-  try {
-    shown = JSON.parse(res.stdout);
-  } catch {
-    throw new BeadsToolError('bd formula show did not return JSON');
+  const seen = new Set<string>([name]);
+  const queue = [name];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const ref of formulaReferences(await bdJson(repo, ['formula', 'show', current], 'formula show'))) {
+      if (!own.has(ref)) {
+        throw new BeadsToolError(
+          `"${name}" composes with "${ref}" (through ${current === name ? 'itself' : `"${current}"`}), which is not one of this repository's formulas. Only formulas in the repository's .beads/formulas can be poured.`,
+        );
+      }
+      if (!seen.has(ref)) {
+        seen.add(ref);
+        queue.push(ref);
+      }
+    }
   }
-  if (hasGate(shown)) {
+  if (hasGate(await bdJson(repo, ['cook', name], 'cook'))) {
     throw new BeadsToolError(
-      `"${name}" has gated steps. A gate becomes a bead that only closing can clear, and no tool closes beads, so its steps would never become ready. Ask a person to pour it.`,
+      `"${name}" has gated steps (its own or inherited). A gate becomes a bead that only closing can clear, and no tool closes beads, so its steps would never become ready. Ask a person to pour it.`,
     );
   }
 }
@@ -480,8 +531,9 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     id: 'beads_pour',
     description:
       `Pour one of the repository's own workflow formulas (bd mol pour): create a molecule (a root bead of type molecule) and its linked, ` +
-      `ordered step beads in one go, with the formula's variables filled in. Only formulas from beads_formula_list; a formula with gated ` +
-      `steps is refused, because a gate is a bead only closing clears and no tool closes beads. Set dry_run to preview without writing. ` +
+      `ordered step beads in one go, with the formula's variables filled in. Only formulas from beads_formula_list, and only when every ` +
+      `formula they extend or compose with is one too. A formula with gated steps, its own or inherited, is refused, because a gate is a ` +
+      `bead only closing clears and no tool closes beads. Set dry_run to preview without writing. ` +
       `Poured steps skip create-time validation, so fill any missing design/acceptance with beads_update before work starts. ${where}`,
     inputSchema: z.object({
       repository: repositoryArg,

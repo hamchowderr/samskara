@@ -43,6 +43,65 @@ description = "do second"
 needs = ["first"]
 `;
 
+/** A repository formula whose first step is gated. */
+const GATED_FORMULA = `formula = "mol-demo"
+description = "Demo with a gate"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "gate-a"
+title = "Wait"
+description = "wait"
+
+[steps.gate]
+type = "human"
+
+[[steps]]
+id = "b"
+title = "Work"
+description = "work"
+needs = ["gate-a"]
+`;
+
+/** Inherits the gate: \`formula show\` lists no gate for it, \`cook\` does. */
+const CHILD_FORMULA = `formula = "mol-child"
+description = "Child"
+version = 1
+type = "workflow"
+extends = ["mol-demo"]
+
+[[steps]]
+id = "c"
+title = "More"
+description = "more"
+`;
+
+/** Extends a formula that lives outside the repository. */
+const WRAP_FORMULA = `formula = "mol-wrap"
+description = "Wrap"
+version = 1
+type = "workflow"
+extends = ["outside"]
+
+[[steps]]
+id = "w"
+title = "Wrap step"
+description = "wrap"
+`;
+
+/** In the server user's ~/.beads/formulas (a temp home here), not the repository. */
+const OUTSIDE_FORMULA = `formula = "outside"
+description = "Outside"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "o"
+title = "OUTSIDE private step"
+description = "private"
+`;
+
 type Tools = Record<string, { execute: (input: unknown) => Promise<Record<string, unknown> & { error?: string }> }>;
 
 describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
@@ -50,6 +109,7 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
   const bare = join(root, 'o.git');
   const seed = join(root, 's');
   const originUrl = pathToFileURL(bare).href;
+  const home = join(root, 'home');
   const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
   const run = (cmd: string, args: string[], cwd = seed) => execFileSync(cmd, args, { cwd, env, encoding: 'utf8' }).trim();
   let h: Harness;
@@ -60,6 +120,8 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     run('git', ['clone', '-q', originUrl, seed], root);
     run('git', ['commit', '-q', '--allow-empty', '-m', 'chore: init fixture']);
     run('git', ['push', '-q', 'origin', 'trunk']);
+    mkdirSync(join(home, '.beads', 'formulas'), { recursive: true });
+    writeFileSync(join(home, '.beads', 'formulas', 'outside.formula.toml'), OUTSIDE_FORMULA);
     h = createHarness([]);
     const projects = h.ctx.storage.projects as unknown as { getById?: unknown };
     projects.getById = async ({ id }: { id: string }) => h.sourceControl.projects.find(p => p.id === id) ?? null;
@@ -74,7 +136,9 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     const integration = h.integration({
       sourceControl: { id: 'github', versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never },
       cacheDir: join(root, 'c'),
-      runner: new BdRunner(),
+      // A home of its own whose ~/.beads/formulas holds a formula the
+      // repository does not, standing in for the server user's library.
+      runner: new BdRunner({ env: { HOME: home, USERPROFILE: home } }),
     });
     const rc = {
       // The supervisor session: only it gets beads_init.
@@ -93,8 +157,11 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     // The repository commits a formula; it is in the copy the next tool call bootstraps.
     mkdirSync(join(seed, '.beads', 'formulas'), { recursive: true });
     writeFileSync(join(seed, '.beads', 'formulas', 'demo.formula.toml'), DEMO_FORMULA);
+    writeFileSync(join(seed, '.beads', 'formulas', 'mol-demo.formula.toml'), GATED_FORMULA);
+    writeFileSync(join(seed, '.beads', 'formulas', 'mol-child.formula.toml'), CHILD_FORMULA);
+    writeFileSync(join(seed, '.beads', 'formulas', 'mol-wrap.formula.toml'), WRAP_FORMULA);
     run('git', ['add', '.beads/formulas']);
-    run('git', ['commit', '-q', '-m', 'chore: add demo formula']);
+    run('git', ['commit', '-q', '-m', 'chore: add formulas']);
     run('git', ['push', '-q', 'origin', 'trunk']);
 
     const invalid = await tools.beads_create!.execute({
@@ -125,7 +192,19 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
 
     // Only the repository's formula is offered, never the server user's ~/.beads/formulas.
     const listed = await tools.beads_formula_list!.execute({});
-    expect((listed.formulas as Array<{ name: string }>).map(f => f.name), JSON.stringify(listed)).toEqual(['demo']);
+    expect((listed.formulas as Array<{ name: string }>).map(f => f.name).sort(), JSON.stringify(listed)).toEqual([
+      'demo',
+      'mol-child',
+      'mol-demo',
+      'mol-wrap',
+    ]);
+    // A gate inherited through extends is refused: only `bd cook` shows it.
+    for (const dry_run of [true, false]) {
+      expect((await tools.beads_pour!.execute({ formula: 'mol-child', dry_run })).error).toMatch(/gated steps \(its own or inherited\)/);
+    }
+    // extends to a formula outside the repository is refused, though bd would pour it.
+    expect((await tools.beads_pour!.execute({ formula: 'mol-wrap', dry_run: true })).error).toMatch(/composes with "outside"/);
+    expect((await tools.beads_pour!.execute({ formula: 'outside', dry_run: true })).error).toMatch(/not one of this repository's formulas/);
     // A real dry run: bd refuses pour under --readonly, so this proves the mode.
     const preview = await tools.beads_pour!.execute({ formula: 'demo', vars: { name: 'x' }, dry_run: true });
     expect(preview.error, JSON.stringify(preview)).toBeUndefined();

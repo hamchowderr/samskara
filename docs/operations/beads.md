@@ -49,7 +49,7 @@ App:
    [Repository states](#repository-states)). This runs every tick for a
    repository that has the ref, so a ref deleted on origin, or a copy
    bootstrapped before this check existed, is caught too
-   (`packages/factory-beads/src/integration.ts:433-451`).
+   (`packages/factory-beads/src/integration.ts:535-553`).
 1. **Bootstrap, first time only.** `git clone --depth 1`, then
    `bd --sandbox bootstrap --yes`, in `<BEADS_CACHE_DIR>/<owner>__<name>`. A
    marker file in `.git/` records that the copy is ready. The copy is kept
@@ -57,11 +57,11 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:457-521`).
+   (`packages/factory-beads/src/integration.ts:559-625`).
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
 4. **Intake.** `bd --readonly ready --json --exclude-type=epic -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed
-   (`integration.ts:530-575`). See [What the agent sees](#what-the-agent-sees).
+   (`integration.ts:651-696`). See [What the agent sees](#what-the-agent-sees).
 
 A project connection whose GitHub installation no longer exists (an orphaned
 link, samskara-1ra) is skipped with one warning per connection, and the other
@@ -78,7 +78,7 @@ child. Epics are containers, not work.
 
 Two things cannot change while the server runs. Each is checked once, at the
 first tick, and a failure logs **one** line and leaves the integration idle
-(`#checkPreconditions`, `integration.ts:221-238`). Nothing is synced until the
+(`#checkPreconditions`, `integration.ts:238-255`). Nothing is synced until the
 server restarts; `GET /web/beads/status` shows `state: 'idle'` and the reason.
 
 | Precondition | Log line |
@@ -390,7 +390,7 @@ the request simply gets no beads tools.
 **`beads_init` is for the supervisor only** (owner decision, 2026-10-09). The
 tool is in the tool set only when the session's resource id is
 `factory-supervisor:<projectId>` for the resolved project
-(`agent-tools.ts:75`, `:549`). Worker sessions (triage, plan, build, review)
+(`agent-tools.ts:75`, `:601`). Worker sessions (triage, plan, build, review)
 and channel sessions such as Slack never get it; they are not refused at call
 time, the tool is absent.
 
@@ -417,13 +417,13 @@ time, the tool is absent.
 - Writes are signed `--actor factory-beads/agent`, so the bead history shows
   which writes came from an agent.
 - No tool closes or deletes. `beads_update` refuses `closed` before bd runs
-  (`agent-tools.ts:364`); the only settable statuses are `open`,
+  (`agent-tools.ts:415`); the only settable statuses are `open`,
   `in_progress`, `blocked` and `deferred` (`:87`). bd itself would close
   through `update --status=closed`, so the check has to be ours.
-- `beads_update` never touches a closed bead (`agent-tools.ts:382`). bd would
+- `beads_update` never touches a closed bead (`agent-tools.ts:433`). bd would
   reopen one on `--status=open`, and its card would stay in Done with the
   close recorded, so card and bead would disagree for good.
-- `beads_create` always passes `--validate` (`agent-tools.ts:425`) and
+- `beads_create` always passes `--validate` (`agent-tools.ts:476`) and
   requires a description and a design. The type is checked first against
   `bd types --json` (core types plus the repository's `types.custom`, and bd's
   aliases `feat`, `enhancement`, `dec`, `adr`); an unknown type is refused with
@@ -447,23 +447,41 @@ time, the tool is absent.
   and wait there for a person (the owner's 2026-10-09 decision); nothing
   starts work on them automatically.
 
-**Formulas: the repository's own, and no gates.** bd searches the
-repository's `.beads/formulas/`, then `~/.beads/formulas/` of the user the
-server runs as (`bd formula list --help`). Under `npm run dev` that second path
-is the owner's personal formula library, which must never be listed or poured
-into another repository, client repositories included. So the tools keep only
-formulas whose source file is inside the repository's copy
-(`agent-tools.ts:212`), and `beads_pour` refuses any other name. bd 1.3.0 has
-no built-in formulas to allow. The formulas are read from the copy's checkout,
-taken when the copy was bootstrapped: a formula committed later is offered
-after the copy is next rebuilt.
+**Formulas: the repository's own, all the way down, and no gates.** bd
+searches the repository's `.beads/formulas/`, then `~/.beads/formulas/` of the
+user the server runs as, then `$GT_ROOT/.beads/formulas/` (`bd formula list
+--help`). Under `npm run dev` the home path is the owner's personal formula
+library, which must never be listed or poured into another repository, client
+repositories included. So:
 
-A formula whose steps have a `gate` is refused (`agent-tools.ts:245-266`). bd
-turns a gate into a gate bead that blocks its step until the gate is closed
-(`bd formula schema gate`); no tool closes beads and the integration never
-cards a gate, so a poured gated step would never become ready. A person pours
-those formulas. A pour's root bead is of type `molecule`, not `epic`; bd does
-not list it as ready, so it is never carded.
+- The tools list only formulas whose source file is inside the repository's
+  copy (`agent-tools.ts:212`), and `beads_pour` refuses any other name. bd
+  1.3.0 has no built-in formulas to allow.
+- A repository formula can still pull another formula in by name, and bd
+  resolves that name through the same search path: a repository formula with
+  `extends = ["outside"]` pours the steps of an `outside` formula from the home
+  library. So `beads_pour` follows every composition reference, recursively,
+  and refuses the formula if any of them is not one of the repository's own
+  (`agent-tools.ts:246`, `:288-317`). The references are every field bd's
+  formula schema composes with (`bd formula schema Formula`, `ComposeRules`,
+  `ExpandRule`, `MapRule`, `Hook`, `Step`, `OnCompleteSpec`): `extends`,
+  `compose.aspects`, `compose.expand[].with`, `compose.map[].with`,
+  `compose.hooks[].attach`, and a step's `expand` and `on_complete.bond`, at
+  any depth. Each formula is read as written with `bd formula show --json`.
+- A formula with a gate, its own or inherited, is refused. The gate check runs
+  on `bd cook <name> --json`, the resolved formula (bd cook --help: "outputs
+  the resolved formula as JSON"), not on `formula show`: checked on bd 1.3.0,
+  a repository formula `mol-child` with `extends = ["mol-demo"]`, where
+  `mol-demo` has a gated step, shows no gate in `formula show` but carries it
+  in `cook`. bd turns a gate into a gate bead that blocks its step until the
+  gate is closed (`bd formula schema gate`); no tool closes beads and the
+  integration never cards a gate, so a poured gated step would never become
+  ready. A person pours those formulas.
+
+The formulas are read from the copy's checkout, taken when the copy was
+bootstrapped: a formula committed later is offered after the copy is next
+rebuilt. A pour's root bead is of type `molecule`, not `epic`; bd does not list
+it as ready, so it is never carded.
 
 **The skill.** `src/mastra/public/factory-skills/factory-beads/SKILL.md` is a
 Factory skill: Factory loads a project's own skills from
@@ -495,18 +513,20 @@ and custom types, no close, no edit of a closed bead, notes appended,
 dependencies, a failed publish picked up by the next sweep, a parked
 repository, a sync conflict after a tool write parking the repository until
 reset, the repository argument, the init flow, formula list and pour, the dry
-run's mode, server-user formulas hidden and refused, gated formulas refused,
-and the lease: waiting, the timeout, the in-process queue timeout, and no
+run's mode, server-user formulas hidden and refused, gated formulas refused
+(own and inherited, checked on `cook`), composition with an outside formula
+refused at any depth, every composition field found, and the lease: waiting, the timeout, the in-process queue timeout, and no
 overlap with a sweep. `test/real-bd-tools.test.ts` runs a real bd (local-only,
 like `real-bd.test.ts`): init by the supervisor on a repository with no beads,
-a refused and an accepted create, a refused close, a note, the repository's
-formula listed alone (the machine's own `~/.beads/formulas` excluded), a real
-pour dry run, and the sweep carding the new bead.
+a refused and an accepted create, a refused close, a note, only the repository's
+formulas listed (the formula in its temp home excluded), a gate inherited through
+`extends` refused, `extends` to the home formula refused, a real pour dry run,
+and the sweep carding the new bead.
 
 ## Write-back failures
 
 `bd sync` exit codes (from `bd sync --help`), and what the integration does with
-each (`integration.ts:490-521`, retries at `:577-586`):
+each (`integration.ts:593-624`, retries at `:698-707`):
 
 | Exit | Meaning | Action |
 |------|---------|--------|
