@@ -30,21 +30,25 @@
 import { registerApiRoute } from '@mastra/core/server';
 import type { ApiRoute } from '@mastra/core/server';
 import type { LeaseProvider } from '@mastra/core/events';
+import type { RequestContext } from '@mastra/core/request-context';
 import type { MastraWorker } from '@mastra/core/worker';
 import type { VersionControl } from '@mastra/factory/capabilities/version-control';
-import type { FactoryIntegration, IntegrationContext } from '@mastra/factory/integrations/base';
+import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createBeadsTools, resolveToolProject } from './agent-tools';
+import type { ToolScope } from './agent-tools';
 import { registerLive } from './done-rule';
 import { BdRepo, cacheDirFor, resultTail } from './repo';
 import type { ReadyBead } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
+import { BeadsToolOps } from './tool-ops';
 import { BeadsSyncWorker } from './worker';
-import type { TickOutcome } from './worker';
+import type { TickOutcome, WithLeaseOptions } from './worker';
 
 export const BEADS_INTEGRATION_ID = 'beads';
 
@@ -103,6 +107,11 @@ export interface BeadsIntegrationOptions {
    * reported as `no-beads-data`, not as an error.
    */
   remoteCheckIntervalMs?: number;
+  /**
+   * How long an agent tool waits for the writer lease while another process
+   * holds it. Default 120 s, polled every 1 s.
+   */
+  toolLeaseWait?: WithLeaseOptions;
   logger?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -180,6 +189,11 @@ export class BeadsIntegration implements FactoryIntegration {
   #idle: string | undefined;
   /** Repositories last seen without refs/dolt/data, by slug: when origin was checked. */
   readonly #noData = new Map<string, number>();
+  /** Repositories (slug) with an agent-tool write committed on the host copy but not yet on origin. */
+  readonly #unpublished = new Set<string>();
+  #toolOps: BeadsToolOps | undefined;
+  /** Linked repositories per project for agentTools, which Factory resolves on every request. */
+  readonly #scopeCache = new Map<string, { at: number; scope: ToolScope }>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -264,11 +278,64 @@ export class BeadsIntegration implements FactoryIntegration {
     return this.#last;
   }
 
-  async #linkedRepos(ctx: IntegrationContext): Promise<LinkedRepo[]> {
+  /**
+   * Beads tools for the requesting session's project (samskara-e64): read,
+   * create, update, link, init and pour, run on the host copy under the
+   * writer lease. See agent-tools.ts. Nothing for a request that is not a
+   * Factory session, a project with no linked repository, or before the
+   * worker exists.
+   */
+  async agentTools({ requestContext }: { requestContext: RequestContext }): Promise<IntegrationTools> {
+    const ctx = this.#ctx;
+    if (!ctx?.runtime || !this.#worker) return {};
+    const project = await resolveToolProject(requestContext, ctx.storage.projects);
+    if (!project) return {};
+    const key = `${project.orgId}:${project.projectId}`;
+    let cached = this.#scopeCache.get(key);
+    if (!cached || Date.now() - cached.at > 30_000) {
+      const repos = (await this.#linkedRepos(ctx, project.projectId)).map(r => ({ repositoryId: r.repositoryId, slug: r.slug }));
+      cached = { at: Date.now(), scope: { ...project, repos } };
+      this.#scopeCache.set(key, cached);
+    }
+    return createBeadsTools(this.#tools(), cached.scope);
+  }
+
+  #tools(): BeadsToolOps {
+    const worker = this.#worker;
+    this.#toolOps ??= new BeadsToolOps({
+      runner: this.#runner,
+      versionControl: this.#options.sourceControl.versionControl,
+      withLease: worker ? (fn, options) => worker.withLease(fn, options) : undefined,
+      repoFor: (slug, cloneUrl) => this.#repo(slug, cloneUrl),
+      forget: async slug => {
+        // The directory may predate this process, so drop it by path.
+        await (this.#repos.get(slug) ?? new BdRepo(slug, cacheDirFor(this.#cacheRoot, slug), '', this.#runner)).discard();
+        this.#repos.delete(slug);
+        this.#noData.delete(slug);
+      },
+      hasBeadsData: (cloneUrl, credentials) => this.#hasBeadsData(cloneUrl, credentials),
+      repoState: (orgId, slug) => this.#last?.repos.find(r => r.orgId === orgId && r.repo === slug)?.state,
+      idleReason: () => this.#checkPreconditions(),
+      markUnpublished: (slug, unpublished) => {
+        if (unpublished) this.#unpublished.add(slug);
+        else this.#unpublished.delete(slug);
+      },
+      kick: () => this.kick(),
+      syncRetry: this.#options.syncRetry,
+      leaseWait: this.#options.toolLeaseWait,
+    });
+    return this.#toolOps;
+  }
+
+  /** Every linked repository, or only `projectId`'s. */
+  async #linkedRepos(ctx: IntegrationContext, projectId?: string): Promise<LinkedRepo[]> {
     const handle = ctx.storage.sourceControls.find(h => h.integrationId === this.#options.sourceControl.id);
     if (!handle) return [];
     const out: LinkedRepo[] = [];
-    for (const project of await ctx.storage.projects.listAll()) {
+    const projects = projectId
+      ? [await ctx.storage.projects.getById({ id: projectId })].filter(p => p !== null && p !== undefined)
+      : await ctx.storage.projects.listAll();
+    for (const project of projects) {
       for (const connection of await handle.connections.list({ orgId: project.orgId, factoryProjectId: project.id })) {
         // connections.list only checks the project's org, so it also returns a
         // connection whose installation is gone (pruned: samskara-1ra).
@@ -490,6 +557,8 @@ export class BeadsIntegration implements FactoryIntegration {
       if (closed.length > 0) {
         const sync = await this.#syncWithRetry(repo, credentials);
         if (sync.code === 0) {
+          // The same sync published any agent-tool write waiting here.
+          this.#unpublished.delete(slug);
           for (const item of closed) {
             await this.#mark(orgId, item, {
               [BEADS_META.writeback]: 'synced' satisfies WritebackState,
@@ -518,6 +587,15 @@ export class BeadsIntegration implements FactoryIntegration {
           report.state = 'error';
           report.diagnostic = `bd sync exit ${sync.code}: ${resultTail(sync, 300)}`;
         }
+      }
+    } else if (this.#unpublished.has(slug)) {
+      // An agent-tool write is committed here but its own `bd sync` failed:
+      // publish it now. A pull alone would never push it.
+      const sync = await this.#syncWithRetry(repo, credentials);
+      if (sync.code === 0) this.#unpublished.delete(slug);
+      else {
+        report.state = 'error';
+        report.diagnostic = `bd sync exit ${sync.code} (publishing an agent write): ${resultTail(sync, 300)}`;
       }
     } else {
       const pull = await repo.pull(credentials);
