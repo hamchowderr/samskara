@@ -19,6 +19,8 @@
  *
  * There is no close and no delete. Moving a card to Done closes its bead.
  */
+import { isAbsolute, relative, resolve } from 'node:path';
+
 import { createTool } from '@mastra/core/tools';
 import type { RequestContext } from '@mastra/core/request-context';
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext } from '@mastra/factory/auth';
@@ -35,6 +37,8 @@ import type { BeadsToolOps, ToolRepo, WriteOutcome } from './tool-ops';
 export interface ToolScope {
   orgId: string;
   projectId: string;
+  /** The project's supervisor session. Only it gets `beads_init` (owner decision, samskara-e64). */
+  supervisor: boolean;
   repos: Array<{ repositoryId: string; slug: string }>;
 }
 
@@ -47,23 +51,28 @@ interface ControllerLike {
  * The project a request belongs to, checked against the caller's org. Undefined
  * when the request is not a Factory session, the project does not exist, or the
  * caller's org (or the session's stamped org) is a different one.
+ *
+ * `supervisor` is true only for the project's supervisor session: its
+ * resource id is `factory-supervisor:<projectId>` (dist/supervisor/session.js:4-16).
+ * Worker (triage, plan, build, review) and channel sessions have other ids.
  */
 export async function resolveToolProject(
   requestContext: RequestContext,
   projects: Pick<FactoryProjectsStorage, 'getById'>,
-): Promise<{ orgId: string; projectId: string } | undefined> {
+): Promise<{ orgId: string; projectId: string; supervisor: boolean } | undefined> {
   if (!requestContext || typeof requestContext.get !== 'function') return undefined;
   const controller = requestContext.get('controller') as ControllerLike | undefined;
   if (!controller) return undefined;
   const state = controller.getState?.() ?? {};
-  const projectId = state.factoryProjectId ?? parseSupervisorResourceId(controller.resourceId) ?? controller.resourceId;
+  const supervisorOf = parseSupervisorResourceId(controller.resourceId);
+  const projectId = state.factoryProjectId ?? supervisorOf ?? controller.resourceId;
   if (!projectId) return undefined;
   const project = await projects.getById({ id: projectId }).catch(() => null);
   if (!project) return undefined;
   const callerOrg = getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
   if (callerOrg && callerOrg !== project.orgId) return undefined;
   if (state.factoryOrgId && state.factoryOrgId !== project.orgId) return undefined;
-  return { orgId: project.orgId, projectId: project.id };
+  return { orgId: project.orgId, projectId: project.id, supervisor: supervisorOf !== null && supervisorOf === project.id };
 }
 
 /** Issue types bd always accepts, and the aliases it maps (bd create --help, bd types). */
@@ -185,6 +194,77 @@ export function initPrefix(slug: string): string {
   return prefix;
 }
 
+/** True when `file` lies inside `dir` (both resolved; case-insensitive on Windows). */
+function isInside(dir: string, file: string): boolean {
+  const norm = (p: string) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
+  const rel = relative(norm(dir), norm(file));
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/**
+ * The repository's own formulas. bd also searches `~/.beads/formulas/` of the
+ * user the server runs as (bd formula list --help); on a developer machine
+ * that is the owner's personal library, which must not be listed or poured
+ * into any repository, client repositories included. bd ships no built-in
+ * formulas (bd 1.3.0 lists only files from its search paths), so a formula
+ * counts only when its `source` file is inside the repository's copy.
+ */
+export async function repositoryFormulas(repo: BdRepo): Promise<Array<Record<string, unknown>>> {
+  const res = await repo.runner.bd(['--readonly', 'formula', 'list', '--json'], { cwd: repo.dir });
+  if (res.code !== 0) throw new BeadsToolError(`bd formula list failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(-300)}`);
+  let rows: unknown;
+  try {
+    rows = JSON.parse(res.stdout.trim() || '[]');
+  } catch {
+    throw new BeadsToolError('bd formula list did not return JSON');
+  }
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(
+    (row): row is Record<string, unknown> =>
+      !!row && typeof row === 'object' && typeof (row as { source?: unknown }).source === 'string' && isInside(repo.dir, (row as { source: string }).source),
+  );
+}
+
+function hasGate(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasGate);
+  if (!value || typeof value !== 'object') return false;
+  for (const [key, inner] of Object.entries(value)) {
+    if (key === 'gate' && inner) return true;
+    if (hasGate(inner)) return true;
+  }
+  return false;
+}
+
+/**
+ * Refuse a formula that is not the repository's own, or that has gated steps.
+ * A gate step makes bd create a gate bead that blocks the step until it is
+ * closed (bd formula schema gate). No tool closes a bead and the integration
+ * never cards a gate, so a gated step would never become ready: refusing is
+ * safer than pouring a molecule that silently stalls.
+ */
+export async function checkPourableFormula(repo: BdRepo, name: string): Promise<void> {
+  const own = await repositoryFormulas(repo);
+  if (!own.some(row => row.name === name)) {
+    const names = own.map(row => String(row.name));
+    throw new BeadsToolError(
+      `"${name}" is not one of this repository's formulas (its .beads/formulas). ${names.length ? `Available: ${names.join(', ')}` : 'It has none.'}`,
+    );
+  }
+  const res = await repo.runner.bd(['--readonly', 'formula', 'show', name, '--json'], { cwd: repo.dir });
+  if (res.code !== 0) throw new BeadsToolError(`bd formula show failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(-300)}`);
+  let shown: unknown;
+  try {
+    shown = JSON.parse(res.stdout);
+  } catch {
+    throw new BeadsToolError('bd formula show did not return JSON');
+  }
+  if (hasGate(shown)) {
+    throw new BeadsToolError(
+      `"${name}" has gated steps. A gate becomes a bead that only closing can clear, and no tool closes beads, so its steps would never become ready. Ask a person to pour it.`,
+    );
+  }
+}
+
 /** The tools for one project. Empty when the project links no repository. */
 export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): IntegrationTools {
   if (scope.repos.length === 0) return {};
@@ -264,7 +344,7 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     id: 'beads_update',
     description:
       `Edit a bead: title, description, design, acceptance, priority, status (open, in_progress, blocked, deferred), or append to its notes. ` +
-      `It cannot close a bead (moving the card to Done does that) and never replaces notes. Published to the repository immediately. ${where}\n\n${BEADS_AUTHORING_RULES}`,
+      `It cannot close a bead (moving the card to Done does that), never edits or reopens a closed bead, and never replaces notes. Published to the repository immediately. ${where}\n\n${BEADS_AUTHORING_RULES}`,
     inputSchema: z.object({
       repository: repositoryArg,
       id: idArg('The bead to edit.'),
@@ -295,7 +375,16 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
         if (status) args.push(`--status=${status}`);
         if (append_notes) args.push(`--append-notes=${append_notes}`);
         if (args.length === 2) throw new BeadsToolError('nothing to update: pass at least one field');
-        return { repository: target.slug, ...written(await ops.write(target, async () => args)) };
+        const outcome = await ops.write(target, async repo => {
+          // A closed bead is left alone: bd would reopen it on --status=open,
+          // and its card stays Done with the close recorded, so card and bead
+          // would disagree for good. File follow-up work as a new bead.
+          if ((await repo.status(id)) === 'closed') {
+            throw new BeadsToolError(`${id} is closed; beads tools do not edit or reopen closed beads. File follow-up work as a new bead and link it with beads_dep_add.`);
+          }
+          return args;
+        });
+        return { repository: target.slug, ...written(outcome) };
       } catch (error) {
         return failure(error);
       }
@@ -370,20 +459,16 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
 
   const beads_formula_list = createTool({
     id: 'beads_formula_list',
-    description: `List the workflow formulas (bd formula list) available for beads_pour in a linked repository: name, type, description, steps and variable count. Read-only. ${where}`,
+    description:
+      `List the repository's own workflow formulas (its .beads/formulas) for beads_pour: name, type, description, steps and variable count. ` +
+      `Formulas from anywhere else on the server are never offered. Read-only. ${where}`,
     inputSchema: z.object({ repository: repositoryArg }),
     execute: async ({ repository }) => {
       try {
         const target = pickRepository(scope, repository);
-        const rows = await ops.read(target, ['formula', 'list']);
+        const rows = await ops.inspect(target, repositoryFormulas);
         // `source` is a path on the server; the agent has no use for it.
-        const formulas = Array.isArray(rows)
-          ? rows.map(row => {
-              if (!row || typeof row !== 'object') return row;
-              const { source: _source, ...rest } = row as Record<string, unknown>;
-              return rest;
-            })
-          : rows;
+        const formulas = rows.map(({ source: _source, ...rest }) => rest);
         return { repository: target.slug, formulas };
       } catch (error) {
         return failure(error);
@@ -394,9 +479,10 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
   const beads_pour = createTool({
     id: 'beads_pour',
     description:
-      `Pour a workflow formula (bd mol pour): create its epic and linked, ordered step beads in one go, with the formula's variables filled in. ` +
-      `List formulas with beads_formula_list first. Set dry_run to preview without writing. Poured steps skip create-time validation, ` +
-      `so fill any missing design/acceptance with beads_update before work starts. ${where}`,
+      `Pour one of the repository's own workflow formulas (bd mol pour): create a molecule (a root bead of type molecule) and its linked, ` +
+      `ordered step beads in one go, with the formula's variables filled in. Only formulas from beads_formula_list; a formula with gated ` +
+      `steps is refused, because a gate is a bead only closing clears and no tool closes beads. Set dry_run to preview without writing. ` +
+      `Poured steps skip create-time validation, so fill any missing design/acceptance with beads_update before work starts. ${where}`,
     inputSchema: z.object({
       repository: repositoryArg,
       formula: z.string().min(1).regex(NAME_PATTERN, 'not a formula name').describe('Formula name from beads_formula_list.'),
@@ -413,8 +499,16 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
           args.push(`--var=${key}=${value}`);
         }
         if (assignee) args.push(`--assignee=${assignee}`);
-        if (dry_run) return { repository: target.slug, preview: await ops.read(target, [...args, '--dry-run']) };
-        return { repository: target.slug, ...written(await ops.write(target, async () => args)) };
+        const check = (repo: BdRepo) => checkPourableFormula(repo, formula);
+        if (dry_run) {
+          // Not --readonly: bd 1.3.0 refuses pour in read-only mode even with --dry-run.
+          return { repository: target.slug, preview: await ops.read(target, [...args, '--dry-run'], { mode: 'dry-run', check }) };
+        }
+        const outcome = await ops.write(target, async repo => {
+          await check(repo);
+          return args;
+        });
+        return { repository: target.slug, ...written(outcome) };
       } catch (error) {
         return failure(error);
       }
@@ -424,9 +518,9 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
   const beads_init = createTool({
     id: 'beads_init',
     description:
-      `Start beads in a linked repository that has none: runs bd init with the repository's name as the issue prefix and publishes the empty ` +
-      `database to the repository's refs/dolt/data. It changes the repository on GitHub, so call it ONLY when a person has asked for beads in that ` +
-      `repository, and set confirm to true. Refused when the repository already uses beads. ${where}`,
+      `Supervisor only. Start beads in a linked repository that has none: runs bd init with the repository's name as the issue prefix and ` +
+      `publishes the empty database to the repository's refs/dolt/data. It changes the repository on GitHub, so call it ONLY when a person has ` +
+      `asked for beads in that repository, and set confirm to true. Refused when the repository already uses beads. ${where}`,
     inputSchema: z.object({
       repository: repositoryArg,
       confirm: z.literal(true).describe('true: a person asked to start beads in this repository.'),
@@ -450,6 +544,8 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     beads_dep_add,
     beads_formula_list,
     beads_pour,
-    beads_init,
+    // Owner decision (samskara-e64): only the supervisor may start beads in a
+    // repository. Other sessions never get the tool, not merely a refusal.
+    ...(scope.supervisor ? { beads_init } : {}),
   } as unknown as IntegrationTools;
 }

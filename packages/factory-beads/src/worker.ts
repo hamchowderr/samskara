@@ -43,16 +43,25 @@ export interface BeadsSyncWorkerOptions<T> {
 
 export type TickOutcome<T> = { ran: true; result: T } | { ran: false; reason: 'lease-held' | 'not-running' };
 
-/** `withLease` gave up waiting: another process held the writer lease the whole time. */
+/**
+ * `withLease` gave up waiting: another process held the writer lease
+ * (`lease`), or a sweep or another beads operation in this process ran the
+ * whole time (`queue`).
+ */
 export class LeaseWaitTimeoutError extends Error {
-  constructor(key: string, waitedMs: number) {
-    super(`the ${key} lease was held by another process for ${Math.round(waitedMs / 1000)} s; try again shortly`);
+  constructor(key: string, waitedMs: number, cause: 'lease' | 'queue' = 'lease') {
+    const seconds = Math.round(waitedMs / 1000);
+    super(
+      cause === 'lease'
+        ? `the ${key} lease was held by another process for ${seconds} s; try again shortly`
+        : `waited ${seconds} s behind a sweep or another beads operation on this server (${key}); try again shortly`,
+    );
     this.name = 'LeaseWaitTimeoutError';
   }
 }
 
 export interface WithLeaseOptions {
-  /** Give up after this long. Default 120 s. */
+  /** Give up after this long, counting both the in-process queue and the lease. Default 120 s. */
   timeoutMs?: number;
   /** Delay between attempts while another process holds the lease. Default 1 s. */
   pollMs?: number;
@@ -162,8 +171,10 @@ export class BeadsSyncWorker<T> extends MastraWorker {
   /**
    * Run `fn` while holding the writer lease, after any tick or other
    * `withLease` call in this process. When another process holds the lease,
-   * wait for it (polling) up to `timeoutMs`, then throw
-   * `LeaseWaitTimeoutError`. Works without `start()`.
+   * wait for it (polling). The whole wait, queue and lease together, is
+   * capped at `timeoutMs`; past it the call throws `LeaseWaitTimeoutError`
+   * and `fn` never runs. Once `fn` has started it is not interrupted.
+   * Works without `start()`.
    *
    * `fn` must not call `runNow()`: that waits for this call and deadlocks.
    * Use `kick()` to ask for a sweep afterwards.
@@ -171,13 +182,37 @@ export class BeadsSyncWorker<T> extends MastraWorker {
   withLease<R>(fn: () => Promise<R>, options: WithLeaseOptions = {}): Promise<R> {
     const timeoutMs = options.timeoutMs ?? 120_000;
     const pollMs = options.pollMs ?? 1_000;
-    return this.#exclusive(async () => {
-      const started = Date.now();
+    const key = this.#options.leaseKey;
+    const started = Date.now();
+    let begun = false;
+    let abandoned = false;
+    const run = this.#exclusive(async () => {
+      // Timed out while queued: the caller already has its error.
+      if (abandoned) throw new LeaseWaitTimeoutError(key, Date.now() - started, 'queue');
+      begun = true;
       while (!(await this.#acquire())) {
-        if (Date.now() - started >= timeoutMs) throw new LeaseWaitTimeoutError(this.#options.leaseKey, Date.now() - started);
+        if (Date.now() - started >= timeoutMs) throw new LeaseWaitTimeoutError(key, Date.now() - started);
         await sleep(pollMs);
       }
       return this.#hold(fn);
+    });
+    return new Promise<R>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (begun) return;
+        abandoned = true;
+        reject(new LeaseWaitTimeoutError(key, Date.now() - started, 'queue'));
+      }, timeoutMs);
+      timer.unref?.();
+      run.then(
+        value => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        error => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
     });
   }
 

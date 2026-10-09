@@ -60,6 +60,15 @@ const blocked = bead =>
 
 if (words.length === 0 && flags.includes('--version')) words.push('version');
 if (words[0] === 'dolt' && words[1] === 'push') words[0] = 'dolt-push';
+// Like bd 1.3.0, which refuses these under --readonly even with --dry-run
+// ("operation 'pour' is not allowed in read-only mode").
+const WRITES = { create: 'create', update: 'update', close: 'close', dep: 'dep add', mol: 'pour', init: 'init' };
+if (flags.includes('--readonly') && WRITES[words[0]]) {
+  state.calls.at(-1).refused = true;
+  writeFileSync(statePath, JSON.stringify(state, null, 2));
+  process.stderr.write(`Error: operation '${WRITES[words[0]]}' is not allowed in read-only mode`);
+  process.exit(1);
+}
 
 /** Value of `--name=value`, or undefined. */
 const flagValue = name => {
@@ -235,11 +244,28 @@ switch (words[0]) {
     state.deps = [...(state.deps ?? []), { issue: words[2], dependsOn: words[3], type: flagValue('type') ?? 'blocks' }];
     out = JSON.stringify({ issue_id: words[2], depends_on_id: words[3], status: 'added', type: flagValue('type') ?? 'blocks' });
     break;
-  case 'formula':
+  case 'formula': {
+    // A formula with `user: true` lives in ~/.beads/formulas, outside the repository.
+    const source = f => (f.user ? `/home/someone/.beads/formulas/${f.name}.formula.toml` : `${process.cwd()}/.beads/formulas/${f.name}.formula.toml`);
+    if (words[1] === 'show') {
+      const f = (state.formulas ?? []).find(x => x.name === words[2]);
+      if (!f) {
+        code = 1;
+        err = `formula ${words[2]} not found`;
+        break;
+      }
+      out = JSON.stringify({
+        formula: f.name,
+        source: source(f),
+        steps: f.steps.map((title, i) => ({ id: `s${i}`, title, ...(f.gated && i === 0 ? { gate: { type: 'human' } } : {}) })),
+      });
+      break;
+    }
     out = JSON.stringify(
-      (state.formulas ?? []).map(f => ({ name: f.name, type: 'workflow', description: f.description, source: `/srv/${f.name}.formula.toml`, steps: f.steps.length, vars: f.vars.length })),
+      (state.formulas ?? []).map(f => ({ name: f.name, type: 'workflow', description: f.description, source: source(f), steps: f.steps.length, vars: f.vars.length })),
     );
     break;
+  }
   case 'mol': {
     const formula = (state.formulas ?? []).find(f => f.name === words[2]);
     if (words[1] !== 'pour' || !formula) {

@@ -13,7 +13,7 @@
  * by the explicit `bd sync`, whose exit code is the outcome the worker branches
  * on. `--readonly` blocks writes on every read.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -30,6 +30,7 @@ export interface ReadyBead {
 }
 
 const MARKER = 'factory-beads-bootstrapped';
+const PARKED = 'factory-beads-parked';
 
 /** Cache directory for a repository slug (`owner/name`). */
 export function cacheDirFor(root: string, slug: string): string {
@@ -68,6 +69,27 @@ export class BdRepo {
     if (boot.code !== 0) throw new Error(`bd bootstrap failed (exit ${boot.code}): ${tail(boot)}`);
     await writeFile(join(this.dir, '.git', MARKER), new Date().toISOString());
     return { cloneMs: clone.ms, bootstrapMs: boot.ms };
+  }
+
+  /**
+   * Park the copy: an agent-tool write hit a `bd sync` conflict, so the copy
+   * holds a commit that cannot be published. The marker lives in the copy's
+   * own `.git`, so it lasts exactly as long as the conflicted copy does: an
+   * operator reset discards both.
+   */
+  async park(reason: string): Promise<void> {
+    await writeFile(join(this.dir, '.git', PARKED), reason);
+  }
+
+  /** Why the copy is parked, or undefined when it is not. */
+  parkedReason(): string | undefined {
+    const file = join(this.dir, '.git', PARKED);
+    if (!existsSync(file)) return undefined;
+    try {
+      return readFileSync(file, 'utf8') || 'parked';
+    } catch {
+      return 'parked';
+    }
   }
 
   /** Drop the copy; the next `ensure` re-bootstraps from the remote. */

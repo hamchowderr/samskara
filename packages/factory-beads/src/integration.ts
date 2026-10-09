@@ -193,7 +193,10 @@ export class BeadsIntegration implements FactoryIntegration {
   readonly #unpublished = new Set<string>();
   #toolOps: BeadsToolOps | undefined;
   /** Linked repositories per project for agentTools, which Factory resolves on every request. */
-  readonly #scopeCache = new Map<string, { at: number; scope: ToolScope }>();
+  readonly #scopeCache = new Map<string, { at: number; repos: ToolScope['repos'] }>();
+  #toolsFailureLogged = false;
+  /** Repositories parked by an agent-write conflict whose reset was requested (POST /web/beads/reset). */
+  readonly #resetRepos = new Set<string>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -283,21 +286,43 @@ export class BeadsIntegration implements FactoryIntegration {
    * create, update, link, init and pour, run on the host copy under the
    * writer lease. See agent-tools.ts. Nothing for a request that is not a
    * Factory session, a project with no linked repository, or before the
-   * worker exists.
+   * worker exists. `beads_init` only for the supervisor (owner decision).
+   *
+   * Never throws. Factory merges every integration's tools into one
+   * `extraTools` provider (@mastra/factory 0.20.0 dist/factory.js:588-595) and
+   * the SDK awaits it without a catch (@mastra/code-sdk
+   * dist/agents/tools.js:120-122), so an error here would take every tool
+   * away from every session. A failure logs once and offers no beads tools.
    */
   async agentTools({ requestContext }: { requestContext: RequestContext }): Promise<IntegrationTools> {
-    const ctx = this.#ctx;
-    if (!ctx?.runtime || !this.#worker) return {};
-    const project = await resolveToolProject(requestContext, ctx.storage.projects);
-    if (!project) return {};
-    const key = `${project.orgId}:${project.projectId}`;
-    let cached = this.#scopeCache.get(key);
-    if (!cached || Date.now() - cached.at > 30_000) {
-      const repos = (await this.#linkedRepos(ctx, project.projectId)).map(r => ({ repositoryId: r.repositoryId, slug: r.slug }));
-      cached = { at: Date.now(), scope: { ...project, repos } };
-      this.#scopeCache.set(key, cached);
+    try {
+      const ctx = this.#ctx;
+      if (!ctx?.runtime || !this.#worker) return {};
+      const project = await resolveToolProject(requestContext, ctx.storage.projects);
+      if (!project) return {};
+      const key = `${project.orgId}:${project.projectId}`;
+      let cached = this.#scopeCache.get(key);
+      if (!cached || Date.now() - cached.at > 30_000) {
+        const repos = (await this.#linkedRepos(ctx, project.projectId)).map(r => ({ repositoryId: r.repositoryId, slug: r.slug }));
+        cached = { at: Date.now(), repos };
+        this.#scopeCache.set(key, cached);
+      }
+      this.#toolsFailureLogged = false;
+      return createBeadsTools(this.#tools(), {
+        orgId: project.orgId,
+        projectId: project.projectId,
+        supervisor: project.supervisor,
+        repos: cached.repos,
+      });
+    } catch (error) {
+      if (!this.#toolsFailureLogged) {
+        this.#toolsFailureLogged = true;
+        this.#log.warn(
+          `[factory-beads] agent tools unavailable for this request: ${error instanceof Error ? error.message : String(error)}. Other tools are unaffected; logged once until it recovers.`,
+        );
+      }
+      return {};
     }
-    return createBeadsTools(this.#tools(), cached.scope);
   }
 
   #tools(): BeadsToolOps {
@@ -474,10 +499,13 @@ export class BeadsIntegration implements FactoryIntegration {
     // An operator asked for a reset (POST /web/beads/reset): drop the local
     // copy, which the next step re-bootstraps from the remote — that holds only
     // what was published — and release the parked cards for write-back again.
-    // Done here, under the writer lease, not in the route.
-    if (cards.some(item => item.metadata?.[BEADS_META.writeback] === 'reset-requested')) {
+    // Done here, under the writer lease, not in the route. A repository parked
+    // by an agent-tool write (no card involved) is reset the same way.
+    const resetRepo = this.#resetRepos.delete(slug);
+    if (resetRepo || cards.some(item => item.metadata?.[BEADS_META.writeback] === 'reset-requested')) {
       await this.#repo(slug, cloneUrl).discard();
       this.#repos.delete(slug);
+      this.#unpublished.delete(slug);
       for (const [index, item] of cards.entries()) {
         if (item.metadata?.[BEADS_META.writeback] !== 'reset-requested') continue;
         cards[index] = await this.#mark(orgId, item, {
@@ -494,6 +522,13 @@ export class BeadsIntegration implements FactoryIntegration {
     if (conflicted.length > 0) {
       report.state = 'parked';
       report.diagnostic = `bd sync conflict on ${conflicted.map(c => c.metadata?.[BEADS_META.id]).join(', ')}; resolve it, then POST /web/beads/reset`;
+      return;
+    }
+    // Same for a conflict after an agent-tool write: the copy carries the marker.
+    const parkedReason = this.#repo(slug, cloneUrl).parkedReason();
+    if (parkedReason) {
+      report.state = 'parked';
+      report.diagnostic = `${parkedReason}; resolve it, then POST /web/beads/reset`;
       return;
     }
 
@@ -593,7 +628,15 @@ export class BeadsIntegration implements FactoryIntegration {
       // publish it now. A pull alone would never push it.
       const sync = await this.#syncWithRetry(repo, credentials);
       if (sync.code === 0) this.#unpublished.delete(slug);
-      else {
+      else if (sync.code === 2 || sync.code === 4) {
+        // Never retried, as for write-back: park until an operator resets.
+        const diagnostic = `bd sync exit ${sync.code} publishing an agent write: ${resultTail(sync, 600)}`;
+        await repo.park(diagnostic);
+        this.#unpublished.delete(slug);
+        report.state = 'parked';
+        report.diagnostic = `${diagnostic}; resolve it, then POST /web/beads/reset`;
+        return;
+      } else {
         report.state = 'error';
         report.diagnostic = `bd sync exit ${sync.code} (publishing an agent write): ${resultTail(sync, 300)}`;
       }
@@ -734,7 +777,14 @@ export class BeadsIntegration implements FactoryIntegration {
     const runtime = this.#ctx?.runtime;
     if (!runtime) return { flagged: 0 };
     let flagged = 0;
-    for (const project of (await this.#linkedRepos(this.#ctx!)).filter(r => r.orgId === orgId && r.slug === slug)) {
+    const linked = (await this.#linkedRepos(this.#ctx!)).filter(r => r.orgId === orgId && r.slug === slug);
+    // Parked by an agent-tool write: the marker is in the copy, not on a card.
+    // Counted as one; the worker drops the copy (and the marker) under the lease.
+    if (linked.length > 0 && new BdRepo(slug, cacheDirFor(this.#cacheRoot, slug), '', this.#runner).parkedReason()) {
+      this.#resetRepos.add(slug);
+      flagged++;
+    }
+    for (const project of linked) {
       for (const item of await runtime.workItems.list({ orgId, factoryProjectId: project.projectId })) {
         const state = item.metadata?.[BEADS_META.writeback];
         if (item.metadata?.[BEADS_META.repo] !== slug || (state !== 'conflict' && state !== 'close-failed')) continue;

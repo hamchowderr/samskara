@@ -77,21 +77,50 @@ const GOOD = {
 };
 
 describe('agentTools', () => {
-  it('offers every tool, and no close or delete, to a project with a linked repository', async () => {
+  const WORKER_TOOLS = [
+    'beads_create',
+    'beads_dep_add',
+    'beads_formula_list',
+    'beads_list',
+    'beads_pour',
+    'beads_ready',
+    'beads_show',
+    'beads_update',
+  ];
+
+  it('offers the tools, without beads_init and with no close or delete, to a worker session', async () => {
     h = withGetById(createHarness([]));
     const tools = await toolsFor(h.integration());
-    expect(Object.keys(tools).sort()).toEqual([
-      'beads_create',
-      'beads_dep_add',
-      'beads_formula_list',
-      'beads_init',
-      'beads_list',
-      'beads_pour',
-      'beads_ready',
-      'beads_show',
-      'beads_update',
-    ]);
+    expect(Object.keys(tools).sort()).toEqual(WORKER_TOOLS);
     expect(Object.keys(tools).some(name => /close|delete/.test(name))).toBe(false);
+  });
+
+  it('offers beads_init to the supervisor session only', async () => {
+    h = withGetById(createHarness([]));
+    const integration = h.integration();
+    const supervisor = await toolsFor(integration, requestContext({ supervisor: true }));
+    expect(Object.keys(supervisor).sort()).toEqual([...WORKER_TOOLS, 'beads_init'].sort());
+    // A worker session of the same project, and a session whose resource id
+    // only names the project, get no beads_init at all.
+    expect(Object.keys(await toolsFor(integration))).not.toContain('beads_init');
+    const byResource = {
+      get: (key: string) => (key === 'controller' ? { resourceId: PROJECT, getState: () => ({}) } : undefined),
+    } as unknown as RequestContext;
+    expect(Object.keys(await toolsFor(integration, byResource))).not.toContain('beads_init');
+  });
+
+  it('a storage failure yields no beads tools instead of throwing, logged once', async () => {
+    h = withGetById(createHarness([]));
+    const warnings: string[] = [];
+    const integration = h.integration({ logger: { info: () => undefined, warn: (m: string) => warnings.push(m), error: () => undefined } });
+    const handle = h.ctx.storage.sourceControls[0] as unknown as { connections: { list: () => Promise<unknown> } };
+    handle.connections.list = async () => {
+      throw new Error('database is locked');
+    };
+    expect(await toolsFor(integration)).toEqual({});
+    expect(await toolsFor(integration, requestContext({ supervisor: true }))).toEqual({});
+    expect(warnings.filter(w => w.includes('agent tools unavailable'))).toHaveLength(1);
+    expect(warnings[0]).toMatch(/database is locked/);
   });
 
   it('offers nothing to a project with no linked repository, an unknown project, or another org', async () => {
@@ -247,6 +276,47 @@ describe('writes', () => {
     const result = await tools.beads_update!.execute({ id: 'w-1', append_notes: 'x' });
     expect(result.error).toMatch(/parked/);
   });
+
+  it('a sync conflict after a tool write parks the repository like a write-back conflict, until reset', async () => {
+    h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task' }]));
+    const integration = h.integration();
+    const tools = await toolsFor(integration);
+    h.setState(s => {
+      s.syncExits = [2];
+    });
+    const result = await tools.beads_update!.execute({ id: 'w-1', append_notes: 'x' });
+    expect(result).toMatchObject({ published: false, warning: expect.stringMatching(/parked.*POST \/web\/beads\/reset/) });
+
+    // The sweep reports it parked and neither pulls nor cards from the conflicted copy.
+    h.setState(s => {
+      s.beads.push({ id: 'w-2', title: 'Two', issue_type: 'task' });
+    });
+    const syncsBefore = callsOf(h, 'sync').length;
+    const parked = await sweep(integration);
+    expect(parked.repos[0]).toMatchObject({ state: 'parked', diagnostic: expect.stringMatching(/bd sync exit 2/) });
+    expect(h.workItems.beadCards()).toHaveLength(0);
+    expect(callsOf(h, 'sync').length).toBe(syncsBefore);
+    // Tool writes are refused while parked; reads still work.
+    expect((await tools.beads_update!.execute({ id: 'w-1', append_notes: 'y' })).error).toMatch(/parked/);
+    expect((await tools.beads_show!.execute({ id: 'w-1' })).error).toBeUndefined();
+
+    // The operator reset path: one flag, the copy is dropped, and syncing resumes.
+    expect(await integration.requestReset(ORG, SLUG)).toEqual({ flagged: 1 });
+    const after = await sweep(integration);
+    expect(after.repos[0]).toMatchObject({ state: 'ok', created: 2 });
+    expect(await tools.beads_update!.execute({ id: 'w-1', append_notes: 'z' })).toMatchObject({ published: true });
+  });
+
+  it('update never edits or reopens a closed bead', async () => {
+    h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task', status: 'closed' }]));
+    const tools = await toolsFor(h.integration());
+    for (const input of [{ status: 'open' }, { append_notes: 'more' }, { title: 'Renamed' }]) {
+      const result = await tools.beads_update!.execute({ id: 'w-1', ...input });
+      expect(result.error).toMatch(/w-1 is closed/);
+    }
+    expect(callsOf(h, 'update')).toHaveLength(0);
+    expect(h.state().beads[0]!.status).toBe('closed');
+  });
 });
 
 describe('repository argument', () => {
@@ -282,7 +352,7 @@ describe('beads_init', () => {
     const integration = h.integration();
     // The sweep has seen the repository without beads data.
     expect((await sweep(integration)).repos[0]!.state).toBe('no-beads-data');
-    const tools = await toolsFor(integration);
+    const tools = await toolsFor(integration, requestContext({ supervisor: true }));
     const result = await tools.beads_init!.execute({ confirm: true });
     expect(result).toEqual({ repository: SLUG, prefix: 'widgets', published: true });
     const [init] = callsOf(h, 'init');
@@ -298,7 +368,7 @@ describe('beads_init', () => {
   it('needs confirm: true', async () => {
     h = withGetById(createHarness([]));
     h.setBeadsData(false);
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(), requestContext({ supervisor: true }));
     const result = await tools.beads_init!.execute({});
     expect(JSON.stringify(result)).toMatch(/confirm/);
     expect(callsOf(h, 'init')).toHaveLength(0);
@@ -306,7 +376,7 @@ describe('beads_init', () => {
 
   it('is refused when the repository already uses beads', async () => {
     h = withGetById(createHarness([]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(), requestContext({ supervisor: true }));
     const result = await tools.beads_init!.execute({ confirm: true });
     expect(result.error).toMatch(/already uses beads/);
     expect(callsOf(h, 'init')).toHaveLength(0);
@@ -343,8 +413,34 @@ describe('workflows', () => {
     expect(missing.error).toMatch(/missing required variables: deliverable/);
     const preview = await tools.beads_pour!.execute({ formula: 'project', vars: { name: 'a', deliverable: 'b' }, dry_run: true });
     expect(preview).toMatchObject({ preview: { dry_run: true } });
+    // bd refuses pour under --readonly even with --dry-run, so the preview runs with --sandbox.
+    const dry = callsOf(h, 'pour').at(-1)!;
+    expect(dry).toEqual(expect.arrayContaining(['--sandbox', '--dry-run']));
+    expect(dry).not.toContain('--readonly');
     expect(h.state().beads).toHaveLength(0);
     expect(callsOf(h, 'sync')).toHaveLength(0);
+  });
+
+  it("lists and pours only the repository's own formulas, never the server user's", async () => {
+    h = withGetById(createHarness([]));
+    h.setState(s => Object.assign(s, { formulas: [...formulas, { ...formulas[0]!, name: 'personal', user: true }] }));
+    const tools = await toolsFor(h.integration());
+    const listed = await tools.beads_formula_list!.execute({});
+    expect((listed.formulas as Array<{ name: string }>).map(f => f.name)).toEqual(['project']);
+    for (const dry_run of [false, true]) {
+      const result = await tools.beads_pour!.execute({ formula: 'personal', vars: { name: 'a', deliverable: 'b' }, dry_run });
+      expect(result.error).toMatch(/not one of this repository's formulas.*Available: project/);
+    }
+    expect(callsOf(h, 'pour')).toHaveLength(0);
+  });
+
+  it('refuses a formula with gated steps', async () => {
+    h = withGetById(createHarness([]));
+    h.setState(s => Object.assign(s, { formulas: [{ ...formulas[0]!, name: 'gated', gated: true }] }));
+    const tools = await toolsFor(h.integration());
+    const result = await tools.beads_pour!.execute({ formula: 'gated', vars: { name: 'a', deliverable: 'b' } });
+    expect(result.error).toMatch(/gated steps/);
+    expect(callsOf(h, 'pour')).toHaveLength(0);
   });
 });
 
@@ -370,6 +466,25 @@ describe('the writer lease', () => {
     lease.owners.set('beads:writer', 'other-process');
     const worker = new BeadsSyncWorker({ name: 'beads-sync', leaseKey: 'beads:writer', intervalMs: 60_000, leaseProvider: lease, sweep: async () => 0 });
     await expect(worker.withLease(async () => 1, { timeoutMs: 30, pollMs: 5 })).rejects.toBeInstanceOf(LeaseWaitTimeoutError);
+  });
+
+  it('withLease gives up waiting behind a long in-process operation, and its function never runs', async () => {
+    const worker = new BeadsSyncWorker({ name: 'beads-sync', leaseKey: 'beads:writer', intervalMs: 60_000, sweep: async () => 0 });
+    let release!: () => void;
+    const long = worker.withLease(() => new Promise<void>(resolve => (release = resolve)));
+    let ran = false;
+    const queued = worker.withLease(
+      async () => {
+        ran = true;
+      },
+      { timeoutMs: 30 },
+    );
+    await expect(queued).rejects.toThrow(/waited 0 s behind a sweep or another beads operation/);
+    release();
+    await long;
+    // The queue moves on; the abandoned call was skipped, not run late.
+    await worker.withLease(async () => undefined);
+    expect(ran).toBe(false);
   });
 
   it('a sweep and a withLease call in one process never overlap, even on the no-op lease', async () => {

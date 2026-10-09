@@ -8,7 +8,7 @@
  * FACTORY_BEADS_REAL_BD=0 to skip it on a machine that has bd.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,6 +20,28 @@ import { createHarness, PROJECT, sweep } from './harness';
 import type { Harness } from './harness';
 
 const bdAvailable = process.env.FACTORY_BEADS_REAL_BD !== '0' && spawnSync('bd', ['--version']).status === 0;
+
+/** A repository formula: two steps, the second needing the first. */
+const DEMO_FORMULA = `formula = "demo"
+description = "Demo workflow"
+version = 1
+type = "workflow"
+
+[vars.name]
+description = "name"
+required = true
+
+[[steps]]
+id = "first"
+title = "First: {{name}}"
+description = "do first"
+
+[[steps]]
+id = "second"
+title = "Second: {{name}}"
+description = "do second"
+needs = ["first"]
+`;
 
 type Tools = Record<string, { execute: (input: unknown) => Promise<Record<string, unknown> & { error?: string }> }>;
 
@@ -55,7 +77,8 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
       runner: new BdRunner(),
     });
     const rc = {
-      get: (key: string) => (key === 'controller' ? { resourceId: 's', getState: () => ({ factoryProjectId: PROJECT }) } : undefined),
+      // The supervisor session: only it gets beads_init.
+      get: (key: string) => (key === 'controller' ? { resourceId: `factory-supervisor:${PROJECT}`, getState: () => ({}) } : undefined),
     } as unknown as RequestContext;
     const tools = (await integration.agentTools({ requestContext: rc })) as unknown as Tools;
 
@@ -66,6 +89,13 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     expect(init, JSON.stringify(init)).toMatchObject({ published: true, prefix: 'widgets' });
     expect(run('git', ['ls-remote', originUrl])).toMatch(/refs\/dolt\/data/);
     expect(run('git', ['ls-remote', originUrl])).not.toMatch(/remote-info/);
+
+    // The repository commits a formula; it is in the copy the next tool call bootstraps.
+    mkdirSync(join(seed, '.beads', 'formulas'), { recursive: true });
+    writeFileSync(join(seed, '.beads', 'formulas', 'demo.formula.toml'), DEMO_FORMULA);
+    run('git', ['add', '.beads/formulas']);
+    run('git', ['commit', '-q', '-m', 'chore: add demo formula']);
+    run('git', ['push', '-q', 'origin', 'trunk']);
 
     const invalid = await tools.beads_create!.execute({
       title: 'Fix: a bug without steps',
@@ -93,7 +123,15 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     const shown = await tools.beads_show!.execute({ id });
     expect(JSON.stringify(shown)).toMatch(/checked the CSV spec/);
 
-    // The sweep finds the new data at once and cards the ready bead.
+    // Only the repository's formula is offered, never the server user's ~/.beads/formulas.
+    const listed = await tools.beads_formula_list!.execute({});
+    expect((listed.formulas as Array<{ name: string }>).map(f => f.name), JSON.stringify(listed)).toEqual(['demo']);
+    // A real dry run: bd refuses pour under --readonly, so this proves the mode.
+    const preview = await tools.beads_pour!.execute({ formula: 'demo', vars: { name: 'x' }, dry_run: true });
+    expect(preview.error, JSON.stringify(preview)).toBeUndefined();
+    expect(String(preview.preview)).toMatch(/would pour 3 issues/);
+
+    // The sweep finds the new data at once and cards the ready bead (the dry run wrote nothing).
     const after = await sweep(integration);
     expect(after.repos[0], JSON.stringify(after)).toMatchObject({ state: 'ok', created: 1 });
     expect(h.workItems.beadCards().map(c => c.metadata?.[BEADS_META.id])).toEqual([id]);

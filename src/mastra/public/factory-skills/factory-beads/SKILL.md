@@ -22,11 +22,13 @@ Read and write beads only through the `beads_*` tools. They run bd on the Factor
 | `beads_update` | edit fields, set status, append notes |
 | `beads_dep_add` | link two beads |
 | `beads_formula_list`, `beads_pour` | start a workflow formula as linked beads |
-| `beads_init` | start beads in a repository that has none, only when a person asked |
+| `beads_init` | supervisor only: start beads in a repository that has none, only when a person asked |
 
 When the project links more than one repository, pass `repository` as `owner/name`.
 
-There is no close and no delete. A bead is closed when its card reaches Done. Never set a status to `closed`; the tool refuses it. Do not change a bead's status unless the work behind it actually changed.
+There is no close and no delete. A bead is closed when its card reaches Done. Never set a status to `closed`; the tool refuses it. A closed bead is never edited or reopened: file follow-up work as a new bead and link it. Do not change a bead's status unless the work behind it actually changed.
+
+Only the supervisor has `beads_init`. In any other session, if a repository has no beads yet, say so in your handoff instead of working around it.
 
 ## What goes in a bead
 
@@ -89,7 +91,9 @@ Priority runs from 0 (highest) to 4 (lowest); 2 is normal.
 
 ## Workflows
 
-`beads_formula_list` lists the workflow formulas the repository offers; `beads_pour` turns one into an epic with linked, ordered step beads, filling in its variables. Preview with `dry_run` first. Poured steps skip the create-time check, so before work starts on a step, fill any missing design or acceptance with `beads_update`.
+`beads_formula_list` lists the repository's own workflow formulas (its `.beads/formulas`); nothing from elsewhere on the server is offered. `beads_pour` turns one into a molecule: a root bead of type `molecule` with linked, ordered step beads under it, its variables filled in. Preview with `dry_run` first. Poured steps skip the create-time check, so before work starts on a step, fill any missing design or acceptance with `beads_update`.
+
+A formula with gated steps is refused. A gate becomes a bead that only closing clears, and no tool closes beads, so its steps would never become ready. Ask a person to pour such a formula.
 
 ## No private data in beads
 

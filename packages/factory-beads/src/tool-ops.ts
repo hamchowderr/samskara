@@ -135,11 +135,29 @@ export class BeadsToolOps {
     return { repo, credentials };
   }
 
-  /** Run a read-only bd command on the copy. `args` must not include `--readonly` or `--json`. */
-  read(target: ToolRepo, args: readonly string[]): Promise<unknown> {
+  /** Run `fn` on the prepared copy under the lease; for reads that need more than one bd call. */
+  inspect<R>(target: ToolRepo, fn: (repo: BdRepo) => Promise<R>): Promise<R> {
+    return this.#lease(async () => fn((await this.#prepare(target)).repo));
+  }
+
+  /**
+   * Run a bd command that writes nothing. `args` must not include `--json` or
+   * a mode flag. Default mode `readonly` adds `--readonly`. `dry-run` is for
+   * commands bd refuses under `--readonly` even with their own `--dry-run`
+   * (bd 1.3.0: "operation 'pour' is not allowed in read-only mode"); it runs
+   * with `--sandbox` instead, still under the lease, and never syncs.
+   * `check` sees the copy and may refuse first.
+   */
+  read(
+    target: ToolRepo,
+    args: readonly string[],
+    options: { mode?: 'readonly' | 'dry-run'; check?: (repo: BdRepo) => Promise<void> } = {},
+  ): Promise<unknown> {
     return this.#lease(async () => {
       const { repo } = await this.#prepare(target);
-      const res = await this.#deps.runner.bd(['--readonly', ...args, '--json'], { cwd: repo.dir });
+      await options.check?.(repo);
+      const mode = options.mode === 'dry-run' ? '--sandbox' : '--readonly';
+      const res = await this.#deps.runner.bd([mode, ...args, '--json'], { cwd: repo.dir });
       if (res.code !== 0) throw new BeadsToolError(`bd ${args[0]} failed (exit ${res.code}): ${errorText(res)}`);
       return parseBdOutput(res.stdout);
     });
@@ -147,21 +165,27 @@ export class BeadsToolOps {
 
   /**
    * Run one bd write on the copy, then publish it with `bd sync`. `build` sees
-   * the prepared copy (for checks that need it, such as the repository's
-   * issue types) and returns the bd arguments, or throws a BeadsToolError to
-   * refuse before anything is written.
+   * the freshly pulled copy (for checks that need it, such as the
+   * repository's issue types or a bead's status) and returns the bd
+   * arguments, or throws a BeadsToolError to refuse before anything is
+   * written.
+   *
+   * A `bd sync` conflict (exit 2 or 4) parks the repository exactly as a
+   * write-back conflict does: state `parked`, no intake and no writes until an
+   * operator resolves it and calls POST /web/beads/reset.
    */
   write(target: ToolRepo, build: (repo: BdRepo) => Promise<readonly string[]>): Promise<WriteOutcome> {
     return this.#lease(async () => {
-      if (this.#deps.repoState(target.orgId, target.slug) === 'parked') {
+      const { repo, credentials } = await this.#prepare(target);
+      const parked = repo.parkedReason() ?? (this.#deps.repoState(target.orgId, target.slug) === 'parked' ? 'bd sync conflict' : undefined);
+      if (parked) {
         throw new BeadsToolError(
-          `${target.slug} is parked after a bd sync conflict; nothing can be written until an operator resolves it and resets the copy (POST /web/beads/reset)`,
+          `${target.slug} is parked (${parked}); nothing can be written until an operator resolves it and resets the copy (POST /web/beads/reset)`,
         );
       }
-      const { repo, credentials } = await this.#prepare(target);
-      const args = await build(repo);
       const pull = await repo.pull(credentials);
       if (pull.code !== 0) throw new BeadsToolError(`bd dolt pull failed (exit ${pull.code}), nothing was written: ${errorText(pull)}`);
+      const args = await build(repo);
       const res = await this.#deps.runner.bd(['--sandbox', '--actor', this.actor, ...args, '--json'], { cwd: repo.dir });
       if (res.code !== 0) throw new BeadsToolError(`bd ${args[0]} failed (exit ${res.code}), nothing was written: ${errorText(res)}`);
       const output = parseBdOutput(res.stdout);
@@ -171,12 +195,22 @@ export class BeadsToolOps {
         this.#deps.kick();
         return { output, published: true };
       }
+      if (sync.code === 2 || sync.code === 4) {
+        const diagnostic = `bd sync exit ${sync.code} after an agent write: ${errorText(sync)}`;
+        await repo.park(diagnostic);
+        this.#deps.markUnpublished(target.slug, false);
+        return {
+          output,
+          published: false,
+          publishNote: `${sync.code === 2 ? 'merge conflict' : 'stuck working set'}: the write is saved on the host copy but NOT published, and ${target.slug} is now parked until an operator resolves it and resets the copy (POST /web/beads/reset). Do not retry. ${diagnostic}`,
+        };
+      }
       this.#deps.markUnpublished(target.slug, true);
-      const note =
-        sync.code === 2 || sync.code === 4
-          ? `bd sync exit ${sync.code} (${sync.code === 2 ? 'merge conflict' : 'stuck working set'}): the write is saved on the host copy but NOT published; an operator must resolve it. Do not retry. ${errorText(sync)}`
-          : `bd sync exit ${sync.code}: the write is saved on the host copy and the next sweep publishes it. Do not repeat the write. ${errorText(sync)}`;
-      return { output, published: false, publishNote: note };
+      return {
+        output,
+        published: false,
+        publishNote: `bd sync exit ${sync.code}: the write is saved on the host copy and the next sweep publishes it. Do not repeat the write. ${errorText(sync)}`,
+      };
     });
   }
 
