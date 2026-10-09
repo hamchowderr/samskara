@@ -4,12 +4,12 @@ The Factory auth gate is served from a short in-process cache in front of
 Better Auth's `getSession`. Tracked in beads `samskara-lx1`.
 
 Code: `src/mastra/auth/session-cache.ts`, wired in
-`src/mastra/index.ts:341-352` and cleared from
+`src/mastra/index.ts:342-353` and cleared from
 `src/mastra/auth/better-auth.ts:92` and `:183-186`.
 
 ## Why
 
-The Factory gate (`@mastra/factory` `dist/auth.js:529`,
+The Factory gate (`@mastra/factory` `dist/auth.js:540`,
 `createFactoryAuthGate`) authenticates every request outside `/auth/*`. It
 calls the provider, and the provider calls `auth.api.getSession({ headers })`
 on every call (`@mastra/auth-better-auth` `dist/index.js:819`). Each call sends
@@ -52,7 +52,7 @@ The cookie cache keeps the session in a signed cookie that only a response can
 refresh. The gate calls `getSession` server-side and never returns its
 `Set-Cookie`. The SPA reads the session through the Factory's `/auth/me`, which
 also validates server-side and returns only JSON (`@mastra/factory`
-`dist/auth.js:284-310`). The cookie would be set at sign-in and never renewed
+`dist/auth.js:293`). The cookie would be set at sign-in and never renewed
 after its `maxAge`, so every request after that would fall back to the
 database.
 

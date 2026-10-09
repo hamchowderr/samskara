@@ -689,10 +689,10 @@ export const factory = new MastraFactory({
   dispatcher: {
     maxInFlight: positiveInt(process.env.MASTRACODE_DISPATCH_MAX_IN_FLIGHT),
   },
-  // Agent state (threads, messages, memory, OM, recall vectors) lives in the
-  // single app Postgres alongside the github/app tables — one shared DB (and
-  // pg pool) for all users, separated by `resourceId` scoping. Unset (bare
-  // local dev) → default storage resolution applies (local libSQL file).
+  // Agent state (threads, messages, memory, OM) and the factory app tables live
+  // in the one libSQL `storage` built above — a local file, or Turso when
+  // TURSO_DATABASE_URL is set — shared by all users and separated by
+  // `resourceId` scoping. Recall vectors go to `vector` (see above).
   storage,
   vector,
   pubsub,

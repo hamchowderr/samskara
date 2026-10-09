@@ -22,8 +22,8 @@ editing the database by hand.
 
 ## Configuration
 
-Two variables, both required — a key with no verified sender fails at send
-time, which is worse than declining to mount the flow.
+Two required variables and one optional — a key with no verified sender fails
+at send time, which is worse than declining to mount the flow.
 
 | Variable | Notes |
 | --- | --- |
@@ -32,11 +32,14 @@ time, which is worse than declining to mount the flow.
 | `MAIL_REPLY_TO` | Optional Reply-To. |
 
 Only `RESEND_API_KEY` is a secret, and it is the only one in
-`scripts/secrets-template.env`. `MAIL_FROM` is an address, so it lives in
-`.env` with a working default already set — nothing to fill in for this
-deployment, one line to change for another domain. It stays a variable because
-the sender is tied to whichever domain is verified in the Resend account, so it
-moves together with the API key.
+`scripts/secrets-template.env`. `MAIL_FROM` is an address, not a secret.
+Locally it lives in `.env`: `.env.example` carries this deployment's value
+(an Otaku Solutions sending domain), which a copy of `.env.example` brings
+along; change it for another domain. In production there is no `.env`, so it
+lives in the server's Infisical folder
+([setup/deploy-coolify.md](../setup/deploy-coolify.md#2-put-the-keys-in-it--human)).
+It stays a variable because the sender is tied to whichever domain is verified
+in the Resend account, so it moves together with the API key.
 
 Every boot logs which state it is in:
 

@@ -203,15 +203,25 @@ npm run dev:secure   # injects secrets from Infisical (maintainer only);
                      # predev:secure refuses to start if its credential
                      # key differs from .env.local's (samskara-1kl)
 npm run check        # tsc --noEmit
+npm run check:auth-parity  # fails if @mastra/auth-better-auth's init()
+                     # changed; CI runs it (.github/workflows/check.yml)
 npm test             # vitest: tier-1, real temp libSQL, no server
+npm run test:watch   # vitest in watch mode
 npm run test:e2e     # playwright: invite flow on port 4199, throwaway DB
 npm run build        # bundles to .mastra/output
-npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO)
+npm run db:backup    # snapshot to ~/.samskara-backups (VACUUM INTO);
+                     # needs MASTRA_DB_PATH
 ```
 
+`npm start` (`varlock run -- mastra start`) and `npm run start:secure` (the
+built output under the `dev` Infisical secrets) are not the production path:
+the Docker image runs `node index.mjs`. `npm run deploy` (`mastra deploy`) is
+not used.
+
 **`mastra build` deletes the whole `.mastra/` directory.** Never store anything
-you want to keep there — the database lives in `data/` for exactly this reason,
-and backups go outside the repo. This destroyed the local database twice.
+you want to keep there — the database lives in `data/` for exactly this reason
+(when `MASTRA_DB_PATH` points there, which a local `.env` must set), and
+backups go outside the repo. This destroyed the local database twice.
 
 Production runs the Docker image on Coolify, booting under `infisical run`:
 see `docs/setup/deploy-coolify.md`.
@@ -224,10 +234,29 @@ dependency, not a fork. Entry point: `src/mastra/index.ts`.
 - **Storage** — libSQL only. Local file by default; Turso when
   `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` are set. Postgres is deliberately
   not wired: an injected `DATABASE_URL` must never repoint the backend.
-- **Vector** — `LibSQLVector`, passed explicitly and kept in its own file
-  beside the app database. It must be passed: the Factory always injects a
+- **Local database path** — `MASTRA_DB_PATH`, set to an absolute path under
+  `data/`. Unset, the app database is the Mastra Code CLI's own
+  `<appdata>/mastracode/mastra.db` (`@mastra/code-sdk`
+  `dist/utils/project.js:150-153`), and the vector file derived from it is the
+  CLI's `mastra-vectors.db`.
+- **Vector** — `LibSQLVector`, passed explicitly. Locally it is its own file
+  beside the app database (`index.ts:419`; beside `data/` only when
+  `MASTRA_DB_PATH` is set). In production it is its own Turso database
+  (`TURSO_VECTOR_DATABASE_URL`). It must be passed: the Factory always injects a
   storage instance, so the SDK's documented default-vector resolution cannot
   run and omitting it yields no vector store at all.
+- **Auth** — Samskara builds its own Better Auth instance
+  (`src/mastra/auth/better-auth.ts`) and owns its migrations, cookies and
+  mailer; the Factory gate's session lookups go through a short in-process
+  cache (`auth/session-cache.ts`). See docs/operations/session-cache.md and
+  docs/operations/better-auth-migrations.md.
+- **Keep-alive** — `src/mastra/keep-alive.ts` keeps outbound connections open
+  so Turso queries do not reconnect after 4s idle.
+- **Team pages** — `src/mastra/team/`, the member and invitation pages the
+  Factory UI lacks. See docs/operations/team-invites.md.
+- **Beads** — `packages/factory-beads`, on by default (`index.ts:469-501`):
+  ready beads become Work cards and Done cards close their bead. See
+  docs/operations/beads.md.
 - **Sandbox** — `local | e2b | platform` via `FACTORY_SANDBOX_PROVIDER`,
   auto-detected when unset. An explicit choice missing its credentials THROWS;
   it must never silently downgrade to a less isolated provider.
@@ -241,6 +270,13 @@ dependency, not a fork. Entry point: `src/mastra/index.ts`.
 - Back up the database before killing any server process. SQLite holds recent
   writes in a `-wal` sidecar until a checkpoint, so a hard kill loses them and
   copying the `.db` file alone does not capture them — use `npm run db:backup`.
+- One environment per repository. A repository is linked in local development
+  or in production, never both. With beads on by default, each server process
+  that links a repository is an automated beads writer with its own lease (the
+  local one is a no-op lease, `packages/factory-beads/src/worker.ts:100-103`),
+  and beads claims are not atomic across copies. Set `BEADS_INTEGRATION=0` on
+  any instance that must link a repository another instance owns. See
+  docs/setup/environments.md.
 - Edit `src/mastra/index.ts` with anchored scripts that assert each anchor
   matches exactly once. Loose string slicing has silently deleted whole blocks.
 - Never print a secret value. Confirm presence by mask only (type, length,

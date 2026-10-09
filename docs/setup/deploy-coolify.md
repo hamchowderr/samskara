@@ -34,7 +34,8 @@ happens to provide.
   The container's disk does not survive a redeploy, so a local libSQL file is
   not an option in production. Choose the region by measuring it for stalls
   from the server, not by distance alone: `aws-us-west-2` stalled about 1s
-  every 6s on every connection, and production uses `aws-us-east-1`. See
+  every 6s on every connection, and production uses `aws-us-east-1`. The
+  production databases and their group are listed in
   [operations/turso.md](../operations/turso.md).
 - An [E2B](https://e2b.dev) API key. Agent commands run in the sandbox, and the
   host sandbox must never serve clients.
@@ -137,13 +138,25 @@ requests a real one.
 A healthy boot logs, in order:
 
 ```
+[entrypoint] authenticating to Infisical as clientId=…
 [entrypoint] authenticated (token length …)
 [entrypoint] Infisical returned 22 secrets from prod:/samskara
 INF Injecting 22 Infisical secrets into your application process
 ```
 
-followed by the server's own lines, including one listing the integrations it
-started (`github`, `slack`). Then:
+followed by the server's own lines (`scripts/docker-entrypoint.sh:42`, `:59`
+for the first two). Among them:
+
+```
+[auth] provider=MastraAuthBetterAuth
+[mail] Resend configured — password reset, email verification and invitations will send.
+[storage] app=turso remote (…) vectors=turso remote (…)
+[beads] on by default; set BEADS_INTEGRATION=0 to turn it off.
+[integrations] github, slack, beads
+[sandbox] provider=e2b
+```
+
+`slack` appears only if Slack is configured. Then:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" https://samskara.example.com/auth/me
@@ -155,21 +168,19 @@ If the entrypoint stops with `FATAL: Infisical returned 0 secrets`, the identity
 cannot read the folder. Fix its role in Infisical and restart. No redeploy is
 needed.
 
-## 8. First sign-in
+## 8. First sign-in and the first project
 
-1. Sign up at the domain. The first account creates its organization.
-2. Add a model provider under **Settings > Models** with an **API key scoped to
-   the organization**, not OAuth. See
-   [README.md](README.md#connect-model-providers-with-an-api-key-not-oauth).
-3. Set the memory model to a provider that key covers. See
-   [slack-app.md](slack-app.md#the-memory-model-needs-that-key-too).
-4. Connect GitHub from the Factory. This installs your production GitHub App on
-   your account.
-5. Invite teammates from `/web/samskara/team`. See
-   [operations/team-invites.md](../operations/team-invites.md).
+Sign up at the domain. The first account creates its organization.
 
-To confirm agent runs use E2B, start a session and run `hostname`. It prints
-`e2b.local`.
+Then follow the **production track** of
+[new-project.md](new-project.md): create the factory and link its
+repositories, connect models with an organization API key only, set the default
+model and both memory model rows, set up Slack routing, check beads readiness
+per repository, confirm the E2B sandbox, and invite the team. It ends with the
+checklist that proves the deployment takes work end to end.
+
+A repository linked here must not also be linked to a local factory; see
+[environments.md](environments.md#one-environment-per-repository).
 
 ## Rolling back
 
@@ -181,8 +192,9 @@ To confirm agent runs use E2B, start a session and run `hostname`. It prints
 
 ## Backups and upgrades
 
-The data lives in Turso, not in the container. Back it up with Turso's tooling.
-See [operations/backup-and-restore.md](../operations/backup-and-restore.md).
+The data lives in Turso, not in the container. Back it up with Turso's tooling;
+`npm run db:backup` reads only a local file and cannot reach it. See
+[operations/backup-and-restore.md](../operations/backup-and-restore.md#production-turso).
 
 With automatic deploys on, every merge to `main` rebuilds and redeploys. Read
 [operations/upgrading.md](../operations/upgrading.md) before merging a Mastra

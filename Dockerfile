@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# Samskara for Coolify on the VPS. Boots under `infisical run`, so every key is
-# read from Infisical at start-up (project VPS, prod:/samskara); Coolify holds
-# only the machine-identity pair. The entrypoint is the shared Otaku one (see the
-# Coolify + Infisical cutover note), copied unchanged.
+# Samskara for Coolify on the VPS. Boots under `infisical run`: every key comes
+# from the server's own Infisical project (docs/setup/deploy-coolify.md), at
+# prod:/samskara; Coolify holds only the machine-identity pair. The entrypoint
+# is the shared Otaku one, copied unchanged (history: an external owner note).
 
 # Base image, identical in all four stages: Node 24.21.0 on Debian bookworm
 # (glibc 2.36, the reason this is slim and not Alpine), pinned by digest so a

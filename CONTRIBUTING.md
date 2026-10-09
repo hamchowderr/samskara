@@ -9,8 +9,8 @@ below, so that nobody spends an evening on a change that will not be merged.
 
 - **One maintainer.** A patch that arrives without context costs more to review,
   verify and take responsibility for than the same problem described well.
-- **A pinned, fast-moving dependency.** The project pins
-  `@mastra/factory@0.16.0` exactly, and that package ships breaking minors
+- **A pinned, fast-moving dependency.** The project pins `@mastra/factory` to
+  an exact version (see `package.json`), and that package ships breaking minors
   weekly. A change that is correct against your installed version can be wrong
   against the pinned one, and neither of us would notice until something broke.
 - **Most defects here are not in this repository.** Samskara is a thin layer
@@ -76,11 +76,17 @@ Reading it is optional. It is worth doing before filing, to see whether
 something is already planned:
 
 ```bash
+# in an empty directory that is a git repository (git init)
 bd init --remote git+https://github.com/hamchowderr/samskara.git
 bd ready                    # unblocked work
 bd list --status=open       # everything open
 bd show <id>                # one issue, with its dependencies
 ```
+
+`--remote` clones the Dolt data from that URL and records it as the sync remote
+(`bd init --help`, bd 1.3.0). Inside a clone of this repository, `bd bootstrap`
+does the same from `origin`'s `refs/dolt/data`. On Windows the clone fails with
+"Filename too long" unless git's `core.longpaths` is `true`.
 
 The two do not sync. A GitHub issue does not create a bead, and a bead does not
 appear on GitHub.
@@ -119,7 +125,7 @@ git rev-parse --short HEAD
 **What you did, what happened, what you expected.** In that order, concretely.
 "Slack intake is broken" is not actionable; "a message mentioning the bot
 creates a work item on the Work board at the Building stage, and I expected it
-on my custom board" is.
+to go through Triage first" is.
 
 **A minimal reproduction.** The smallest configuration that shows the problem.
 Start from a fresh clone rather than your working tree — it separates the defect
@@ -158,8 +164,10 @@ happens instead, and what would "done" look like.
 
 Say whether it belongs here or upstream. A change to how agents plan, run or
 review work is `@mastra/factory`'s concern; Samskara's scope is storage
-selection, sandbox selection, intake routing, and the board that runs triage on
-chat-sourced work.
+selection, sandbox selection, intake routing, the board that runs triage on
+chat-sourced work, the beads integration (`packages/factory-beads`), the team
+pages (`src/mastra/team/`), and its self-owned Better Auth instance and mailer
+(`src/mastra/auth/`).
 
 Feature requests may be declined. Samskara is a specific deployment shape, not a
 general-purpose Factory distribution, and a narrow tool that works is worth more

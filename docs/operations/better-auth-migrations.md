@@ -124,10 +124,13 @@ Back up first. SQLite holds recent writes in a `-wal` sidecar, so copying the
 `.db` file alone does not capture them:
 
 ```bash
-npm run db:backup     # VACUUM INTO ~/.samskara-backups
+npm run db:backup     # VACUUM INTO ~/.samskara-backups; local file only
 ```
 
-See [backup-and-restore.md](./backup-and-restore.md).
+That snapshots the local file `MASTRA_DB_PATH` names. In production the auth
+tables live in Turso, which `npm run db:backup` cannot reach: export the
+database with Turso's tooling first. See
+[backup-and-restore.md](./backup-and-restore.md#production-turso).
 
 ## Inspecting the plan without applying it
 

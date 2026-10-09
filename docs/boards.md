@@ -15,13 +15,19 @@ Two boards are installed, both under the built-in ids:
 
 `src/mastra/index.ts` sets `includeDefaultBoards: false` and passes
 `boards: [requestsBoard, reviewBoard]`. Disabling the defaults removes BOTH
-built-ins (`@mastra/factory` 0.20.0 `dist/boards/registry.js:4-6`), which is why
+built-ins (`@mastra/factory` 0.20.0 `dist/boards/registry.js:5-7`), which is why
 Review is installed again explicitly.
 
-Both boards keep Work's phases:
+The Work board keeps Work's phases:
 
 ```
 intake → triage → planning → execute (Building) → review → done
+```
+
+The Review board has its own (`dist/boards/review.js:58-92`):
+
+```
+intake → review (Reviewing) → done, or canceled
 ```
 
 ## Why our Work board exists
@@ -31,7 +37,7 @@ Each phase declares `onEnter` handlers keyed by where the item came from (see
 `manual`.
 
 The built-in Work board runs triage for every tracker source but not for
-`manual` (`@mastra/factory` 0.20.0, `dist/boards/work.js:155-161`):
+`manual` (`@mastra/factory` 0.20.0, `dist/boards/work.js:157-163`):
 
 ```js
 triage: {
@@ -50,11 +56,19 @@ stage message instead of running the triage skill. Planning and Building
 already declare `manual`, so only that one phase is affected, and it is the
 phase that decides what the work is.
 
-Our board is the exported `workBoard` with one change: Triage also declares
-`manual`, using Work's own `issue` handler (it already formats a `manual` item's
-reference and handles the needs-approval case). Everything else (phases, roles,
-transition policy, the `submit_plan` tool rule, other sources' handlers) is
-read from `workBoard` at runtime, so upstream changes flow through.
+Our board is the exported `workBoard` with two changes
+(`src/mastra/boards/requests-board.ts:56-70`):
+
+- Triage also declares `manual`, using Work's own `issue` handler (it already
+  formats a `manual` item's reference and handles the needs-approval case).
+- Done also declares `manual: createBeadsDoneRule()`, which wakes the beads
+  write-back when a beads card reaches Done and does nothing while the
+  integration is off. See
+  [operations/beads.md](operations/beads.md#the-done-rule).
+
+Everything else (phases, roles, transition policy, the `submit_plan` tool rule,
+other sources' handlers) is read from `workBoard` at runtime, so upstream
+changes flow through.
 
 ## Replacing Work by id
 
@@ -150,15 +164,21 @@ A dispatched Slack thread is created at Building with no board assigned
 (`boards/semantics.js:8`), which is now our board, so Slack cards land on it
 without routing.
 
-A card can be assigned a board by hand while its board is still unset:
+A card can be assigned a board by hand while its board is still unset. The
+Factory gate answers an unauthenticated API call with 401
+(`dist/auth.js:540-560`), so send it from a signed-in session; see
+[Calling the Factory API by hand](troubleshooting.md#calling-the-factory-api-by-hand).
+From the browser console of a signed-in tab:
 
-```bash
-curl -X PATCH "$FACTORY/web/factory/work-items/<id>" \
-  -H 'content-type: application/json' \
-  -d '{"board":"work","stages":["triage"]}'
+```js
+await fetch('/web/factory/work-items/<id>', {
+  method: 'PATCH',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ board: 'work', stages: ['triage'] }),
+}).then(r => r.json());
 ```
 
-A second attempt returns `board_already_assigned`.
+A second attempt returns `board_already_assigned` (`dist/routes/work-items.js:558`).
 
 ## Adding another board
 
@@ -173,3 +193,11 @@ A second attempt returns `board_already_assigned`.
 
 The board UI is gated on the project having a linked repository. That gate wraps
 the generic board renderer, so a custom board does not escape it.
+
+A factory with two or more linked repositories needs a repository chosen for
+each run: `routes/surface.js:189` throws `source_repository_ambiguous` rather
+than picking one, and a board run stops with "Choose a repository for this
+work item" (`rules/start-coordinator.js:87-88`).
+See [operations/upgrading.md](operations/upgrading.md#behaviour-changes-in-0200).
+Beads cards cannot choose one yet (`samskara-srl`); see
+[operations/beads.md](operations/beads.md#limitations).

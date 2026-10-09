@@ -51,14 +51,27 @@ and no backports. Fixes land on `main`.
   isolated one. **A path that silently downgrades to running agent commands on
   the host is a vulnerability, not a convenience.**
 - Handling of credentials in `.env`, in the setup scripts, and in the runbooks.
+- The Better Auth instance this repository builds and owns
+  (`src/mastra/auth/better-auth.ts`): cookie attributes, `trustedOrigins`,
+  `baseURL`, schema migrations (`auth/migrate.ts`), the construction of
+  invitation links, and the session hook that pins which organization a user
+  signs in to.
+- The mailer (`src/mastra/auth/mailer.ts`) and the session cache in front of
+  the Factory gate (`src/mastra/auth/session-cache.ts`).
+- The team and invitation pages (`src/mastra/team/`).
+- The beads integration (`packages/factory-beads`), including how it passes
+  the GitHub App installation token to `bd` and `git`
+  (`packages/factory-beads/src/runner.ts`).
 - The custom board in `src/mastra/boards/`.
 - Anything in `scripts/`.
 
 **Upstream** — report to
 [mastra-ai/mastra](https://github.com/mastra-ai/mastra/security) instead:
 
-- Tenant isolation, organisation membership, and the authentication flows —
-  these belong to `@mastra/factory` and `@mastra/auth-better-auth`.
+- The Factory's authentication gate, tenant isolation and organisation
+  membership checks — these belong to `@mastra/factory`.
+- The internals of `@mastra/auth-better-auth` and of `better-auth` itself, as
+  opposed to how this repository configures them.
 - Agent execution, sandbox implementations, and tool permissions.
 - Anything in `node_modules/@mastra/*`.
 

@@ -1,8 +1,8 @@
 # Secrets with Infisical
 
-Samskara reads about twenty environment variables, most of them secret. This
-runbook puts them in [Infisical](https://infisical.com) and injects them at
-runtime, so no secret value is ever written to a file in the repo or typed on a
+Samskara reads about forty-five environment variables across `src/`,
+`packages/` and `scripts/`, about twenty of them secret. This runbook puts the
+secrets in [Infisical](https://infisical.com) and injects them at runtime, so no secret value is ever written to a file in the repo or typed on a
 command line.
 
 The split of work:
@@ -73,9 +73,11 @@ infisical secrets folders create --name samskara --env dev
 infisical secrets set --file scripts/secrets-template.env --path=/samskara --env=dev
 ```
 
-`scripts/secrets-template.env` lists exactly the variables `src/mastra/index.ts`
-reads, each set to `PASTE_ME`. Creating them all up front means the human only
-has to fill in values, not work out which names are needed.
+`scripts/secrets-template.env` lists the secret variables, most of them set to
+`PASTE_ME`. The optional pairs (`TURSO_VECTOR_*`, `LINEAR_*`) are commented
+out, so they are not created; add them in the web UI if you use them. Creating them all up front means the human only has to fill in
+values, not work out which names are needed. Non-secret settings are not in it;
+see [Which variables are secret](#which-variables-are-secret).
 
 Two of them should be generated rather than pasted, and an agent can do that:
 
@@ -99,9 +101,20 @@ takes a value only as a command-line argument or from a file — there is no std
 input — so using it for a real secret writes that secret into your shell
 history.
 
-Leave any variable you are not using at `PASTE_ME` or delete the key. An unused
-key with a placeholder value is harmless; the code checks for the specific
-values it needs.
+**Delete every key you are not using.** Do not leave it at `PASTE_ME`. A
+placeholder is a value, and the code treats any non-empty value as configured:
+
+- `TURSO_DATABASE_URL=PASTE_ME` becomes the database URL
+  (`src/mastra/index.ts:288`, `:323`), so the server fails to start.
+- `E2B_API_KEY=PASTE_ME` selects the E2B sandbox when
+  `FACTORY_SANDBOX_PROVIDER` is unset (`:621-623`), and runs then fail.
+- `SLACK_APP_SIGNING_SECRET=PASTE_ME` constructs the Slack integration
+  (`:455-467`).
+- Five `GITHUB_APP_*=PASTE_ME` values construct the GitHub integration with an
+  unusable key (`:188-201`), which also turns the beads integration on
+  (`:484-494`).
+- `RESEND_API_KEY=PASTE_ME` reports mail as configured
+  (`src/mastra/auth/mailer.ts`), and every send then fails.
 
 ## 7. Run with secrets injected
 
@@ -185,10 +198,17 @@ From `scripts/secrets-template.env`:
 | `RESEND_API_KEY` | invitation and password-reset email | [operations/mail.md](../operations/mail.md) |
 | `GITHUB_APP_*` | GitHub intake | [github-app.md](github-app.md) |
 | `SLACK_APP_*` | Slack intake | [slack-app.md](slack-app.md) |
+| `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` | Linear intake; both or neither (`src/mastra/index.ts:206-214`) | Linear OAuth app |
 
-Locally, non-secret settings (`MASTRACODE_PUBLIC_URL`, `MASTRA_DB_PATH`,
-`FACTORY_SANDBOX_PROVIDER`, `MAIL_FROM`) stay in `.env`. The Docker image ships
-no `.env`, so a server needs them in its Infisical folder. See
+The Mastra Platform credentials (`MASTRA_PLATFORM_ACCESS_TOKEN`,
+`MASTRA_PLATFORM_SECRET_KEY`) are secrets too, but they are not in the template:
+Samskara does not use the platform sandbox. See `.env.example` if you do.
+
+Locally, non-secret settings stay in `.env`: `MASTRACODE_PUBLIC_URL`,
+`MASTRACODE_CHANNELS_PUBLIC_URL`, `MASTRA_DB_PATH` (set it; see
+`.env.example`), `FACTORY_SANDBOX_PROVIDER`, `MAIL_FROM`, and the `BEADS_*`
+settings. The Docker image ships no `.env`, so a server needs its non-secret
+settings in its Infisical folder. See
 [deploy-coolify.md](deploy-coolify.md#2-put-the-keys-in-it--human).
 
 ## Rotating a key
@@ -196,4 +216,4 @@ no `.env`, so a server needs them in its Infisical folder. See
 `FACTORY_CREDENTIAL_ENCRYPTION_KEY` encrypts stored provider credentials. To
 rotate it without invalidating what is already stored, move the old value into
 `FACTORY_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS`, set the new value, and bump
-`FACTORY_CREDENTIAL_ENCRYPTION_KEY_ID`. See the comments in `.env`.
+`FACTORY_CREDENTIAL_ENCRYPTION_KEY_ID`. See the comments in `.env.example`.

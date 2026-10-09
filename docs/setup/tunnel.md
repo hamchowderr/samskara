@@ -150,7 +150,8 @@ Restart Samskara after changing either.
 
 Anything derived from it has to be updated in the same pass:
 
-- **GitHub App** — callback URL and webhook URL
+- **GitHub App** — Homepage URL, Callback URL, Setup URL and Webhook URL
+  ([github-app.md](github-app.md#1-prepare-the-values))
 - **Slack app** — Event Subscriptions request URL, Interactivity request URL,
   and the OAuth redirect URL
 - **`.env`** — both variables above
