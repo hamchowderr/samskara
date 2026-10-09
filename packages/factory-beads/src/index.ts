@@ -6,6 +6,7 @@ export {
   BEADS_META,
   beadsClaimKey,
   descriptionBody,
+  FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
 } from './integration';
 export type {

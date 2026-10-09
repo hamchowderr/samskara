@@ -16,7 +16,7 @@
  *       (GitHub: plain https cloneUrl + installation token, integrations/github/integration.js:199-213)
  *   - WorkItemsStorage.getByProjectSource / upsert / update / list
  *                                                         storage/domains/work-items/base.d.ts:544,562,746,759
- *   - update merges metadata                              storage/domains/work-items/base.js:381-384
+ *   - update merges metadata                              storage/domains/work-items/base.js:379-382
  *   - claimKey: org-wide, released on a terminal phase    work-items/base.d.ts:395-400; base.js:912-919
  *
  * Why cards are created with `workItems.upsert` and not a rule decision:
@@ -65,7 +65,25 @@ export const BEADS_META = {
   closeAttempts: 'beadsCloseAttempts',
 } as const;
 
-export type WritebackState = 'synced' | 'conflict' | 'close-failed' | 'reset-requested';
+/**
+ * The card metadata key Factory reads to pick a card's repository: the
+ * linked repository's slug (`owner/name`). Factory's own key, not ours.
+ *
+ * resolveWorkItemRepository (@mastra/factory 0.20.0
+ * session/work-item-repository.js:31,36-46) tries `metadata.repository` first
+ * and matches it with `===` against the slug of every repository linked to the
+ * card's project (:16-27), the same source-control `repositories` rows
+ * #linkedRepos reads, so the slug written here always matches. Without it, a
+ * project with two or more linked repositories resolves to `ambiguous` (:83-86)
+ * and the card stops with "Choose a repository for this work item"
+ * (rules/start-coordinator.js:88; routes/surface.js:189).
+ *
+ * Not `githubRepositoryId`: GitHub's rules key on it (integrations/github/rules.js:100,
+ * acceptance-labels.js:12) and would treat a beads card as a GitHub issue.
+ */
+export const FACTORY_REPOSITORY_META = 'repository';
+
+export type WritebackState ='synced' | 'conflict' | 'close-failed' | 'reset-requested';
 
 /** The source-control integration whose App tokens read and write each repo. */
 export interface BeadsSourceControl {
@@ -516,6 +534,16 @@ export class BeadsIntegration implements FactoryIntegration {
       }
     }
 
+    // Back-fill: name the repository on cards made before the integration set
+    // it, so Factory resolves them without a manual pick in a multi-repo
+    // project. The integration owns the field on its cards: a bead belongs to
+    // its repository, and write-back closes it there. update merges metadata
+    // (storage/domains/work-items/base.js:379-382), so nothing else changes.
+    for (const [index, item] of cards.entries()) {
+      if (item.metadata?.[FACTORY_REPOSITORY_META] === slug) continue;
+      cards[index] = await this.#mark(orgId, item, { [FACTORY_REPOSITORY_META]: slug });
+    }
+
     // A conflicted write-back parks the whole repo: no pull, no intake, no
     // further writes until an operator resolves it and resets the copy.
     const conflicted = cards.filter(item => item.metadata?.[BEADS_META.writeback] === 'conflict');
@@ -676,6 +704,7 @@ export class BeadsIntegration implements FactoryIntegration {
             metadata: {
               [BEADS_META.id]: bead.id,
               [BEADS_META.repo]: slug,
+              [FACTORY_REPOSITORY_META]: slug,
               [BEADS_META.type]: bead.issue_type ?? null,
               [BEADS_META.priority]: bead.priority ?? null,
             },
