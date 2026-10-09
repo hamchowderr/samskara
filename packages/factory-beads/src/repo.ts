@@ -29,6 +29,9 @@ export interface ReadyBead {
   description?: string;
 }
 
+/** Issue types that group work and are never carded as work themselves. */
+export const CONTAINER_TYPES = ['epic', 'milestone'] as const;
+
 const MARKER = 'factory-beads-bootstrapped';
 const PARKED = 'factory-beads-parked';
 
@@ -102,19 +105,24 @@ export class BdRepo {
   }
 
   /**
-   * Ready, non-epic beads. Epics are containers: `bd ready` lists an unblocked epic beside its first child.
+   * Ready beads that hold work. Epics and milestones are containers ("contains no work itself", `bd types`),
+   * and bd ready returns both (bd v1.3.1 internal/storage/sqlbuild/ready.go:16-38 excludes neither); pinned
+   * beads, gates and molecule roots it already leaves out (`:117`, `:16-38`).
    * No `--brief`: in bd 1.3.0 it omits description, design, acceptance and notes (`bd ready --help`),
    * and the description is posted to the card's feed.
    */
   async ready(): Promise<ReadyBead[]> {
-    const res = await this.runner.bd(['--readonly', 'ready', '--json', '--exclude-type=epic', '-n', '0'], {
-      cwd: this.dir,
-    });
+    const res = await this.runner.bd(
+      ['--readonly', 'ready', '--json', `--exclude-type=${CONTAINER_TYPES.join(',')}`, '-n', '0'],
+      { cwd: this.dir },
+    );
     if (res.code !== 0) throw new Error(`bd ready failed (exit ${res.code}): ${tail(res)}`);
     const parsed = JSON.parse(res.stdout.trim() || '[]') as unknown;
     if (!Array.isArray(parsed)) return [];
-    // Belt and braces: never card an epic even if a bd version ignores the flag.
-    return (parsed as ReadyBead[]).filter(bead => typeof bead?.id === 'string' && bead.issue_type !== 'epic');
+    // Belt and braces: never card a container even if a bd version ignores the flag.
+    return (parsed as ReadyBead[]).filter(
+      bead => typeof bead?.id === 'string' && !(CONTAINER_TYPES as readonly string[]).includes(bead.issue_type ?? ''),
+    );
   }
 
   /** The bead's status and assignee, or undefined when bd cannot read it. */

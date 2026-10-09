@@ -40,9 +40,11 @@ const commands = (harness: Harness) =>
   });
 
 describe('intake', () => {
-  it('cards ready beads only, never epics, with the claim key and external source', async () => {
+  it('cards ready beads only, never epics, milestones or pinned beads, with the claim key and external source', async () => {
     h = createHarness([
       { id: 'w-1', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-4', title: 'Milestone', issue_type: 'milestone' },
+      { id: 'w-5', title: 'Pinned', issue_type: 'task', status: 'pinned' },
       { id: 'w-2', title: 'First', issue_type: 'task', priority: 1 },
       { id: 'w-3', title: 'Second', issue_type: 'task', blockedBy: ['w-2'] },
     ]);
@@ -101,7 +103,7 @@ describe('intake', () => {
     expect(calls.indexOf(pull)).toBeLessThan(calls.indexOf(ready));
     expect(pull.env.token).toBe(TOKEN);
     // No --brief: it would drop the description (bd ready --help, bd 1.3.0).
-    expect(ready.argv).toEqual(['--readonly', 'ready', '--json', '--exclude-type=epic', '-n', '0']);
+    expect(ready.argv).toEqual(['--readonly', 'ready', '--json', '--exclude-type=epic,milestone', '-n', '0']);
     // Reads get no credential at all.
     expect(ready.env.token).toBeNull();
   });
