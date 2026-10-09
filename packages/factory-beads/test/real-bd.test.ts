@@ -56,6 +56,8 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     ids.beta = run('bd', ['create', 'Beta', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
     ids.epic = run('bd', ['create', 'Epic', '-t', 'epic', '--silent']).split(/\r?\n/)[0]!;
     run('bd', ['dep', 'add', ids.beta, ids.alpha]);
+    // Held by someone else: bd refuses a close by any other actor (samskara-l2t.13).
+    run('bd', ['update', ids.alpha, '--assignee', 'someone']);
     run('bd', ['dolt', 'push']);
     run('git', ['add', '-A']);
     spawnSync('git', ['commit', '-q', '-m', 'chore: beads config'], { cwd: seed, env });

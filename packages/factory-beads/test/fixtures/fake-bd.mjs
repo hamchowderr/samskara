@@ -144,14 +144,19 @@ switch (words[0]) {
     if (!bead) {
       code = 1;
       err = 'not found';
-    } else out = JSON.stringify([{ id: bead.id, status: bead.status }]);
+    } else out = JSON.stringify([{ id: bead.id, status: bead.status, ...(bead.assignee ? { assignee: bead.assignee } : {}) }]);
     break;
   }
   case 'close': {
     const bead = state.beads.find(b => b.id === words[1]);
+    const actor = argv.includes('--actor') ? argv[argv.indexOf('--actor') + 1] : 'someone';
     if (!bead || state.closeFail.includes(words[1])) {
       code = 1;
       err = `cannot close ${words[1]}`;
+    } else if (bead.assignee && bead.assignee !== actor && !flags.includes('--force')) {
+      // Like bd 1.3.1 (validation.AssigneeMatches): only the holder may close.
+      code = 1;
+      err = `cannot close ${words[1]}: assignee is "${bead.assignee}", actor is "${actor}"; reclaim or use --force to override`;
     } else {
       bead.status = 'closed';
       bead.closeReason = reasonIndex >= 0 ? argv[reasonIndex + 1] : null;
@@ -214,6 +219,15 @@ switch (words[0]) {
       if (value !== undefined) bead[field] = value;
     }
     if (flagValue('priority') !== undefined) bead.priority = Number(flagValue('priority'));
+    // Like bd 1.3.1's compare-and-swap reassign: exit 13 when the holder changed.
+    const expected = flagValue('if-assignee');
+    // casFail: the holder changed after the caller read it.
+    if (expected !== undefined && ((bead.assignee ?? '') !== expected || (state.casFail ?? []).includes(bead.id))) {
+      code = 13;
+      err = `assignee mismatch: ${bead.id} is held by "${bead.assignee ?? ''}", expected "${expected}"`;
+      break;
+    }
+    if (flagValue('assignee') !== undefined) bead.assignee = flagValue('assignee');
     const note = flagValue('append-notes');
     if (note !== undefined) bead.notes = bead.notes ? `${bead.notes}\n${note}` : note;
     out = JSON.stringify([bead]);

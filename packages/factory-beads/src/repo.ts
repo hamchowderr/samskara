@@ -117,21 +117,44 @@ export class BdRepo {
     return (parsed as ReadyBead[]).filter(bead => typeof bead?.id === 'string' && bead.issue_type !== 'epic');
   }
 
-  /** The bead's status, or undefined when bd cannot read it. */
-  async status(id: string): Promise<string | undefined> {
+  /** The bead's status and assignee, or undefined when bd cannot read it. */
+  async show(id: string): Promise<{ status?: string; assignee?: string } | undefined> {
     const res = await this.runner.bd(['--readonly', 'show', id, '--json'], { cwd: this.dir });
     if (res.code !== 0) return undefined;
     try {
       const parsed = JSON.parse(res.stdout) as unknown;
-      const row = (Array.isArray(parsed) ? parsed[0] : parsed) as { status?: string } | undefined;
-      return row?.status;
+      return (Array.isArray(parsed) ? parsed[0] : parsed) as { status?: string; assignee?: string } | undefined;
     } catch {
       return undefined;
     }
   }
 
-  close(id: string, reason: string): Promise<BdResult> {
-    return this.runner.bd(['--sandbox', '--actor', this.runner.actor, 'close', id, '--reason', reason], { cwd: this.dir });
+  /** The bead's status, or undefined when bd cannot read it. */
+  async status(id: string): Promise<string | undefined> {
+    return (await this.show(id))?.status;
+  }
+
+  /**
+   * Close as the integration's actor. bd refuses to close a bead assigned to
+   * anyone else ("assignee is X, actor is Y", bd v1.3.1
+   * cmd/bd/show_unit_helpers.go:27-35), so a held bead is first handed over
+   * with bd's compare-and-swap reassign (`--if-assignee`, exit 13 when the
+   * holder changed). Never `--force`: it would also override bd's pinned,
+   * gate, open-child and blocker refusals, which must stay visible.
+   */
+  async close(id: string, reason: string): Promise<BdResult> {
+    const actor = this.runner.actor;
+    const holder = (await this.show(id))?.assignee;
+    if (holder && holder !== actor) {
+      const handover = await this.runner.bd(
+        ['--sandbox', '--actor', actor, 'update', id, `--assignee=${actor}`, `--if-assignee=${holder}`],
+        { cwd: this.dir },
+      );
+      if (handover.code !== 0) {
+        return { ...handover, stderr: `handing ${id} over from "${holder}" failed: ${tail(handover)}` };
+      }
+    }
+    return this.runner.bd(['--sandbox', '--actor', actor, 'close', id, '--reason', reason], { cwd: this.dir });
   }
 
   sync(credentials: RepoCredentials | undefined): Promise<BdResult> {

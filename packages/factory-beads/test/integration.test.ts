@@ -293,6 +293,39 @@ describe('write-back and ordering', () => {
     expect(commands(h).filter(c => c === 'close w-a')).toHaveLength(1);
   });
 
+  it('closes a bead someone else holds by handing it over first, never with --force', async () => {
+    h = createHarness([{ id: 'w-a', title: 'A', assignee: 'alice' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.workItems.move(cardFor(h, 'w-a').id, 'done');
+
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads.find(b => b.id === 'w-a')).toMatchObject({ status: 'closed', assignee: 'factory-beads' });
+    const handover = h.state().calls.find(c => c.argv.includes('update'))!;
+    expect(handover.argv).toEqual(
+      expect.arrayContaining(['--sandbox', '--actor', 'factory-beads', 'update', 'w-a', '--assignee=factory-beads', '--if-assignee=alice']),
+    );
+    expect(h.state().calls.some(c => c.argv.includes('--force'))).toBe(false);
+  });
+
+  it('a handover that loses the race leaves a readable diagnostic and does not close', async () => {
+    h = createHarness([{ id: 'w-a', title: 'A', assignee: 'alice' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.workItems.move(cardFor(h, 'w-a').id, 'done');
+    // Someone takes the bead between the read and the compare-and-swap.
+    h.setState(s => (s.casFail = ['w-a']));
+
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'error', closed: 0 });
+    expect(h.state().beads.find(b => b.id === 'w-a')?.status).not.toBe('closed');
+    expect(commands(h)).not.toContain('close w-a');
+    const diagnostic = String(cardFor(h, 'w-a').metadata?.beadsDiagnostic);
+    expect(diagnostic).toContain('exit 13');
+    expect(diagnostic).toContain('handing w-a over from "alice" failed');
+  });
+
   it('parks a card as close-failed after the attempt cap', async () => {
     h = createHarness([{ id: 'w-a', title: 'A' }]);
     const integration = h.integration({ maxCloseAttempts: 2 });
