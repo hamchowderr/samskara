@@ -15,9 +15,10 @@ line; do not move on until it holds.
 
 Settings pages named below are in the Factory UI, under the factory's
 **Settings** (`/factories/<factoryId>/settings/<page>`). The page names are the
-ones `mastra` CLI 1.33.0 ships: **Manage Factory**, **Connections**,
-**Repositories**, **Work Intake**, **Factory models**, **Your models**,
-**Factory memory** and **Your memory**.
+ones `mastra` CLI 1.33.0 ships: **My account**, **Preferences**, **Manage
+Factory**, **Connections**, **Repositories**, **Work Intake**, **Factory
+models**, **Your models**, **Your memory**, **Factory memory**, **Skills** and
+**Behavior**.
 
 A `/web/...` route is called from a signed-in session, never with a bare
 `curl`; see
@@ -71,6 +72,16 @@ none of those repositories is linked in the other environment.
 Each environment has its own GitHub App and Slack app
 ([environments.md](environments.md)).
 
+**Local, before the first `npm run dev`:** create `.env` from the example, set
+`MASTRA_DB_PATH` in it to an absolute path under `data/`, and create that
+folder (libSQL does not create it):
+
+```bash
+cp .env.example .env
+mkdir data
+# then edit .env:  MASTRA_DB_PATH=/absolute/path/to/samskara/data/samskara.db
+```
+
 **Verify:** the server's startup lines include `[integrations] github` (plus
 `slack` if you use it, and `beads`), and the `[storage]` line names the
 database you expect: `local file` locally, `turso remote (…)` in production.
@@ -96,20 +107,36 @@ The app must be installed on every repository the factory will link.
    read and write, Commit statuses read-only. If the app's permissions were
    changed after installing, accept the pending request on the installation.
 
+**Sign in to the Factory first, in the same browser.** An installation becomes
+visible to an organization only when GitHub redirects back to the Factory's
+Setup URL / OAuth callback (`/auth/github/callback`) while you are signed in:
+that route binds each of your installations to your signed-in organization
+(`@mastra/factory` 0.20.0 `dist/integrations/github/routes.js:308-345`). An app
+installed from a browser with no Factory session is not bound to any
+organization. To bind it afterwards, start the connect flow again from the
+Factory's repository picker while signed in.
+
 **Verify:** `/web/github/status`, opened in a signed-in browser tab, shows the
-installation.
+installation. It lists only installations bound to your organization.
 
 ## 3. Create the factory and link repositories
 
-1. **Create the factory — HUMAN.** An organization with no factory is sent to
-   `/onboarding`, which creates the first one. In an organization that has one,
-   use **New Factory**. Both walk the same steps: the factory's name, source
-   control (where repositories are linked), project management, and an
-   organization model provider; onboarding then offers a personal provider
-   (step keys in Mastra's UI bundle: `name`, `vcs`, `project-management`,
-   `model-provider`, `personal-provider`). Name the factory after the project.
-   Before the **model provider** step, read [step 4](#4-connect-models): for
-   production, skip it.
+1. **Create the factory — HUMAN.** The two paths have different steps (Mastra's
+   UI bundle, `mastra/dist/factory/assets/index-BaghZlUk.js`):
+   - **First factory: onboarding.** An organization with no factory is sent to
+     `/onboarding`. Its steps are `initial`, `vcs`, `project-management`,
+     `model-provider` and `personal-provider`. There is no name step: the
+     `vcs` step says "select the repository that will become your first
+     Factory", and the factory is created from that repository. Rename it
+     afterwards under **Settings → Manage Factory**.
+   - **Later factories: New Factory.** Its steps are `name`, `vcs`,
+     `project-management` and `model-provider` ("Name your new Factory",
+     "Choose your codebase", "Connect the work behind the code", "Choose your
+     Factory model"). There is no personal-provider step.
+
+   Only the project-management step has **Skip for now**. The model step has no
+   skip control: it advances only once a model is saved. Read
+   [step 4](#4-connect-models) before reaching it.
 2. **Link the repositories — HUMAN.** In the wizard's source-control step, or
    later under **Settings → Repositories → Link repository**. Link only
    repositories decided in [step 0](#0-decide-where-the-project-lives). A
@@ -152,12 +179,18 @@ terms may not permit using it for other people's work (owner policy,
 `samskara-nn2`). Use the organization's own API key, billed to the
 organization.
 
-- **The onboarding wizard cannot do this for Anthropic, OpenAI or xAI.** Its
-  model step shows those three only as **Continue with …** subscription
-  sign-in buttons, and lists API keys only for providers without sign-in
-  (`samskara-nn2`; Mastra's UI bundle, reported upstream). Skip the wizard's
-  model step, then add the key under **Factory models → Provider access →
-  Connect with API key**, which lists the whole catalog.
+- **The onboarding model step cannot do this for Anthropic, OpenAI or xAI.**
+  It shows those three only as **Continue with …** subscription sign-in
+  buttons, and lists API keys only for providers without sign-in
+  (`samskara-nn2`; Mastra's UI bundle, reported upstream). It also has no skip
+  control. The path that works: the factory already exists once the
+  repository step is done, so open `/factories/<factoryId>/settings/models` in
+  another tab, add the key under **Factory models → Provider access → Connect
+  with API key** (which lists the whole catalog), then return to the wizard
+  tab, where the provider is now connected, and pick its model.
+- **New Factory, for a second production project.** The organization's API key
+  from the first project is already connected, so the model step just offers
+  its models. Pick one and complete the step.
 - Factory 0.20.0 has no setting that turns subscription sign-in off
   (`samskara-nn2`). The rule is kept by people, not enforced.
 
@@ -216,10 +249,17 @@ title rather than a placeholder.
    once ([slack-app.md](slack-app.md#6-link-your-slack-account-to-the-factory--human)).
 2. **Set the default factory — HUMAN.** Channels do not map to factories; each
    linked account's runs go to its default factory
-   (`dist/integrations/slack/slack.js:103-145`). With one factory it is set
-   automatically. With more than one, each person sets it under **Settings →
-   Connections → Slack → Session behavior → Default factory**, or the bot
-   answers with **Pick a default factory** and the run does not start.
+   (`dist/integrations/slack/slack.js:103-145`). Set it under **Settings →
+   Connections → Slack → Session behavior → Default factory**.
+   - A link with no default, in an organization with exactly one factory, gets
+     that factory stamped as its default on its first message
+     (`slack.js:120-131`).
+   - **Adding a factory does not move existing links.** A link already stamped
+     with the first factory keeps sending its runs there, silently; no **Pick a
+     default factory** card appears. Every linked person who should work in the
+     new factory must change their **Default factory** explicitly.
+   - A link with no default, in an organization with more than one factory,
+     gets the **Pick a default factory** card, and the run does not start.
 3. **Turn on cards, if wanted — HUMAN.** **Settings → Connections → Slack →
    Work items → Create work items for new Slack threads**, for this factory.
    It is off by default. With it off, threads still run, but no card appears.
@@ -236,8 +276,17 @@ a card appears at Building on this factory's Work board).
 For each linked repository that uses beads:
 
 1. **Its beads data is on `origin`.** In a clone: `bd init` if it has no beads
-   database yet, then `bd dolt remote add origin <git url>` and `bd dolt push`.
-   `refs/dolt/data` must exist on `origin`.
+   database yet, then publish it with `bd dolt push --yes`. With no Dolt remote
+   configured, `--yes` consents to adopting the repository's `origin` as the
+   Dolt remote, and pushes (`bd dolt push --help`, bd 1.3.0). Do not run
+   `bd dolt remote add origin <url>`: bd 1.3.0 refuses a Dolt remote whose URL
+   matches the repository's origin unless `--allow-git-origin` is given. Push
+   with `DOLT_REMOTE_INFO_BRANCH` set to empty, so Dolt does not create a
+   `__dolt_remote_info__` branch on `origin` (on hosts that build every pushed
+   branch, it can trigger a deploy). From a POSIX shell (Git Bash on Windows;
+   PowerShell cannot set an empty variable):
+   `DOLT_REMOTE_INFO_BRANCH= bd dolt push --yes`. `refs/dolt/data` must then
+   exist on `origin`.
 2. **The host has `bd`.** Production: the image installs bd 1.3.0. Local:
    install bd, or set `BEADS_BD_PATH`.
 3. **The integration is on.** The `[beads]` startup line says `on`, and
@@ -249,7 +298,9 @@ For each linked repository that uses beads:
      every 15 minutes, or at once after a restart.
    - `error` — `reason` says why; the next tick retries.
    - `parked` — a write-back conflict; an organization admin resets it with
-     `POST /web/beads/reset`.
+     `POST /web/beads/reset` and the body `{"repo": "owner/name"}` (without it
+     the route answers 400 `repo_required`,
+     `packages/factory-beads/src/integration.ts:722`).
 
    Meanings and fixes: [operations/beads.md](../operations/beads.md#repository-states).
 

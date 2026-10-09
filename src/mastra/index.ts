@@ -468,7 +468,7 @@ const slack = slackSigningSecret
 
 // Beads intake and write-back (samskara-iz6): ready beads in each linked repo
 // become Work cards; a card reaching Done closes its bead and publishes it to
-// refs/dolt/data. ON by default; BEADS_INTEGRATION=0 (or false/off) turns it
+// refs/dolt/data. ON by default; BEADS_INTEGRATION=0 (or false/off/no) turns it
 // off (samskara-iz6.8). It needs the GitHub App, whose installation tokens read
 // and write each repository: without it, one startup line and nothing runs. The
 // host needs the `bd` binary (the Docker image installs a pinned one); a

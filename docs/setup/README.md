@@ -69,6 +69,13 @@ setting lives, are in [new-project.md](new-project.md#4-connect-models).
 
 ## After setup
 
+Before the first run, locally:
+
+```bash
+cp .env.example .env   # then set MASTRA_DB_PATH in .env to an absolute path
+mkdir data             # the folder MASTRA_DB_PATH points into
+```
+
 ```bash
 npm run check    # typecheck
 npm run dev      # plain .env

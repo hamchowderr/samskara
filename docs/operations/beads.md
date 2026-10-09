@@ -98,9 +98,9 @@ and `checkedAt`, when it was last checked:
 | `error` | This tick failed for the repository: `git ls-remote` failed (auth, network), or clone, bootstrap, pull, close or sync failed. `reason` says why; the token is removed from it. The next tick tries again. | `sweep finished with problems` |
 | `parked` | A write-back conflict (`bd sync` exit 2 or 4). Nothing runs for the repository until an operator resets it; see [Write-back failures](#write-back-failures). | `sweep finished with problems` |
 
-To make a `no-beads-data` repository a beads repository, give it a git remote
-and push its beads data (`bd dolt remote add origin <git url>`, then
-`bd dolt push`). The next re-check, at most 15 minutes later, bootstraps it.
+To make a `no-beads-data` repository a beads repository, push its beads data
+with `bd dolt push --yes` (see the [per-repository checklist](#setup)). The
+next re-check, at most 15 minutes later, bootstraps it.
 Restarting the server re-checks at once.
 
 ### Cards
@@ -223,9 +223,16 @@ is off, the rule does nothing.
    **Per-repository checklist, for a repository new to the integration:**
 
    1. In a clone of the repository, if it has no beads database yet: `bd init`.
-   2. Give beads the git remote and publish its data:
-      `bd dolt remote add origin <git url>`, then `bd dolt push`. This creates
-      `refs/dolt/data` on `origin`.
+   2. Publish its data with `bd dolt push --yes`. With no Dolt remote
+      configured, `--yes` consents to adopting the repository's `origin` as the
+      Dolt remote, then pushes (`bd dolt push --help`, bd 1.3.0). This creates
+      `refs/dolt/data` on `origin`. Do not use
+      `bd dolt remote add origin <url>`: bd 1.3.0 refuses a Dolt remote whose
+      URL matches the repository's origin unless `--allow-git-origin` is given.
+      Push with `DOLT_REMOTE_INFO_BRANCH` empty, so Dolt does not create a
+      `__dolt_remote_info__` branch on `origin` (see [Credentials](#credentials)
+      for why). From a POSIX shell (Git Bash on Windows; PowerShell cannot set
+      an empty variable): `DOLT_REMOTE_INFO_BRANCH= bd dolt push --yes`.
    3. The GitHub App is installed on the repository with Contents: Read and
       write.
    4. The repository is linked to exactly **one** factory, in exactly **one**
@@ -282,7 +289,7 @@ processes **only through their environment**
 Two more settings go to every child process:
 
 - `DOLT_REMOTE_INFO_BRANCH=''` (`runner.ts:131`). Without it, Dolt can create
-  `refs/dolt/remote-info` branches on `origin`. On a host that builds every
+  `__dolt_remote_info__` branches on `origin` (the name in the bd 1.3.0 binary). On a host that builds every
   pushed branch (Vercel), each branch can start a deploy and use up the quota.
   This matters most for client repositories.
 - `core.longpaths=true` (`runner.ts:116`). Dolt's git cache is deeply nested under `.beads/dolt`.

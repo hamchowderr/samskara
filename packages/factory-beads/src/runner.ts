@@ -126,7 +126,7 @@ export function childEnv(options: { actor: string; extra?: NodeJS.ProcessEnv; cr
     GCM_INTERACTIVE: 'never',
     BD_NON_INTERACTIVE: '1',
     BEADS_ACTOR: options.actor,
-    // Never create refs/dolt/remote-info branches on the origin: on hosts that
+    // Never create __dolt_remote_info__ branches on the origin: on hosts that
     // build every pushed branch, each one can trigger a deploy.
     DOLT_REMOTE_INFO_BRANCH: '',
     GIT_AUTHOR_NAME: options.actor,

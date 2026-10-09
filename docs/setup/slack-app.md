@@ -109,12 +109,15 @@ that account's **default factory** (`@mastra/factory` 0.20.0
 
 1. the link's default factory, when it still exists;
 2. otherwise, when the organization has exactly one factory, that one, which
-   is then saved as the link's default;
+   is then saved as the link's default (`slack.js:120-131`);
 3. otherwise the bot posts a **Pick a default factory** card in the thread and
    the run does not start.
 
-So once an organization has more than one factory, every linked user must pick
-one. In the Factory, open **Settings → Connections → Slack**
+**Adding a factory does not change existing links.** A link that was stamped
+with the first factory under rule 2 keeps routing its runs there, silently: it
+has a default, so no **Pick a default factory** card appears. After adding a
+factory, every linked person who should work in it must change their
+**Default factory** explicitly. In the Factory, open **Settings → Connections → Slack**
 (`/factories/<factoryId>/settings/connections/slack`); under **Session
 behavior**, set **Default factory**. The card's **Open settings** button opens
 the Connections settings.

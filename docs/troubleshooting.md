@@ -65,7 +65,14 @@ automatically. Otherwise the bot posts this card and blocks the run
 Channels do not map to factories. Each linked Slack user's runs go to that
 user's default factory. Set it in the Factory under **Settings → Connections →
 Slack → Session behavior → Default factory**, then send the message again. See
-[setup/slack-app.md](setup/slack-app.md#6-link-your-slack-account-to-the-factory--human).
+[setup/slack-app.md](setup/slack-app.md#set-the-default-factory--human).
+
+## Slack runs go to the wrong factory
+
+A link that got its default automatically, while the organization had one
+factory, keeps it after a second factory is added (`slack.js:120-131`). No card
+appears; runs go to the first factory. Change **Default factory** under
+**Settings → Connections → Slack → Session behavior**.
 
 ## "No usable anthropic credential is configured"
 
@@ -93,13 +100,16 @@ not help: tenant runs never fall back to environment keys
 
 ## Onboarding offers no API key for Anthropic, OpenAI or xAI
 
-The model step of the Create Factory wizard lists these three only as **Continue
-with …** buttons, which sign in with a personal subscription. It shows an
-API-key search only for providers without OAuth (`samskara-nn2`; Mastra's UI
-bundle, reported upstream).
+The model step of onboarding lists these three only as **Continue with …**
+buttons, which sign in with a personal subscription. It shows an API-key
+search only for providers without OAuth (`samskara-nn2`; Mastra's UI bundle,
+reported upstream). The step has no skip control.
 
-Skip that step. After the factory exists, add the key under **Factory models →
-Provider access → Connect with API key**, which lists the whole catalog. See
+The factory already exists at that point (the repository step created it). In
+another tab, open `/factories/<factoryId>/settings/models` and add the key under
+**Factory models → Provider access → Connect with API key**, which lists the
+whole catalog. Return to the onboarding tab, where the provider now shows as
+connected, and pick its model. See
 [setup/new-project.md](setup/new-project.md#4-connect-models).
 
 ## A board run stops with "Choose a repository for this work item"
@@ -128,11 +138,16 @@ Read the `[beads]` startup line first.
 Then call `GET /web/beads/status` from a signed-in session. Each linked
 repository has a state:
 
-- `no-beads-data` — origin has no `refs/dolt/data`. Push the beads data from the
-  repository (`bd dolt remote add origin <git url>`, `bd dolt push`).
+- `no-beads-data` — origin has no `refs/dolt/data`. Push the beads data from a
+  clone of the repository with `bd dolt push --yes`, which adopts `origin` as
+  the Dolt remote. `bd dolt remote add origin <url>` is refused in bd 1.3.0
+  because the URL matches the repository's origin. Details:
+  [operations/beads.md](operations/beads.md#setup).
 - `error` — `reason` says why; the next tick retries.
 - `parked` — a write-back conflict. An organization admin resets it with
-  `POST /web/beads/reset`.
+  `POST /web/beads/reset` and the body `{"repo": "owner/name"}`; without it the
+  route answers 400 `repo_required`
+  (`packages/factory-beads/src/integration.ts:722`).
 
 The meaning of each state and the fixes are in
 [operations/beads.md](operations/beads.md#repository-states). A ready bead lands

@@ -152,6 +152,8 @@ Running Samskara both locally and on a server? Read [environments.md](docs/setup
 
 ```bash
 npm install
+cp .env.example .env # then set MASTRA_DB_PATH in it (below)
+mkdir data           # libSQL does not create the folder
 npm run dev          # plain .env; generates dev auth secrets on first run
 npm run dev:secure   # secrets injected from Infisical
 ```

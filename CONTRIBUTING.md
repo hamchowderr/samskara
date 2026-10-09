@@ -146,10 +146,9 @@ State these when they are relevant, because behaviour genuinely differs:
   has no sandbox isolation backend at all.
 - **Sandbox provider** — `local`, `e2b` or `platform`, and whether you set
   `FACTORY_SANDBOX_PROVIDER` explicitly or let it auto-detect.
-- **Database** — a local libSQL file, Turso, or Postgres. Those are the
-  backends a Factory runs on, and behaviour differs between them. Samskara's
-  entry point wires libSQL and Turso, so say how you got there if you are on
-  Postgres.
+- **Database** — a local libSQL file (and its `MASTRA_DB_PATH`) or Turso.
+  Samskara wires only those two; `DATABASE_URL` is ignored with a warning, so
+  Postgres is not a backend here.
 - **Whether you ran a build.** `mastra build` deletes the entire `.mastra/`
   directory, and the bundler folds `process.env.NODE_ENV` at build time, so a
   branch can behave differently in the built output than in source.
