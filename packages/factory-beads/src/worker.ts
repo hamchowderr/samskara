@@ -1,5 +1,7 @@
 /**
- * The beads sync worker: the only place a bead is ever written.
+ * The beads sync worker: the only place a bead is ever written. Sweeps run in
+ * its tick; agent-tool writes run through `withLease`. Both hold the same lease
+ * and the same in-process mutex, so they never overlap.
  *
  * It mirrors Factory's `IssueReconcileWorker` (@mastra/factory 0.20.0
  * dist/integrations/issue-reconcile-worker.js:6-88) — an interval tick that
@@ -41,6 +43,23 @@ export interface BeadsSyncWorkerOptions<T> {
 
 export type TickOutcome<T> = { ran: true; result: T } | { ran: false; reason: 'lease-held' | 'not-running' };
 
+/** `withLease` gave up waiting: another process held the writer lease the whole time. */
+export class LeaseWaitTimeoutError extends Error {
+  constructor(key: string, waitedMs: number) {
+    super(`the ${key} lease was held by another process for ${Math.round(waitedMs / 1000)} s; try again shortly`);
+    this.name = 'LeaseWaitTimeoutError';
+  }
+}
+
+export interface WithLeaseOptions {
+  /** Give up after this long. Default 120 s. */
+  timeoutMs?: number;
+  /** Delay between attempts while another process holds the lease. Default 1 s. */
+  pollMs?: number;
+}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 function resolveLeaseProvider(pubsub: WorkerDeps['pubsub'] | undefined): LeaseProvider | undefined {
   if (!pubsub) return undefined;
   const getProvider = (pubsub as { getLeaseProvider?: () => LeaseProvider | undefined }).getLeaseProvider;
@@ -60,6 +79,12 @@ export class BeadsSyncWorker<T> extends MastraWorker {
   #timer: NodeJS.Timeout | undefined;
   #inFlight: Promise<TickOutcome<T>> | undefined;
   #again = false;
+  /**
+   * In-process exclusion between ticks and `withLease` calls. The lease alone
+   * cannot give it: the no-op provider grants every acquire, and one owner id
+   * is shared by everything in this process.
+   */
+  #mutex: Promise<unknown> = Promise.resolve();
 
   constructor(options: BeadsSyncWorkerOptions<T>) {
     super();
@@ -134,6 +159,63 @@ export class BeadsSyncWorker<T> extends MastraWorker {
     return this.#launch();
   }
 
+  /**
+   * Run `fn` while holding the writer lease, after any tick or other
+   * `withLease` call in this process. When another process holds the lease,
+   * wait for it (polling) up to `timeoutMs`, then throw
+   * `LeaseWaitTimeoutError`. Works without `start()`.
+   *
+   * `fn` must not call `runNow()`: that waits for this call and deadlocks.
+   * Use `kick()` to ask for a sweep afterwards.
+   */
+  withLease<R>(fn: () => Promise<R>, options: WithLeaseOptions = {}): Promise<R> {
+    const timeoutMs = options.timeoutMs ?? 120_000;
+    const pollMs = options.pollMs ?? 1_000;
+    return this.#exclusive(async () => {
+      const started = Date.now();
+      while (!(await this.#acquire())) {
+        if (Date.now() - started >= timeoutMs) throw new LeaseWaitTimeoutError(this.#options.leaseKey, Date.now() - started);
+        await sleep(pollMs);
+      }
+      return this.#hold(fn);
+    });
+  }
+
+  #exclusive<R>(fn: () => Promise<R>): Promise<R> {
+    const run = this.#mutex.then(fn, fn);
+    this.#mutex = run.catch(() => undefined);
+    return run;
+  }
+
+  async #acquire(): Promise<boolean> {
+    const result = await this.#lease
+      .acquireLease(this.#options.leaseKey, this.#owner, this.#leaseTtlMs)
+      .catch(() => ({ acquired: false as const }));
+    return result.acquired;
+  }
+
+  /** Run `fn` under an acquired lease: renewed at a third of its TTL, released after. */
+  async #hold<R>(fn: () => Promise<R>): Promise<R> {
+    const key = this.#options.leaseKey;
+    const renewal = setInterval(
+      () => {
+        this.#lease.renewLease(key, this.#owner, this.#leaseTtlMs).catch(error => {
+          this.deps?.logger.warn(`${this.name} lease renewal failed`, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
+      Math.max(1_000, Math.floor(this.#leaseTtlMs / 3)),
+    );
+    renewal.unref?.();
+    try {
+      return await fn();
+    } finally {
+      clearInterval(renewal);
+      await this.#lease.releaseLease(key, this.#owner).catch(() => undefined);
+    }
+  }
+
   #schedule(delayMs: number): void {
     if (!this.#running) return;
     if (this.#timer) clearTimeout(this.#timer);
@@ -155,31 +237,17 @@ export class BeadsSyncWorker<T> extends MastraWorker {
     return run;
   }
 
-  async #tick(): Promise<TickOutcome<T>> {
-    const key = this.#options.leaseKey;
-    const acquired = await this.#lease
-      .acquireLease(key, this.#owner, this.#leaseTtlMs)
-      .catch(() => ({ acquired: false as const }));
-    if (!acquired.acquired) return { ran: false, reason: 'lease-held' };
-    const renewal = setInterval(
-      () => {
-        this.#lease.renewLease(key, this.#owner, this.#leaseTtlMs).catch(error => {
-          this.deps?.logger.warn(`${this.name} lease renewal failed`, {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      },
-      Math.max(1_000, Math.floor(this.#leaseTtlMs / 3)),
-    );
-    renewal.unref?.();
-    try {
-      return { ran: true, result: await this.#options.sweep() };
-    } catch (error) {
-      this.deps?.logger.warn(`${this.name} sweep failed`, { error: error instanceof Error ? error.message : String(error) });
-      throw error;
-    } finally {
-      clearInterval(renewal);
-      await this.#lease.releaseLease(key, this.#owner).catch(() => undefined);
-    }
+  #tick(): Promise<TickOutcome<T>> {
+    return this.#exclusive(async (): Promise<TickOutcome<T>> => {
+      if (!(await this.#acquire())) return { ran: false, reason: 'lease-held' };
+      return this.#hold(async () => {
+        try {
+          return { ran: true, result: await this.#options.sweep() };
+        } catch (error) {
+          this.deps?.logger.warn(`${this.name} sweep failed`, { error: error instanceof Error ? error.message : String(error) });
+          throw error;
+        }
+      });
+    });
   }
 }
