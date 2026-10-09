@@ -265,9 +265,12 @@ is off, the rule does nothing.
    `beads` in the `[integrations]` line. If the GitHub App is not configured,
    the `[beads]` line is a warning and the integration does nothing.
 
-Agent sandboxes do not need bd. They never write beads data: the host is the
-only automated writer. A repository that wants agents to read beads can
-install bd in its per-repository setup command.
+Agent sandboxes do not need bd, and must not get it. Agents read and write
+beads through the `beads_*` tools, which run bd on the host (see
+[Agent tools and skill](#agent-tools-and-skill)), so the host stays the only
+automated writer. Do not install bd in a repository's setup command: the owner
+decided against bd in the sandbox, even read-only (samskara-e64), and bd 1.3.0
+has no setting that makes a sandbox copy read-only.
 
 ## Credentials
 
@@ -289,8 +292,10 @@ processes **only through their environment**
   URL-encoded forms.
 - The child gets an allowlisted environment (`runner.ts:28`). The server's
   other secrets do not reach bd.
-- Only the network commands (`bootstrap`, `dolt pull`, `sync`) receive the
-  token. Reads run with `--readonly` and without the token.
+- Only the network commands (`git clone`, `git ls-remote`, `bootstrap`,
+  `dolt pull`, `sync`, and `dolt push` for `beads_init`) receive the token.
+  Reads, including every agent-tool read, run with `--readonly` and without
+  the token. An agent never sees the token: tools run on the host.
 
 Two more settings go to every child process:
 
@@ -310,7 +315,10 @@ the lease `beads:writer` (`packages/factory-beads/src/worker.ts`). The worker is
 modelled on Factory's `IssueReconcileWorker`
 (`dist/integrations/issue-reconcile-worker.js:6-88`): an interval tick, the
 lease renewed at a third of its TTL, and the lease released after the tick. The
-Done rule's wake-up and `POST /web/beads/sync` use the same lease.
+Done rule's wake-up and `POST /web/beads/sync` use the same lease. Agent-tool
+calls take it too, through `BeadsSyncWorker.withLease`, which waits while
+another process holds it; an in-process mutex also keeps a tool call and a tick
+apart, because the no-op lease grants every acquire.
 
 The lease comes from the server's pubsub, resolved the same way as
 `issue-reconcile-worker.js:92-96`:
@@ -339,6 +347,115 @@ A database-row lease is not used as a fallback. On libSQL,
 `FactoryStorageOps.updateAtomic` runs inside a promise chain in one process
 (`@mastra/libsql` `dist/index.js:1395-1399`, `:14455`). It would not stop a
 second process.
+
+## Agent tools and skill
+
+Factory agents, the supervisor included, plan with beads and file them through
+nine tools the integration contributes (samskara-e64). There is no bd in the
+sandbox: each tool runs bd on the host's cached copy, under the `beads:writer`
+lease (option (b) of the 2026-10-08 design research, picked by the owner on
+2026-10-09).
+
+| Tool | bd | Writes |
+|---|---|---|
+| `beads_ready` | `bd --readonly ready --json` | no |
+| `beads_list` | `bd --readonly list --flat --brief --json` with filters | no |
+| `beads_show` | `bd --readonly show <id> --json` | no |
+| `beads_update` | `bd --sandbox update <id>` (title, description, design, acceptance, priority, status, `--append-notes`) | yes |
+| `beads_create` | `bd --sandbox create ... --validate` | yes |
+| `beads_dep_add` | `bd --sandbox dep add <issue> <depends-on> --type=<t>` | yes |
+| `beads_formula_list` | `bd --readonly formula list --json` | no |
+| `beads_pour` | `bd --sandbox mol pour <formula> --var=k=v ...` (`--dry-run` is a read) | yes |
+| `beads_init` | `git clone`, `bd init --prefix=<repo name> --skip-agents --skip-hooks`, `bd dolt push --yes` | yes |
+
+**How Factory sees them.** `FactoryIntegration.agentTools()`
+(`@mastra/factory` 0.20.0 `dist/integrations/base.d.ts:208-215`) is merged
+into the one async `extraTools` provider that serves every session
+(`dist/factory.js:519-596`; the integration loop is `:588-595`). The supervisor
+gets them too: the same provider serves it, and its tools sit beside the
+`factory_*` ones (`:550-586`). The project is resolved as Linear's tools do it
+(`dist/integrations/linear/agent-tools.js:69-83`): the controller's
+`factoryProjectId`, else its resource id, which for a supervisor is
+`factory-supervisor:<projectId>` (`dist/supervisor/session.js:4-16`). A caller
+from another org gets no tools. A project with no linked repository gets none.
+Code: `packages/factory-beads/src/integration.ts:288` (`agentTools`),
+`src/agent-tools.ts` (the tools), `src/tool-ops.ts` (host-side runs).
+
+**Rules the tools enforce.**
+
+- Every call, reads included, runs under the writer lease
+  (`worker.ts:171`, `withLease`). It waits while another process holds the
+  lease, up to 120 s by default (`toolLeaseWait`), then returns an error.
+  Reads take it because bd's embedded database has one writer, and a read that
+  overlaps a sweep's write in the same directory can fail on the lock.
+- Every write runs `bd dolt pull` first, then the command with `--sandbox`
+  (no auto-push), then `bd sync` (`tool-ops.ts:154`). A failed sync is
+  reported to the agent; the write stays on the host copy, and the next sweep
+  publishes it with `bd sync` instead of a pull (`integration.ts:591`).
+- Writes are signed `--actor factory-beads/agent`, so the bead history shows
+  which writes came from an agent.
+- No tool closes or deletes. `beads_update` refuses `closed` before bd runs
+  (`agent-tools.ts:284`); the only settable statuses are `open`,
+  `in_progress`, `blocked` and `deferred` (`:78`). bd itself would close
+  through `update --status=closed`, so the check has to be ours.
+- `beads_create` always passes `--validate` (`agent-tools.ts:336`) and
+  requires a description and a design. The type is checked first against
+  `bd types --json` (core types plus the repository's `types.custom`, and bd's
+  aliases `feat`, `enhancement`, `dec`, `adr`); an unknown type is refused with
+  the list (`:98-123`). Observed on bd 1.3.0: `--validate` refuses a type's
+  missing sections (`bd types --sections`); the `--acceptance` field satisfies
+  "Acceptance Criteria" and an epic's "Success Criteria", but a bug's "Steps
+  to Reproduce" must be a section of the description.
+- A repository the last sweep parked refuses writes until it is reset.
+- With more than one linked repository, `repository` (`owner/name`) is
+  required, and the error lists the choices.
+- Every value goes to bd as `--flag=value` and ids are checked against a
+  pattern, so no value can be read as a flag.
+- `beads_init` needs `confirm: true`, is refused when origin already has
+  `refs/dolt/data`, and runs `bd dolt push --yes` with
+  `DOLT_REMOTE_INFO_BRANCH` blank (the runner's setting). It then drops the
+  copy and the `no-beads-data` memory, so the next sweep bootstraps the
+  repository at once.
+- New beads become cards on the board's first phase like any other ready bead
+  and wait there for a person (the owner's 2026-10-09 decision); nothing
+  starts work on them automatically.
+
+Formulas come from bd's search path (`bd formula list --help`): the
+repository's `.beads/formulas/`, then `~/.beads/formulas/` of the user the
+server runs as. In the image that home has none, so only formulas committed
+to the repository are offered. The tool hides each formula's server path.
+
+**The skill.** `src/mastra/public/factory-skills/factory-beads/SKILL.md` is a
+Factory skill: Factory loads a project's own skills from
+`src/mastra/public/factory-skills`, `public/factory-skills` or
+`factory-skills` under the working directory, beside the bundled ones
+(`dist/workspace.js:23-35`, merged in `FactorySkillSource.readdir`, `:119-136`).
+It is named `factory-beads`, not `beads`, so it cannot collide with the
+`beads` skill a repository may carry in `.agents/skills`. It carries the
+owner's beads, commit and pull-request conventions. `mastra build` copies
+`src/mastra/public` into `.mastra/output` (`@mastra/deployer`
+`dist/bundler/index.js:250-258`, called at `:463`), the image copies
+`.mastra/output` to `/app` and runs from there, so the skill resolves at
+`/app/factory-skills`. Checked on the build output and on both dev working
+directories (the repository root and `src/mastra/public`): the merged list is
+the four bundled non-review skills plus `factory-beads`.
+
+**The supervisor loads no skills.** Its workspace factory returns before
+building a workspace (`dist/workspace.js:245-253`), and its playbook lives in
+code because "the supervisor session has no checkout to load skills from"
+(`dist/supervisor/instructions.js:1-4`). So the essential rules are also in the
+tool descriptions (`BEADS_AUTHORING_RULES`, `agent-tools.ts`).
+
+**Tests.** `test/agent-tools.test.ts` (fake bd): the tool set and the empty
+set, the supervisor resource id, `--readonly` reads without the token, create
+with `--validate` then sync with the token, validation and type rejection,
+aliases and custom types, no close, notes appended, dependencies, a failed
+publish picked up by the next sweep, a parked repository, the repository
+argument, the init flow, formula list and pour, and the lease: waiting, the
+timeout, and no overlap with a sweep in one process. `test/real-bd-tools.test.ts`
+runs a real bd (local-only, like `real-bd.test.ts`): init on a repository with
+no beads, a refused and an accepted create, a refused close, a note, and the
+sweep carding the new bead.
 
 ## Write-back failures
 
