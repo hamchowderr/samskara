@@ -2,8 +2,19 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { BEADS_META, beadsClaimKey, cacheDirFor, createBeadsDoneRule, descriptionBody, MAX_COMMENT_BODY } from '../src/index';
+import {
+  BEADS_META,
+  beadsClaimKey,
+  cacheDirFor,
+  createBeadsDoneRule,
+  descriptionBody,
+  FACTORY_REPOSITORY_META,
+  MAX_COMMENT_BODY,
+} from '../src/index';
 import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
+// Factory's own resolver, the one dispatch runs (rules/start-coordinator.js:80, routes/surface.js:159).
+import { resolveWorkItemRepository } from '@mastra/factory/session/work-item-repository';
+import type { SourceControlStorageHandle } from '@mastra/factory/storage/domains/source-control/base';
 import { createHarness, ORG, PROJECT, SLUG, sweep, TOKEN } from './harness';
 import type { Harness } from './harness';
 
@@ -358,5 +369,87 @@ describe('linked repositories', () => {
     await expect(handle.projectRepositories.list({ orgId: ORG, connectionId: 'conn_orphan' })).rejects.toThrow(
       'Project source-control connection not found for this organization and integration.',
     );
+  });
+});
+
+describe('repository on the card', () => {
+  const GADGETS = 'acme/gadgets';
+  /** Factory's resolver over the harness's source-control handle, for one card's metadata. */
+  const resolve = (harness: Harness, metadata: Record<string, unknown> | null) =>
+    resolveWorkItemRepository({
+      sourceControl: (harness.ctx.storage as unknown as { sourceControls: SourceControlStorageHandle[] }).sourceControls[0]!,
+      orgId: ORG,
+      factoryProjectId: PROJECT,
+      item: { metadata },
+    });
+  /** Link a second repository to the same project and connection. */
+  const linkGadgets = (harness: Harness) => {
+    harness.sourceControl.connections[0]!.repositoryIds.push('repo_2');
+    harness.sourceControl.repositories.set('repo_2', GADGETS);
+  };
+
+  it('single repository: the card names it, keeps beadsRepo, and resolves as before', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    await sweep(h.integration());
+    const card = cardFor(h, 'w-1');
+    expect(card.metadata).toMatchObject({ [FACTORY_REPOSITORY_META]: SLUG, [BEADS_META.repo]: SLUG });
+    expect(await resolve(h, card.metadata)).toEqual({ status: 'resolved', slug: SLUG, projectRepositoryId: 'conn_1:repo_1' });
+    // Before the field existed, the only linked repository was picked anyway.
+    expect(await resolve(h, { [BEADS_META.repo]: SLUG })).toEqual({ status: 'resolved', slug: SLUG, projectRepositoryId: 'conn_1:repo_1' });
+  });
+
+  it('two repositories in one project: each card resolves to its own repository, with no pick', async () => {
+    h = createHarness([
+      { id: 'w-1', title: 'Widget work', repo: SLUG },
+      { id: 'g-1', title: 'Gadget work', repo: GADGETS },
+    ]);
+    linkGadgets(h);
+    const summary = await sweep(h.integration());
+    expect(summary.repos).toEqual([
+      expect.objectContaining({ repo: SLUG, created: 1, state: 'ok' }),
+      expect.objectContaining({ repo: GADGETS, created: 1, state: 'ok' }),
+    ]);
+
+    const widget = cardFor(h, 'w-1');
+    const gadget = cardFor(h, 'g-1');
+    expect(widget.metadata).toMatchObject({ [FACTORY_REPOSITORY_META]: SLUG, [BEADS_META.repo]: SLUG });
+    expect(gadget.metadata).toMatchObject({ [FACTORY_REPOSITORY_META]: GADGETS, [BEADS_META.repo]: GADGETS });
+    expect(await resolve(h, widget.metadata)).toEqual({ status: 'resolved', slug: SLUG, projectRepositoryId: 'conn_1:repo_1' });
+    expect(await resolve(h, gadget.metadata)).toEqual({ status: 'resolved', slug: GADGETS, projectRepositoryId: 'conn_1:repo_2' });
+    // The instrument: a card naming only beadsRepo is what stops at the picker.
+    expect(await resolve(h, { [BEADS_META.repo]: SLUG })).toEqual({ status: 'ambiguous', candidates: [GADGETS, SLUG] });
+  });
+
+  it('back-fills a card made before the field, and corrects a wrong one, on the next sweep', async () => {
+    h = createHarness([
+      { id: 'w-1', title: 'One', repo: SLUG },
+      { id: 'w-2', title: 'Two', repo: SLUG },
+    ]);
+    linkGadgets(h);
+    const integration = h.integration();
+    await sweep(integration);
+    // As a card made by the previous version: no repository. And one moved on
+    // the board whose repository is not its bead's.
+    const old = h.workItems.items.find(i => i.metadata?.[BEADS_META.id] === 'w-1')!;
+    delete old.metadata![FACTORY_REPOSITORY_META];
+    const moved = h.workItems.items.find(i => i.metadata?.[BEADS_META.id] === 'w-2')!;
+    moved.metadata![FACTORY_REPOSITORY_META] = GADGETS;
+    h.workItems.move(moved.id, 'execute');
+    expect(await resolve(h, old.metadata)).toEqual({ status: 'ambiguous', candidates: [GADGETS, SLUG] });
+
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ repo: SLUG, created: 0, state: 'ok' });
+    for (const id of ['w-1', 'w-2']) {
+      const card = cardFor(h, id);
+      // Merged, not replaced: the beads keys are intact.
+      expect(card.metadata).toMatchObject({ [FACTORY_REPOSITORY_META]: SLUG, [BEADS_META.id]: id, [BEADS_META.repo]: SLUG });
+      expect(await resolve(h, card.metadata)).toEqual({ status: 'resolved', slug: SLUG, projectRepositoryId: 'conn_1:repo_1' });
+    }
+    expect(cardFor(h, 'w-2').stages).toEqual(['execute']);
+
+    // Already named: a further sweep writes nothing.
+    const revisions = h.workItems.beadCards().map(c => c.revision);
+    await sweep(integration);
+    expect(h.workItems.beadCards().map(c => c.revision)).toEqual(revisions);
   });
 });

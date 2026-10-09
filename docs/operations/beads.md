@@ -112,7 +112,7 @@ Restarting the server re-checks at once.
 | `externalSource` | `{ integrationId: 'beads', type: 'issue', externalId: <bead id> }` |
 | `claimKey` | `beads:<owner/name>:<bead id>` |
 | `title` | `<bead id>: <bead title>` |
-| `metadata` | `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state |
+| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state |
 
 Intake is idempotent. Before creating a card the integration looks it up by
 external source (`WorkItemsStorage.getByProjectSource`,
@@ -127,6 +127,45 @@ Cards are created with `workItems.upsert` and not with a rule decision.
 `upsert` is the call that `POST /web/factory/projects/:id/work-items` makes, and
 it accepts any external source. A card with an unknown source classifies as
 `manual` (`rules/types.d.ts:12`), so the board's `manual` rules apply to it.
+
+### Multi-repository factories: the card names its repository
+
+One factory can link several repositories. Mastra intends this: in a Mastra
+workshop, Abhi Aiyer (CTO) describes one factory holding all of a team's
+repositories as a supported option beside one factory per repository
+([workshop, 55:00](https://www.youtube.com/watch?v=PS15AyJfFNg&t=3300)), and
+mastra-ai/mastra#25116 added the repository picker and the stop for a card
+whose repository is ambiguous.
+
+`@mastra/factory` 0.20.0 picks a card's repository with
+`resolveWorkItemRepository` (`dist/session/work-item-repository.js:3-87`),
+called by dispatch (`dist/routes/surface.js:159`) and by the session start
+(`dist/rules/start-coordinator.js:80`). It reads, in order:
+
+1. `metadata.repository`, a string compared with `===` against the `slug`
+   (`owner/name`, case-sensitive) of every repository linked to the card's
+   project (`:31`, `:36-46`). No match is `unlinked`; it does not fall back.
+2. `metadata.githubRepositoryId` or `metadata.gitlabProjectId`, compared with
+   the repository's `externalId` (`:32-33`, `:47-58`).
+3. A Linear project mapping (`:34-35`, `:59-69`).
+4. Otherwise the single linked repository, or `ambiguous` with two or more
+   (`:70-86`). Ambiguous stops the card with "Choose a repository for this
+   work item" (`start-coordinator.js:88`) or "Choose one of the linked
+   repositories" (`surface.js:189`).
+
+Every beads card therefore sets `metadata.repository` to its repository's
+slug, taken from the same source-control `repositories` row the resolver
+reads, so it always matches. `beadsRepo` stays: the integration's own lookups
+use it. Cards made before this field are back-filled on the next sweep:
+each sweep updates any beads card of a repository whose `metadata.repository`
+is not that repository's slug. `workItems.update` merges metadata
+(`dist/storage/domains/work-items/base.js:379-382`), so only that key changes.
+The integration owns the key on its cards: a value set by hand is
+overwritten, because a bead belongs to its repository and is closed there.
+
+`githubRepositoryId` is not used: the GitHub integration's rules key on it
+(`dist/integrations/github/rules.js:100`, `acceptance-labels.js:12`) and would
+treat a beads card as a GitHub issue.
 
 ### What the agent sees
 
@@ -243,8 +282,9 @@ is off, the rule does nothing.
       write.
    4. The repository is linked to exactly **one** factory, in exactly **one**
       deployment ([one environment per repository](../setup/environments.md#one-environment-per-repository)).
-      In a factory with more than one repository, beads cards need a manual
-      repository pick; see [Limitations](#limitations).
+      A factory may link other repositories too: each beads card names its
+      own repository, so none needs a manual pick; see
+      [Multi-repository factories](#multi-repository-factories-the-card-names-its-repository).
    5. `GET /web/beads/status`, from a signed-in session, shows the repository
       with `state: "ok"` after the next tick (at most 15 minutes for a
       repository that was `no-beads-data`; restarting re-checks at once).
@@ -401,7 +441,9 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   epic exclusion; claim conflicts; ordering (B is carded only after A's card
   reaches Done and A is closed and synced); the lease; the description
   comment (one per card across sweeps and restarts, back-fill, no comment for
-  an empty description, no feed, a failing feed, truncation); and, in
+  an empty description, no feed, a failing feed, truncation); the card's
+  `repository` (one repository, two repositories in one project, back-fill),
+  checked with `@mastra/factory`'s real `resolveWorkItemRepository`; and, in
   `test/states.test.ts`, the on/off switch, both startup preconditions, the
   `no-beads-data` state across repeated sweeps and its re-check, and the
   status route. The harness remote carries `refs/dolt/data` unless a test
@@ -447,14 +489,10 @@ build never runs bd.
 - **The description reaches the agent live only in unit tests so far.** The
   feed path is native Mastra, but no planning run on a beads card has been
   checked end to end since this change.
-- **Beads cards cannot choose a repository in a multi-repository factory
-  (`samskara-srl`).** `@mastra/factory` 0.20.0 resolves a card's repository
-  from `metadata.repository`, then `githubRepositoryId`, then a Linear mapping
-  (`dist/session/work-item-repository.js:3-90`). Beads cards set only
-  `metadata.beadsRepo`, so in a factory with two or more linked repositories
-  every beads card stops with "Choose a repository for this work item"
-  (`dist/rules/start-coordinator.js:87-88`) until a person picks one. A factory
-  with one repository is not affected.
+- **Multi-repository start is proven by unit tests only (`samskara-srl`).**
+  The tests run Mastra's own `resolveWorkItemRepository` on the cards the
+  integration makes; no beads card has yet been started live in a factory
+  with two linked repositories.
 - **Client repositories have not been exercised.** Each needs the App
   installed, `refs/dolt/data` on `origin`, and the
   `DOLT_REMOTE_INFO_BRANCH` setting described above.
