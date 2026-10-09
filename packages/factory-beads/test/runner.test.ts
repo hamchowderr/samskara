@@ -24,6 +24,12 @@ describe('childEnv', () => {
     expect(env[TOKEN_ENV]).toBeUndefined();
   });
 
+  it('turns off bd usage metrics and the detached uploader, whatever else is passed', () => {
+    const env = childEnv({ actor: 'a', extra: { BD_DISABLE_METRICS: '0', BD_DISABLE_EVENT_FLUSH: '0' } });
+    expect(env.BD_DISABLE_METRICS).toBe('1');
+    expect(env.BD_DISABLE_EVENT_FLUSH).toBe('1');
+  });
+
   it("does not hand the server's environment to bd", () => {
     process.env.FAKE_SERVER_SECRET = 'server-only';
     try {
@@ -57,6 +63,8 @@ describe('BdRunner', () => {
   it('a full sweep never puts the token in any argv or leaks server env', async () => {
     const h = createHarness([{ id: 'w-a', title: 'A' }]);
     process.env.FAKE_SERVER_SECRET = 'server-only';
+    // The server's own setting must not turn bd's metrics back on.
+    process.env.BD_DISABLE_METRICS = '0';
     try {
       const integration = h.integration();
       await sweep(integration);
@@ -68,12 +76,14 @@ describe('BdRunner', () => {
         expect(call.argv.join(' ')).not.toContain(TOKEN);
         expect(call.env.remoteInfoBranch).toBe('');
         expect(call.env.serverSecret).toBeNull();
+        expect(call.env.metrics).toEqual(['1', '1']);
       }
       // Only the network commands carry the credential.
       const withToken = calls.filter(c => c.env.token === TOKEN).map(c => c.argv.filter(a => !a.startsWith('-'))[0]);
       expect(new Set(withToken)).toEqual(new Set(['bootstrap', 'dolt', 'sync']));
     } finally {
       delete process.env.FAKE_SERVER_SECRET;
+      delete process.env.BD_DISABLE_METRICS;
       h.cleanup();
     }
   });

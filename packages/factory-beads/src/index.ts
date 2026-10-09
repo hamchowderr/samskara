@@ -24,5 +24,23 @@ export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runn
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
 export { BdRepo, cacheDirFor } from './repo';
 export type { ReadyBead } from './repo';
-export { BeadsSyncWorker } from './worker';
-export type { LeaseSource, TickOutcome } from './worker';
+export { BeadsSyncWorker, LeaseWaitTimeoutError } from './worker';
+export type { LeaseSource, TickOutcome, WithLeaseOptions } from './worker';
+export {
+  BEADS_AUTHORING_RULES,
+  CORE_ISSUE_TYPES,
+  DEPENDENCY_TYPES,
+  SETTABLE_STATUSES,
+  checkIssueType,
+  checkPourableFormula,
+  createBeadsTools,
+  deferredAttachments,
+  formulaReferences,
+  initPrefix,
+  isInside,
+  pickRepository,
+  resolveToolProject,
+} from './agent-tools';
+export type { ToolScope } from './agent-tools';
+export { BeadsToolError, BeadsToolOps } from './tool-ops';
+export type { BeadsToolOpsDeps, ToolRepo, WriteOutcome } from './tool-ops';

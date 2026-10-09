@@ -81,6 +81,11 @@ RUN apt-get update \
 
 COPY --from=infisical-cli /usr/bin/infisical /usr/local/bin/infisical
 COPY --from=bd-cli /usr/local/bin/bd /usr/local/bin/bd
+# bd sends anonymous usage metrics unless told not to. The integration's runner
+# already turns them off for every bd call it makes; these cover a bd started by
+# hand in the container (docker exec). See docs/operations/beads.md.
+ENV BD_DISABLE_METRICS=1 \
+    BD_DISABLE_EVENT_FLUSH=1
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # Strip CRLF: a Windows checkout would otherwise break the shebang.

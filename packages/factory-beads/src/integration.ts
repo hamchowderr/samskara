@@ -30,21 +30,25 @@
 import { registerApiRoute } from '@mastra/core/server';
 import type { ApiRoute } from '@mastra/core/server';
 import type { LeaseProvider } from '@mastra/core/events';
+import type { RequestContext } from '@mastra/core/request-context';
 import type { MastraWorker } from '@mastra/core/worker';
 import type { VersionControl } from '@mastra/factory/capabilities/version-control';
-import type { FactoryIntegration, IntegrationContext } from '@mastra/factory/integrations/base';
+import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createBeadsTools, resolveToolProject } from './agent-tools';
+import type { ToolScope } from './agent-tools';
 import { registerLive } from './done-rule';
 import { BdRepo, cacheDirFor, resultTail } from './repo';
 import type { ReadyBead } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
+import { BeadsToolOps } from './tool-ops';
 import { BeadsSyncWorker } from './worker';
-import type { TickOutcome } from './worker';
+import type { TickOutcome, WithLeaseOptions } from './worker';
 
 export const BEADS_INTEGRATION_ID = 'beads';
 
@@ -121,6 +125,11 @@ export interface BeadsIntegrationOptions {
    * reported as `no-beads-data`, not as an error.
    */
   remoteCheckIntervalMs?: number;
+  /**
+   * How long an agent tool waits for the writer lease while another process
+   * holds it. Default 120 s, polled every 1 s.
+   */
+  toolLeaseWait?: WithLeaseOptions;
   logger?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -198,6 +207,14 @@ export class BeadsIntegration implements FactoryIntegration {
   #idle: string | undefined;
   /** Repositories last seen without refs/dolt/data, by slug: when origin was checked. */
   readonly #noData = new Map<string, number>();
+  /** Repositories (slug) with an agent-tool write committed on the host copy but not yet on origin. */
+  readonly #unpublished = new Set<string>();
+  #toolOps: BeadsToolOps | undefined;
+  /** Linked repositories per project for agentTools, which Factory resolves on every request. */
+  readonly #scopeCache = new Map<string, { at: number; repos: ToolScope['repos'] }>();
+  #toolsFailureLogged = false;
+  /** Repositories parked by an agent-write conflict whose reset was requested (POST /web/beads/reset). */
+  readonly #resetRepos = new Set<string>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -282,11 +299,86 @@ export class BeadsIntegration implements FactoryIntegration {
     return this.#last;
   }
 
-  async #linkedRepos(ctx: IntegrationContext): Promise<LinkedRepo[]> {
+  /**
+   * Beads tools for the requesting session's project (samskara-e64): read,
+   * create, update, link, init and pour, run on the host copy under the
+   * writer lease. See agent-tools.ts. Nothing for a request that is not a
+   * Factory session, a project with no linked repository, or before the
+   * worker exists. `beads_init` only for the supervisor (owner decision).
+   *
+   * Never throws. Factory merges every integration's tools into one
+   * `extraTools` provider (@mastra/factory 0.20.0 dist/factory.js:588-595) and
+   * the SDK awaits it without a catch (@mastra/code-sdk
+   * dist/agents/tools.js:120-122), so an error here would take every tool
+   * away from every session. A failure logs once and offers no beads tools.
+   */
+  async agentTools({ requestContext }: { requestContext: RequestContext }): Promise<IntegrationTools> {
+    try {
+      const ctx = this.#ctx;
+      if (!ctx?.runtime || !this.#worker) return {};
+      const project = await resolveToolProject(requestContext, ctx.storage.projects);
+      if (!project) return {};
+      const key = `${project.orgId}:${project.projectId}`;
+      let cached = this.#scopeCache.get(key);
+      if (!cached || Date.now() - cached.at > 30_000) {
+        const repos = (await this.#linkedRepos(ctx, project.projectId)).map(r => ({ repositoryId: r.repositoryId, slug: r.slug }));
+        cached = { at: Date.now(), repos };
+        this.#scopeCache.set(key, cached);
+      }
+      this.#toolsFailureLogged = false;
+      return createBeadsTools(this.#tools(), {
+        orgId: project.orgId,
+        projectId: project.projectId,
+        supervisor: project.supervisor,
+        repos: cached.repos,
+      });
+    } catch (error) {
+      if (!this.#toolsFailureLogged) {
+        this.#toolsFailureLogged = true;
+        this.#log.warn(
+          `[factory-beads] agent tools unavailable for this request: ${error instanceof Error ? error.message : String(error)}. Other tools are unaffected; logged once until it recovers.`,
+        );
+      }
+      return {};
+    }
+  }
+
+  #tools(): BeadsToolOps {
+    const worker = this.#worker;
+    this.#toolOps ??= new BeadsToolOps({
+      runner: this.#runner,
+      versionControl: this.#options.sourceControl.versionControl,
+      withLease: worker ? (fn, options) => worker.withLease(fn, options) : undefined,
+      repoFor: (slug, cloneUrl) => this.#repo(slug, cloneUrl),
+      forget: async slug => {
+        // The directory may predate this process, so drop it by path.
+        await (this.#repos.get(slug) ?? new BdRepo(slug, cacheDirFor(this.#cacheRoot, slug), '', this.#runner)).discard();
+        this.#repos.delete(slug);
+        this.#noData.delete(slug);
+      },
+      hasBeadsData: (cloneUrl, credentials) => this.#hasBeadsData(cloneUrl, credentials),
+      repoState: (orgId, slug) => this.#last?.repos.find(r => r.orgId === orgId && r.repo === slug)?.state,
+      idleReason: () => this.#checkPreconditions(),
+      markUnpublished: (slug, unpublished) => {
+        if (unpublished) this.#unpublished.add(slug);
+        else this.#unpublished.delete(slug);
+      },
+      kick: () => this.kick(),
+      syncRetry: this.#options.syncRetry,
+      leaseWait: this.#options.toolLeaseWait,
+    });
+    return this.#toolOps;
+  }
+
+  /** Every linked repository, or only `projectId`'s. */
+  async #linkedRepos(ctx: IntegrationContext, projectId?: string): Promise<LinkedRepo[]> {
     const handle = ctx.storage.sourceControls.find(h => h.integrationId === this.#options.sourceControl.id);
     if (!handle) return [];
     const out: LinkedRepo[] = [];
-    for (const project of await ctx.storage.projects.listAll()) {
+    const projects = projectId
+      ? [await ctx.storage.projects.getById({ id: projectId })].filter(p => p !== null && p !== undefined)
+      : await ctx.storage.projects.listAll();
+    for (const project of projects) {
       for (const connection of await handle.connections.list({ orgId: project.orgId, factoryProjectId: project.id })) {
         // connections.list only checks the project's org, so it also returns a
         // connection whose installation is gone (pruned: samskara-1ra).
@@ -425,10 +517,13 @@ export class BeadsIntegration implements FactoryIntegration {
     // An operator asked for a reset (POST /web/beads/reset): drop the local
     // copy, which the next step re-bootstraps from the remote — that holds only
     // what was published — and release the parked cards for write-back again.
-    // Done here, under the writer lease, not in the route.
-    if (cards.some(item => item.metadata?.[BEADS_META.writeback] === 'reset-requested')) {
+    // Done here, under the writer lease, not in the route. A repository parked
+    // by an agent-tool write (no card involved) is reset the same way.
+    const resetRepo = this.#resetRepos.delete(slug);
+    if (resetRepo || cards.some(item => item.metadata?.[BEADS_META.writeback] === 'reset-requested')) {
       await this.#repo(slug, cloneUrl).discard();
       this.#repos.delete(slug);
+      this.#unpublished.delete(slug);
       for (const [index, item] of cards.entries()) {
         if (item.metadata?.[BEADS_META.writeback] !== 'reset-requested') continue;
         cards[index] = await this.#mark(orgId, item, {
@@ -455,6 +550,13 @@ export class BeadsIntegration implements FactoryIntegration {
     if (conflicted.length > 0) {
       report.state = 'parked';
       report.diagnostic = `bd sync conflict on ${conflicted.map(c => c.metadata?.[BEADS_META.id]).join(', ')}; resolve it, then POST /web/beads/reset`;
+      return;
+    }
+    // Same for a conflict after an agent-tool write: the copy carries the marker.
+    const parkedReason = this.#repo(slug, cloneUrl).parkedReason();
+    if (parkedReason) {
+      report.state = 'parked';
+      report.diagnostic = `${parkedReason}; resolve it, then POST /web/beads/reset`;
       return;
     }
 
@@ -518,6 +620,8 @@ export class BeadsIntegration implements FactoryIntegration {
       if (closed.length > 0) {
         const sync = await this.#syncWithRetry(repo, credentials);
         if (sync.code === 0) {
+          // The same sync published any agent-tool write waiting here.
+          this.#unpublished.delete(slug);
           for (const item of closed) {
             await this.#mark(orgId, item, {
               [BEADS_META.writeback]: 'synced' satisfies WritebackState,
@@ -546,6 +650,23 @@ export class BeadsIntegration implements FactoryIntegration {
           report.state = 'error';
           report.diagnostic = `bd sync exit ${sync.code}: ${resultTail(sync, 300)}`;
         }
+      }
+    } else if (this.#unpublished.has(slug)) {
+      // An agent-tool write is committed here but its own `bd sync` failed:
+      // publish it now. A pull alone would never push it.
+      const sync = await this.#syncWithRetry(repo, credentials);
+      if (sync.code === 0) this.#unpublished.delete(slug);
+      else if (sync.code === 2 || sync.code === 4) {
+        // Never retried, as for write-back: park until an operator resets.
+        const diagnostic = `bd sync exit ${sync.code} publishing an agent write: ${resultTail(sync, 600)}`;
+        await repo.park(diagnostic);
+        this.#unpublished.delete(slug);
+        report.state = 'parked';
+        report.diagnostic = `${diagnostic}; resolve it, then POST /web/beads/reset`;
+        return;
+      } else {
+        report.state = 'error';
+        report.diagnostic = `bd sync exit ${sync.code} (publishing an agent write): ${resultTail(sync, 300)}`;
       }
     } else {
       const pull = await repo.pull(credentials);
@@ -685,7 +806,14 @@ export class BeadsIntegration implements FactoryIntegration {
     const runtime = this.#ctx?.runtime;
     if (!runtime) return { flagged: 0 };
     let flagged = 0;
-    for (const project of (await this.#linkedRepos(this.#ctx!)).filter(r => r.orgId === orgId && r.slug === slug)) {
+    const linked = (await this.#linkedRepos(this.#ctx!)).filter(r => r.orgId === orgId && r.slug === slug);
+    // Parked by an agent-tool write: the marker is in the copy, not on a card.
+    // Counted as one; the worker drops the copy (and the marker) under the lease.
+    if (linked.length > 0 && new BdRepo(slug, cacheDirFor(this.#cacheRoot, slug), '', this.#runner).parkedReason()) {
+      this.#resetRepos.add(slug);
+      flagged++;
+    }
+    for (const project of linked) {
       for (const item of await runtime.workItems.list({ orgId, factoryProjectId: project.projectId })) {
         const state = item.metadata?.[BEADS_META.writeback];
         if (item.metadata?.[BEADS_META.repo] !== slug || (state !== 'conflict' && state !== 'close-failed')) continue;

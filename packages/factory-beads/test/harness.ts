@@ -44,7 +44,14 @@ export interface FakeState {
   calls: Array<{
     argv: string[];
     cwd: string;
-    env: { token: string | null; remoteInfoBranch: string | null; gitConfig: Record<string, string>; serverSecret: string | null };
+    env: {
+      token: string | null;
+      remoteInfoBranch: string | null;
+      /** [BD_DISABLE_METRICS, BD_DISABLE_EVENT_FLUSH] as the fake bd saw them. */
+      metrics: [string | null, string | null];
+      gitConfig: Record<string, string>;
+      serverSecret: string | null;
+    };
   }>;
 }
 
