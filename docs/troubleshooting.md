@@ -116,13 +116,16 @@ connected, and pick its model. See
 
 The factory has more than one linked repository and the card does not say which
 one it is for. `@mastra/factory` 0.20.0 stops rather than picking one
-(`dist/routes/surface.js:189`, `dist/rules/start-coordinator.js:87-88`). Choose
+(`dist/routes/surface.js:189`, `dist/rules/start-coordinator.js:88`). Choose
 the repository on the card and start it again.
 
-Beads cards hit this on every run in a multi-repository factory, because the
-integration does not yet set the repository field the Factory reads
-(`samskara-srl`). Link one repository per factory where beads matters. See
-[operations/beads.md](operations/beads.md#limitations).
+Beads cards name their repository in `metadata.repository`, and the next sweep
+back-fills cards made before that. A beads card that still stops here has not
+been swept since the upgrade: `POST /web/beads/sync` runs a sweep now. A card
+naming a repository that is not linked stops with "Repository <owner/name> is
+not linked to this Factory" instead (`dist/session/work-item-repository.js:44`).
+See
+[operations/beads.md](operations/beads.md#multi-repository-factories-the-card-names-its-repository).
 
 ## No beads cards appear
 

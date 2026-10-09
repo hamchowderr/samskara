@@ -194,10 +194,10 @@ A second attempt returns `board_already_assigned` (`dist/routes/work-items.js:55
 The board UI is gated on the project having a linked repository. That gate wraps
 the generic board renderer, so a custom board does not escape it.
 
-A factory with two or more linked repositories needs a repository chosen for
-each run: `routes/surface.js:189` throws `source_repository_ambiguous` rather
-than picking one, and a board run stops with "Choose a repository for this
-work item" (`rules/start-coordinator.js:87-88`).
+In a factory with two or more linked repositories, a card that does not name
+its repository needs one chosen for each run: `routes/surface.js:189` throws
+`source_repository_ambiguous` rather than picking one, and a board run stops
+with "Choose a repository for this work item" (`rules/start-coordinator.js:88`).
 See [operations/upgrading.md](operations/upgrading.md#behaviour-changes-in-0200).
-Beads cards cannot choose one yet (`samskara-srl`); see
-[operations/beads.md](operations/beads.md#limitations).
+Beads cards name theirs in `metadata.repository`, so they need no pick; see
+[operations/beads.md](operations/beads.md#multi-repository-factories-the-card-names-its-repository).

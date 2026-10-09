@@ -155,9 +155,10 @@ not show. Each item below was checked against the installed package.
   `openPullRequestNumber` is set; the merge clears it.
 - **Multi-repo runs stop when the repository is ambiguous (#25116).**
   `routes/surface.js:189` throws `source_repository_ambiguous` instead of
-  picking one. A project with more than one linked repository needs the
-  repository chosen. Beads cards cannot carry that choice yet
-  (`samskara-srl`; [beads.md](beads.md#limitations)).
+  picking one. In a project with more than one linked repository, a card
+  that does not name its repository needs it chosen. Beads cards name it
+  (`metadata.repository`, `samskara-srl`;
+  [beads.md](beads.md#multi-repository-factories-the-card-names-its-repository)).
 - **Tenant subagents no longer fall back to server env keys (code-sdk 1.9.0,
   #25482).** With a tenant credential store registered, provider keys come
   from the org or user store only (`agents/credential-resolver.js`). A key

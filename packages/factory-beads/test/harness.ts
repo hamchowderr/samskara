@@ -32,6 +32,8 @@ export interface FakeBead {
   description?: string;
   blockedBy?: string[];
   closeReason?: string | null;
+  /** Only this repository's copy lists the bead (slug). Unset: every linked repository does. */
+  repo?: string;
 }
 
 export interface FakeState {
@@ -106,7 +108,7 @@ export class MemoryWorkItems {
   async update({ orgId, id, patch }: { orgId: string; id: string; userId: string; patch: { stages?: string[]; metadata?: Record<string, unknown> | null } }) {
     const item = this.items.find(i => i.orgId === orgId && i.id === id);
     if (!item) return null;
-    // Same merge as WorkItemsStorage.applyUpdate (work-items/base.js:381-384).
+    // Same merge as WorkItemsStorage.applyUpdate (work-items/base.js:379-382).
     if (patch.metadata !== undefined) item.metadata = patch.metadata === null ? null : { ...(item.metadata ?? {}), ...patch.metadata };
     if (patch.stages) item.stages = patch.stages;
     item.revision++;
@@ -249,6 +251,9 @@ export function createHarness(beads: FakeBead[]): Harness {
   // storage/domains/source-control/base.js): connections.list does not check the
   // installation, connections.get returns null without it, and
   // projectRepositories.list throws SourceControlConnectionNotFoundError.
+  // Rows carry the fields Factory's own resolveWorkItemRepository reads
+  // (session/work-item-repository.js:11-27): a connection's integrationId, a
+  // link's id, a repository's externalId and slug.
   const liveConnection = (id: string) => {
     const c = sourceControl.connections.find(x => x.id === id);
     return c && sourceControl.installations.has(c.installationId) ? c : null;
@@ -257,7 +262,9 @@ export function createHarness(beads: FakeBead[]): Harness {
     integrationId: 'github',
     connections: {
       list: async ({ factoryProjectId }: { factoryProjectId: string }) =>
-        sourceControl.connections.filter(c => c.factoryProjectId === factoryProjectId).map(c => ({ id: c.id })),
+        sourceControl.connections
+          .filter(c => c.factoryProjectId === factoryProjectId)
+          .map(c => ({ id: c.id, integrationId: 'github' })),
       get: async ({ id }: { id: string }) => {
         const c = liveConnection(id);
         return c ? { id: c.id } : null;
@@ -267,13 +274,13 @@ export function createHarness(beads: FakeBead[]): Harness {
       list: async ({ connectionId }: { connectionId: string }) => {
         const c = liveConnection(connectionId);
         if (!c) throw new SourceControlConnectionNotFoundError();
-        return c.repositoryIds.map(repositoryId => ({ repositoryId }));
+        return c.repositoryIds.map(repositoryId => ({ id: `${c.id}:${repositoryId}`, repositoryId }));
       },
     },
     repositories: {
       get: async ({ id }: { id: string }) => {
         const slug = sourceControl.repositories.get(id);
-        return slug ? { id, slug } : null;
+        return slug ? { id, slug, externalId: `gh_${id}` } : null;
       },
     },
   };

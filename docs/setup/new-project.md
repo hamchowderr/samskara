@@ -41,18 +41,22 @@ If a second instance must see a repository that another instance owns, set
 `BEADS_INTEGRATION=0` on that instance.
 
 Then decide how the factory maps to repositories. A factory can link more than
-one repository, with two costs in `@mastra/factory` 0.20.0:
+one repository; Mastra intends this (mastra-ai/mastra#25116, and the
+[workshop at 55:00](https://www.youtube.com/watch?v=PS15AyJfFNg&t=3300)). In
+`@mastra/factory` 0.20.0 a card in a multi-repository factory must name its
+repository, or it stops with `source_repository_ambiguous` or "Choose a
+repository for this work item" until a person picks one
+(`dist/routes/surface.js:189`, `dist/rules/start-coordinator.js:88`):
 
-- every board run in a multi-repository factory needs its repository chosen; an
-  unchosen one stops with `source_repository_ambiguous` or "Choose a repository
-  for this work item" (`dist/routes/surface.js:189`,
-  `dist/rules/start-coordinator.js:87-88`);
-- beads cards cannot carry that choice yet (`samskara-srl`), so in a
-  multi-repository factory every beads card needs a person to pick its
-  repository.
+- GitHub issue cards name it (`githubRepositoryId`,
+  `dist/integrations/github/default-rules.js:56`), and so do beads cards
+  (`metadata.repository`; see
+  [operations/beads.md](../operations/beads.md#multi-repository-factories-the-card-names-its-repository));
+- a card that names none, such as one created by hand without a repository,
+  needs the pick.
 
-One factory per repository avoids both. Use several repositories in one factory
-only when one board for all of them is worth that.
+One factory per repository avoids the pick entirely. Several repositories in
+one factory give one board for all of them.
 
 **Verify:** you can name the environment, the factory and the repositories, and
 none of those repositories is linked in the other environment.
