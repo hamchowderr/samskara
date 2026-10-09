@@ -73,7 +73,7 @@ App:
      its lease: a live holder restores it on its next `bd heartbeat`, but an
      abandoned claim then has no stale lease for `bd reclaim` to find.
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
-4. **Intake.** `bd --readonly ready --json --exclude-type=epic -n 0`, then one
+4. **Intake.** `bd --readonly ready --json --exclude-type=epic,milestone -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed
    (`integration.ts:651-696`). See [What the agent sees](#what-the-agent-sees).
 
@@ -85,8 +85,12 @@ links still sweep. `connections.list` returns such a connection, but
 `:510-515`), so the integration first checks it with `connections.get`, which
 applies the same test and returns `null`.
 
-Epics are excluded because `bd ready` lists an unblocked epic beside its first
-child. Epics are containers, not work.
+Epics and milestones are excluded because they are containers, not work, and
+`bd ready` lists both (an unblocked epic appears beside its first child).
+Pinned beads, gates and workflow roots (`molecule`) bd ready already leaves
+out (bd v1.3.1 `internal/storage/sqlbuild/ready.go`: types at `:16-38`, the
+status filter at `:113`, the pinned flag at `:117`). Epics and
+milestones as parent cards is planned (samskara-l2t.2).
 
 ### Startup preconditions
 
@@ -709,7 +713,7 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   (`test/fixtures/fake-bd.mjs`) and an in-memory work-item store test the
   following: the token never appears in argv; the server environment does not
   reach bd; exit codes 2 and 3; idempotent intake across sweeps and restarts;
-  epic exclusion; claim conflicts; ordering (B is carded only after A's card
+  epic, milestone and pinned exclusion; claim conflicts; ordering (B is carded only after A's card
   reaches Done and A is closed and synced); the lease; the description
   comment (one per card across sweeps and restarts, back-fill, no comment for
   an empty description, no feed, a failing feed, truncation); the card's

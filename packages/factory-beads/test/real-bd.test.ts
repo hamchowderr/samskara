@@ -55,6 +55,10 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     ids.alpha = run('bd', ['create', 'Alpha', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
     ids.beta = run('bd', ['create', 'Beta', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
     ids.epic = run('bd', ['create', 'Epic', '-t', 'epic', '--silent']).split(/\r?\n/)[0]!;
+    // Containers and pinned beads must never become cards (samskara-l2t.1).
+    run('bd', ['create', 'Milestone', '-t', 'milestone', '--silent']);
+    const pinned = run('bd', ['create', 'Pinned', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    run('bd', ['update', pinned, '--status', 'pinned']);
     run('bd', ['dep', 'add', ids.beta, ids.alpha]);
     // Held by someone else: bd refuses a close by any other actor (samskara-l2t.13).
     run('bd', ['update', ids.alpha, '--assignee', 'someone']);

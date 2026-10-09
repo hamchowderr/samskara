@@ -117,12 +117,13 @@ switch (words[0]) {
     if (code) err = `pull failed; token was ${process.env.BEADS_GIT_TOKEN}`;
     break;
   case 'ready': {
-    const excludeEpic = flags.includes('--exclude-type=epic');
+    const excluded = flagValues('exclude-type').flatMap(v => v.split(','));
     // A bead with `repo` is listed only by that repository's copy, whose cache
     // directory is named after the slug (cacheDirFor in src/repo.ts).
     const inThisRepo = b => !b.repo || process.cwd().endsWith(b.repo.replace(/[^A-Za-z0-9._-]/g, '__'));
     const ready = state.beads.filter(
-      b => inThisRepo(b) && isOpen(b) && !blocked(b) && !(excludeEpic && b.issue_type === 'epic'),
+      // Like bd 1.3.1: pinned beads are never ready (sqlbuild/ready.go:117).
+      b => inThisRepo(b) && isOpen(b) && b.status !== 'pinned' && !blocked(b) && !excluded.includes(b.issue_type),
     );
     // Like bd 1.3.0: --brief drops the free-form text, and an empty
     // description is omitted from the row either way.
