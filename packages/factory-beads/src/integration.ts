@@ -599,11 +599,12 @@ export class BeadsIntegration implements FactoryIntegration {
       const closed: WorkItemRow[] = [];
       for (const item of pending) {
         const beadId = String(item.metadata?.[BEADS_META.id]);
-        if ((await repo.status(beadId)) === 'closed') {
+        const bead = await repo.show(beadId);
+        if (bead?.status === 'closed') {
           closed.push(item);
           continue;
         }
-        const res = await repo.close(beadId, this.#closeReason(item));
+        const res = await repo.close(beadId, this.#closeReason(item), bead?.assignee);
         if (res.code === 0) {
           closed.push(item);
           continue;
@@ -611,11 +612,11 @@ export class BeadsIntegration implements FactoryIntegration {
         const attempts = Number(item.metadata?.[BEADS_META.closeAttempts] ?? 0) + 1;
         await this.#mark(orgId, item, {
           [BEADS_META.closeAttempts]: attempts,
-          [BEADS_META.diagnostic]: `bd close exit ${res.code}: ${resultTail(res, 300)}`,
+          [BEADS_META.diagnostic]: `write-back exit ${res.code}: ${resultTail(res, 300)}`,
           ...(attempts >= maxAttempts ? { [BEADS_META.writeback]: 'close-failed' satisfies WritebackState } : {}),
         });
         report.state = 'error';
-        report.diagnostic = `bd close ${beadId} exit ${res.code}`;
+        report.diagnostic = `write-back of ${beadId} exit ${res.code}`;
       }
       if (closed.length > 0) {
         const sync = await this.#syncWithRetry(repo, credentials);

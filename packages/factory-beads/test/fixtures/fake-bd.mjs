@@ -153,6 +153,9 @@ switch (words[0]) {
     if (!bead || state.closeFail.includes(words[1])) {
       code = 1;
       err = `cannot close ${words[1]}`;
+    } else if (bead.status === 'pinned' && !flags.includes('--force')) {
+      code = 1;
+      err = `cannot modify pinned issue ${words[1]} (use --force to override)`;
     } else if (bead.assignee && bead.assignee !== actor && !flags.includes('--force')) {
       // Like bd 1.3.1 (validation.AssigneeMatches): only the holder may close.
       code = 1;
@@ -227,7 +230,15 @@ switch (words[0]) {
       err = `assignee mismatch: ${bead.id} is held by "${bead.assignee ?? ''}", expected "${expected}"`;
       break;
     }
-    if (flagValue('assignee') !== undefined) bead.assignee = flagValue('assignee');
+    // Like bd 1.3.1: a plain reassign of someone's live in_progress claim needs
+    // --force; the compare-and-swap form (--if-assignee) takes it over.
+    const next = flagValue('assignee');
+    if (next !== undefined && expected === undefined && bead.status === 'in_progress' && bead.assignee && bead.assignee !== next && !flags.includes('--force')) {
+      code = 1;
+      err = `cannot reassign ${bead.id}: held by "${bead.assignee}" (in_progress); pass --force only if their claim is abandoned`;
+      break;
+    }
+    if (next !== undefined) bead.assignee = next;
     const note = flagValue('append-notes');
     if (note !== undefined) bead.notes = bead.notes ? `${bead.notes}\n${note}` : note;
     out = JSON.stringify([bead]);

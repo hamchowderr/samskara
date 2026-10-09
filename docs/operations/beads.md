@@ -61,9 +61,15 @@ App:
    a bead assigned to anyone but the closing actor, so a bead someone holds is
    first handed over with `bd update <id> --assignee=factory-beads
    --if-assignee=<holder>` (`repo.ts`, `BdRepo.close`). That swap fails with
-   exit 13 if the holder changed in between. The integration never uses
-   `--force`, which would also override bd's refusals for pinned beads, open
-   gates, open children and open blockers.
+   exit 13 if the holder changed in between.
+   - **A live claim does not stop it.** The swap also takes over a bead
+     someone claimed (`in_progress`), which a plain reassign refuses without
+     `--force`. This is the owner's decision (2026-10-09): a card reaching
+     Done closes its bead even while someone holds a claim.
+   - **Every other refusal does.** The integration never passes `--force`, so
+     bd still refuses to close a pinned bead, an open gate, a bead with open
+     children or open blockers. When it does, the bead is swapped back to its
+     holder, and the card's diagnostic says so.
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
 4. **Intake.** `bd --readonly ready --json --exclude-type=epic -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed

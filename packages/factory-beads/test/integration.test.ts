@@ -326,6 +326,45 @@ describe('write-back and ordering', () => {
     expect(diagnostic).toContain('handing w-a over from "alice" failed');
   });
 
+  it("closes a bead under someone's live claim (owner decision: Done wins)", async () => {
+    h = createHarness([{ id: 'w-a', title: 'A', status: 'in_progress', assignee: 'alice' }]);
+    const integration = h.integration();
+    // in_progress is not ready, so card it first as open, then claim it.
+    h.setState(s => (s.beads[0]!.status = 'open'));
+    await sweep(integration);
+    h.setState(s => (s.beads[0]!.status = 'in_progress'));
+    h.workItems.move(cardFor(h, 'w-a').id, 'done');
+
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads[0]).toMatchObject({ status: 'closed', assignee: 'factory-beads' });
+    expect(h.state().calls.some(c => c.argv.includes('--force'))).toBe(false);
+  });
+
+  it('a close bd refuses after the handover returns the bead to its holder', async () => {
+    h = createHarness([{ id: 'w-a', title: 'A', assignee: 'alice' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.setState(s => (s.beads[0]!.status = 'pinned'));
+    h.workItems.move(cardFor(h, 'w-a').id, 'done');
+
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'error', closed: 0 });
+    expect(h.state().beads[0]).toMatchObject({ status: 'pinned', assignee: 'alice' });
+    const diagnostic = String(cardFor(h, 'w-a').metadata?.beadsDiagnostic);
+    expect(diagnostic).toContain('cannot modify pinned issue w-a');
+    expect(diagnostic).toContain('returned to "alice"');
+  });
+
+  it('reads each pending bead once per sweep', async () => {
+    h = createHarness([{ id: 'w-a', title: 'A', assignee: 'alice' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.workItems.move(cardFor(h, 'w-a').id, 'done');
+    await sweep(integration);
+    expect(commands(h).filter(c => c === 'show w-a')).toHaveLength(1);
+  });
+
   it('parks a card as close-failed after the attempt cap', async () => {
     h = createHarness([{ id: 'w-a', title: 'A' }]);
     const integration = h.integration({ maxCloseAttempts: 2 });

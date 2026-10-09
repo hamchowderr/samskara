@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { BdRunner, BEADS_META } from '../src/index';
+import { BdRepo, BdRunner, BEADS_META } from '../src/index';
 import { createHarness, sweep } from './harness';
 import type { Harness } from './harness';
 
@@ -97,5 +97,42 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown[0]?.status).toBe('closed');
     // No remote-info branch was created on the origin.
     expect(run('git', ['ls-remote', originUrl])).not.toMatch(/remote-info/);
+  }, 300_000);
+
+  it('BdRepo.close: takes over a live claim, never forces, and returns a bead bd refuses to close', async () => {
+    const dir = join(root, 'l');
+    run('git', ['init', '-q', dir], root);
+    run('bd', ['init', '-p', 'cl', '--skip-agents', '-q'], dir);
+    const make = (title: string) => run('bd', ['create', title, '-t', 'task', '--silent'], dir).split(/\r?\n/)[0]!;
+    const show = (id: string) =>
+      (JSON.parse(run('bd', ['--readonly', 'show', id, '--json'], dir)) as Array<{ status: string; assignee?: string }>)[0]!;
+    const repo = new BdRepo('local/claims', dir, '', new BdRunner());
+
+    // A live claim: bd refuses a plain reassign of it without --force.
+    const claimed = make('Claimed');
+    run('bd', ['--actor', 'alice', 'update', claimed, '--claim'], dir);
+    expect(show(claimed)).toMatchObject({ status: 'in_progress', assignee: 'alice' });
+    const done = await repo.close(claimed, 'card reached done', 'alice');
+    expect(done.code, done.stderr).toBe(0);
+    expect(show(claimed)).toMatchObject({ status: 'closed', assignee: 'factory-beads' });
+
+    // Pinned: the handover succeeds, bd refuses the close, the bead goes back.
+    const pinned = make('Pinned');
+    run('bd', ['update', pinned, '--assignee', 'alice', '--status', 'pinned'], dir);
+    const refused = await repo.close(pinned, 'card reached done', 'alice');
+    expect(refused.code).not.toBe(0);
+    expect(refused.stderr).toContain('pinned');
+    expect(refused.stderr).toContain('returned to "alice"');
+    expect(show(pinned)).toMatchObject({ status: 'pinned', assignee: 'alice' });
+
+    // Blocked by an open bead: same.
+    const blocker = make('Blocker');
+    const blocked = make('Blocked');
+    run('bd', ['dep', 'add', blocked, blocker], dir);
+    run('bd', ['update', blocked, '--assignee', 'alice'], dir);
+    const blockedRes = await repo.close(blocked, 'card reached done', 'alice');
+    expect(blockedRes.code).not.toBe(0);
+    expect(blockedRes.stderr).toContain('returned to "alice"');
+    expect(show(blocked)).toMatchObject({ status: 'open', assignee: 'alice' });
   }, 300_000);
 });

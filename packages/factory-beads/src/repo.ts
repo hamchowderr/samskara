@@ -137,24 +137,35 @@ export class BdRepo {
   /**
    * Close as the integration's actor. bd refuses to close a bead assigned to
    * anyone else ("assignee is X, actor is Y", bd v1.3.1
-   * cmd/bd/show_unit_helpers.go:27-35), so a held bead is first handed over
-   * with bd's compare-and-swap reassign (`--if-assignee`, exit 13 when the
-   * holder changed). Never `--force`: it would also override bd's pinned,
-   * gate, open-child and blocker refusals, which must stay visible.
+   * cmd/bd/show_unit_helpers.go:27-35), so a bead held by `holder` (as read by
+   * the caller) is first handed over with bd's compare-and-swap reassign
+   * (`--if-assignee`, exit 13 when the holder changed).
+   *
+   * The swap also takes over a live `in_progress` claim, which a plain
+   * reassign refuses without `--force`: the owner decided a card reaching
+   * Done closes its bead even while someone holds a claim (samskara-l2t.13).
+   * `--force` itself is never passed, so bd's pinned, gate, open-child and
+   * blocker refusals still stop the close; when one does, the bead is swapped
+   * back to its holder so a refused close leaves no reassignment behind.
    */
-  async close(id: string, reason: string): Promise<BdResult> {
+  async close(id: string, reason: string, holder?: string): Promise<BdResult> {
     const actor = this.runner.actor;
-    const holder = (await this.show(id))?.assignee;
-    if (holder && holder !== actor) {
-      const handover = await this.runner.bd(
+    const handover = holder !== undefined && holder !== '' && holder !== actor;
+    if (handover) {
+      const swap = await this.runner.bd(
         ['--sandbox', '--actor', actor, 'update', id, `--assignee=${actor}`, `--if-assignee=${holder}`],
         { cwd: this.dir },
       );
-      if (handover.code !== 0) {
-        return { ...handover, stderr: `handing ${id} over from "${holder}" failed: ${tail(handover)}` };
-      }
+      if (swap.code !== 0) return { ...swap, stderr: `handing ${id} over from "${holder}" failed: ${tail(swap)}` };
     }
-    return this.runner.bd(['--sandbox', '--actor', actor, 'close', id, '--reason', reason], { cwd: this.dir });
+    const closed = await this.runner.bd(['--sandbox', '--actor', actor, 'close', id, '--reason', reason], { cwd: this.dir });
+    if (closed.code === 0 || !handover) return closed;
+    const back = await this.runner.bd(
+      ['--sandbox', '--actor', actor, 'update', id, `--assignee=${holder}`, `--if-assignee=${actor}`],
+      { cwd: this.dir },
+    );
+    const note = back.code === 0 ? `returned to "${holder}"` : `NOT returned to "${holder}": ${tail(back, 200)}`;
+    return { ...closed, stderr: `${tail(closed)} (bead ${note})` };
   }
 
   sync(credentials: RepoCredentials | undefined): Promise<BdResult> {
