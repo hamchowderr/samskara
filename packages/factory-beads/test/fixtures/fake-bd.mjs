@@ -12,7 +12,8 @@
 // Criteria" and "Success Criteria"), and `mol pour` refuses missing
 // required variables.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const statePath = process.env.FAKE_BD_STATE;
 const state = JSON.parse(readFileSync(statePath, 'utf8'));
@@ -24,6 +25,8 @@ state.calls.push({
   env: {
     token: process.env.BEADS_GIT_TOKEN ?? null,
     remoteInfoBranch: process.env.DOLT_REMOTE_INFO_BRANCH ?? null,
+    // bd's usage-metrics switches, as runner.ts sets them.
+    metrics: [process.env.BD_DISABLE_METRICS ?? null, process.env.BD_DISABLE_EVENT_FLUSH ?? null],
     gitConfig: Object.fromEntries(
       Array.from({ length: Number(process.env.GIT_CONFIG_COUNT ?? 0) }, (_, i) => [
         `${i}:${process.env[`GIT_CONFIG_KEY_${i}`]}`,
@@ -86,7 +89,9 @@ const SECTIONS = {
   spike: ['## Goal', '## Findings'],
   story: ['## Acceptance Criteria'],
 };
-// Fake formulas: { name, steps: [title], vars: [name], gated?, extends?: [name], user? }.
+// Fake formulas: { name, steps: [title], vars: [name], gated?, extends?: [name], hooks?: [name], user? }.
+// `hooks` are kept as written, never applied: bd 1.3.0 cook and pour leave compose.hooks alone.
+const composeOf = f => (f.hooks ? { compose: { hooks: f.hooks.map(attach => ({ trigger: 'label:security', attach })) } } : {});
 const ownSteps = f => f.steps.map((title, i) => ({ id: `${f.name}.s${i}`, title, ...(f.gated && i === 0 ? { gate: { type: 'human' } } : {}) }));
 const resolvedSteps = (f, seen = new Set()) => {
   seen.add(f.name);
@@ -261,12 +266,18 @@ switch (words[0]) {
       err = `formula ${words[1]} not found`;
       break;
     }
-    out = JSON.stringify({ formula: f.name, steps: resolvedSteps(f) });
+    out = JSON.stringify({ formula: f.name, ...composeOf(f), steps: resolvedSteps(f) });
     break;
   }
   case 'formula': {
     // A formula with `user: true` lives in ~/.beads/formulas, outside the repository.
     const source = f => (f.user ? `/home/someone/.beads/formulas/${f.name}.formula.toml` : `${process.cwd()}/.beads/formulas/${f.name}.formula.toml`);
+    // bd lists files that exist; the repository's must be real files (the tools resolve real paths).
+    for (const f of state.formulas ?? []) {
+      if (f.user || existsSync(source(f))) continue;
+      mkdirSync(dirname(source(f)), { recursive: true });
+      writeFileSync(source(f), `formula = "${f.name}"\n`);
+    }
     if (words[1] === 'show') {
       const f = (state.formulas ?? []).find(x => x.name === words[2]);
       if (!f) {
@@ -275,7 +286,7 @@ switch (words[0]) {
         break;
       }
       // As written: `extends` is listed, the parents' steps are not merged in.
-      out = JSON.stringify({ formula: f.name, source: source(f), ...(f.extends ? { extends: f.extends } : {}), steps: ownSteps(f) });
+      out = JSON.stringify({ formula: f.name, source: source(f), ...(f.extends ? { extends: f.extends } : {}), ...composeOf(f), steps: ownSteps(f) });
       break;
     }
     out = JSON.stringify(

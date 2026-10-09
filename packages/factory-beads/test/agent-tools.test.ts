@@ -4,9 +4,12 @@
  */
 import type { LeaseProvider } from '@mastra/core/events';
 import type { RequestContext } from '@mastra/core/request-context';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { BeadsSyncWorker, formulaReferences, LeaseWaitTimeoutError } from '../src/index';
+import { BeadsSyncWorker, deferredAttachments, formulaReferences, isInside, LeaseWaitTimeoutError } from '../src/index';
 import type { BeadsIntegration } from '../src/index';
 import { createHarness, ORG, PROJECT, SLUG, sweep, TOKEN } from './harness';
 import type { Harness } from './harness';
@@ -485,6 +488,88 @@ describe('workflows', () => {
     expect(callsOf(h, 'pour')).toHaveLength(0);
     // Extending another of the repository's own formulas is fine.
     expect(await tools.beads_pour!.execute({ formula: 'fine', vars: { name: 'a', deliverable: 'b' } })).toMatchObject({ published: true });
+  });
+
+  it('fails closed on a hook that attaches a gated formula, though bd 1.3.0 does not apply hooks', async () => {
+    h = withGetById(createHarness([]));
+    h.setState(s =>
+      Object.assign(s, {
+        formulas: [
+          { ...formulas[0]!, name: 'gated', gated: true },
+          { ...formulas[0]!, name: 'plain' },
+          { ...formulas[0]!, name: 'hooked', hooks: ['gated'] },
+          { ...formulas[0]!, name: 'outer', extends: ['hooked'] },
+          { ...formulas[0]!, name: 'safe', hooks: ['plain'] },
+        ],
+      }),
+    );
+    const tools = await toolsFor(h.integration());
+    for (const dry_run of [false, true]) {
+      const result = await tools.beads_pour!.execute({ formula: 'hooked', vars: { name: 'a', deliverable: 'b' }, dry_run });
+      expect(result.error).toMatch(/"hooked" attaches "gated" \(a hook or on_complete in itself\), which has gated steps/);
+    }
+    // Inherited through extends, the hook is still found on the formula that declares it.
+    expect((await tools.beads_pour!.execute({ formula: 'outer', vars: { name: 'a', deliverable: 'b' } })).error).toMatch(
+      /"outer" attaches "gated" \(a hook or on_complete in "hooked"\)/,
+    );
+    expect(callsOf(h, 'pour')).toHaveLength(0);
+    // The attached formula was cooked on its own.
+    expect(callsOf(h, 'cook').filter(argv => argv.includes('gated')).length).toBeGreaterThan(0);
+    // A hook attaching an ungated formula of the repository's own is fine.
+    expect(await tools.beads_pour!.execute({ formula: 'safe', vars: { name: 'a', deliverable: 'b' } })).toMatchObject({ published: true });
+  });
+});
+
+describe('deferredAttachments', () => {
+  it('finds hooks and on_complete bonds, at any depth, and nothing bd applies at cook time', () => {
+    const formula = {
+      extends: ['a'],
+      compose: { aspects: ['b'], expand: [{ target: 'x', with: 'c' }], hooks: [{ trigger: 'label:z', attach: 'e' }, { trigger: 'type:bug', attach: 'f' }] },
+      steps: [
+        { id: 's1', title: 't', expand: 'g' },
+        { id: 's2', title: 't', on_complete: { for_each: 'o', bond: 'h' } },
+        { id: 's3', title: 't', children: [{ id: 'c1', title: 't', on_complete: { for_each: 'o', bond: 'i' } }] },
+      ],
+    };
+    expect(deferredAttachments(formula).sort()).toEqual(['e', 'f', 'h', 'i']);
+  });
+});
+
+describe('isInside', () => {
+  it('compares real paths, so a symlink out of the repository is outside', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fbi-'));
+    try {
+      const repo = join(root, 'repo');
+      const formulas = join(repo, '.beads', 'formulas');
+      mkdirSync(formulas, { recursive: true });
+      mkdirSync(join(root, 'outside'));
+      writeFileSync(join(formulas, 'own.formula.toml'), 'formula = "own"\n');
+      writeFileSync(join(root, 'outside', 'secret.formula.toml'), 'formula = "secret"\n');
+      expect(isInside(repo, join(formulas, 'own.formula.toml'))).toBe(true);
+      expect(isInside(repo, join(root, 'outside', 'secret.formula.toml'))).toBe(false);
+      expect(isInside(repo, join(formulas, 'missing.formula.toml'))).toBe(false);
+      expect(isInside(repo, repo)).toBe(false);
+      let linked = true;
+      try {
+        // A file symlink to an absolute path, as git checks a committed one out on Linux,
+        // and a symlinked directory ('junction' needs no privilege on Windows).
+        symlinkSync(join(root, 'outside', 'secret.formula.toml'), join(formulas, 'link.formula.toml'), 'file');
+        symlinkSync(join(root, 'outside'), join(repo, '.beads', 'linked-dir'), 'junction');
+      } catch (error) {
+        // Windows without Developer Mode cannot create file symlinks (EPERM); Linux CI always can.
+        if (process.platform !== 'win32') throw error;
+        linked = false;
+      }
+      if (linked) {
+        expect(isInside(repo, join(formulas, 'link.formula.toml'))).toBe(false);
+        expect(isInside(repo, join(repo, '.beads', 'linked-dir', 'secret.formula.toml'))).toBe(false);
+        // A repository reached through a symlink still contains its own files.
+        symlinkSync(repo, join(root, 'repo-link'), 'junction');
+        expect(isInside(join(root, 'repo-link'), join(formulas, 'own.formula.toml'))).toBe(true);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -33,8 +33,10 @@ export {
   checkIssueType,
   checkPourableFormula,
   createBeadsTools,
+  deferredAttachments,
   formulaReferences,
   initPrefix,
+  isInside,
   pickRepository,
   resolveToolProject,
 } from './agent-tools';

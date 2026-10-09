@@ -8,7 +8,7 @@
  * FACTORY_BEADS_REAL_BD=0 to skip it on a machine that has bd.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -102,6 +102,34 @@ title = "OUTSIDE private step"
 description = "private"
 `;
 
+/** Attaches the gated formula through a hook, which bd 1.3.0 never applies. */
+const HOOKED_FORMULA = `formula = "mol-hooked"
+description = "Hooked"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "h"
+title = "Hooked step"
+description = "hooked"
+
+[[compose.hooks]]
+trigger = "label:security"
+attach = "mol-demo"
+`;
+
+/** Outside the repository; the repository commits a symlink to it. */
+const LINKED_FORMULA = `formula = "linked"
+description = "Linked"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "l"
+title = "LINKED private step"
+description = "private"
+`;
+
 type Tools = Record<string, { execute: (input: unknown) => Promise<Record<string, unknown> & { error?: string }> }>;
 
 describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
@@ -160,7 +188,15 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     writeFileSync(join(seed, '.beads', 'formulas', 'mol-demo.formula.toml'), GATED_FORMULA);
     writeFileSync(join(seed, '.beads', 'formulas', 'mol-child.formula.toml'), CHILD_FORMULA);
     writeFileSync(join(seed, '.beads', 'formulas', 'mol-wrap.formula.toml'), WRAP_FORMULA);
+    writeFileSync(join(seed, '.beads', 'formulas', 'mol-hooked.formula.toml'), HOOKED_FORMULA);
     run('git', ['add', '.beads/formulas']);
+    // A committed symlink (mode 120000) to an absolute path outside the repository. On
+    // Linux the copy checks it out as a real symlink, which bd follows; where git has
+    // core.symlinks off (Git for Windows' default) it is a plain file bd skips.
+    mkdirSync(join(root, 'ext'), { recursive: true });
+    writeFileSync(join(root, 'ext', 'linked.formula.toml'), LINKED_FORMULA);
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: seed, env, input: join(root, 'ext', 'linked.formula.toml') }).toString().trim();
+    run('git', ['update-index', '--add', '--cacheinfo', `120000,${blob},.beads/formulas/linked.formula.toml`]);
     run('git', ['commit', '-q', '-m', 'chore: add formulas']);
     run('git', ['push', '-q', 'origin', 'trunk']);
 
@@ -196,8 +232,13 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
       'demo',
       'mol-child',
       'mol-demo',
+      'mol-hooked',
       'mol-wrap',
     ]);
+    // The symlinked formula is not the repository's, whatever bd made of it.
+    expect((await tools.beads_pour!.execute({ formula: 'linked', dry_run: true })).error).toMatch(/not one of this repository's formulas/);
+    // A hook attaching a gated formula is refused, though bd 1.3.0 would pour without it.
+    expect((await tools.beads_pour!.execute({ formula: 'mol-hooked', dry_run: true })).error).toMatch(/attaches "mol-demo"/);
     // A gate inherited through extends is refused: only `bd cook` shows it.
     for (const dry_run of [true, false]) {
       expect((await tools.beads_pour!.execute({ formula: 'mol-child', dry_run })).error).toMatch(/gated steps \(its own or inherited\)/);
@@ -214,5 +255,9 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     const after = await sweep(integration);
     expect(after.repos[0], JSON.stringify(after)).toMatchObject({ state: 'ok', created: 1 });
     expect(h.workItems.beadCards().map(c => c.metadata?.[BEADS_META.id])).toEqual([id]);
+    // Usage metrics were off for every bd call: bd queues events and caches its
+    // machine id under ~/.beads only when they are on (internal/metrics).
+    expect(existsSync(join(home, '.beads', 'eventsData'))).toBe(false);
+    expect(existsSync(join(home, '.beads', 'machine-id'))).toBe(false);
   }, 600_000);
 });

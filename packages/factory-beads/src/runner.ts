@@ -125,6 +125,17 @@ export function childEnv(options: { actor: string; extra?: NodeJS.ProcessEnv; cr
     GIT_TERMINAL_PROMPT: '0',
     GCM_INTERACTIVE: 'never',
     BD_NON_INTERACTIVE: '1',
+    // bd sends anonymous usage metrics by default (opt-out): the name of each
+    // command, the bd version and the OS, keyed by a machine-derived ID, queued
+    // in ~/.beads/eventsData and POSTed to gastownhall-eventsapi.com by a
+    // detached `bd send-metrics` child (bd 1.3.0 internal/metrics). Off for
+    // every command this server runs, whatever the server user's own
+    // `bd metrics` setting: BD_DISABLE_METRICS wins over the saved config and
+    // DO_NOT_TRACK (cmd/bd/main.go resolveMetricsEnabled), and
+    // BD_DISABLE_EVENT_FLUSH stops the detached child, which would otherwise
+    // still be spawned to prune an old queue (internal/metrics/spawn.go).
+    BD_DISABLE_METRICS: '1',
+    BD_DISABLE_EVENT_FLUSH: '1',
     BEADS_ACTOR: options.actor,
     // Never create __dolt_remote_info__ branches on the origin: on hosts that
     // build every pushed branch, each one can trigger a deploy.

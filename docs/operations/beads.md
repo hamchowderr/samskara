@@ -287,7 +287,7 @@ processes **only through their environment**
   so Dolt gets the token through the same helper. Before the helper is added,
   the helper list is reset with an empty `credential.helper` value. This stops
   a credential manager on the host from authenticating instead of the App.
-- The runner throws if a token appears in argv (`runner.ts:178`). Any output
+- The runner throws if a token appears in argv (`runner.ts:189`). Any output
   the runner returns has the token removed, in plain, basic-auth and
   URL-encoded forms.
 - The child gets an allowlisted environment (`runner.ts:28`). The server's
@@ -297,9 +297,9 @@ processes **only through their environment**
   Reads, including every agent-tool read, run with `--readonly` and without
   the token. An agent never sees the token: tools run on the host.
 
-Two more settings go to every child process:
+Three more settings go to every child process:
 
-- `DOLT_REMOTE_INFO_BRANCH=''` (`runner.ts:131`). Without it, Dolt can create
+- `DOLT_REMOTE_INFO_BRANCH=''` (`runner.ts:142`). Without it, Dolt can create
   `__dolt_remote_info__` branches on `origin` (the name in the bd 1.3.0 binary). On a host that builds every
   pushed branch (Vercel), each branch can start a deploy and use up the quota.
   This matters most for client repositories.
@@ -307,6 +307,49 @@ Two more settings go to every child process:
   On Windows, git rejects the lock paths ("Filename too long") without it.
   Keep `BEADS_CACHE_DIR` short on Windows, because git also rejects a very
   long `$GIT_DIR`.
+- `BD_DISABLE_METRICS=1` and `BD_DISABLE_EVENT_FLUSH=1` (`runner.ts:137-138`).
+  See [Usage metrics](#usage-metrics).
+
+### Usage metrics
+
+bd collects anonymous usage metrics, and they are **on by default** (opt-out).
+What it sends, from the bd 1.3.0 source (`internal/metrics/metrics.go`,
+`cmd/bd/metrics.go`, `AGENT_INSTRUCTIONS.md` "Telemetry"):
+
+- One `cli_command` event per command, carrying only the command name. Each
+  batch also carries the bd version and OS platform, keyed by a
+  machine-derived, HMAC-protected ID (cached at `~/.beads/machine-id`). bd
+  states that it never collects issues, paths, remotes, identity or typed text.
+- Events are queued under `~/.beads/eventsData` and POSTed to
+  `https://gastownhall-eventsapi.com/mp/collect` by a detached
+  `bd send-metrics` child, spawned at most every 5 minutes
+  (`internal/metrics/spawn.go`). `BEADS_METRICS_ENDPOINT` or the user config
+  `metrics.endpoint` changes the address.
+- The switch: `BD_DISABLE_METRICS` wins over everything; then a truthy
+  `DO_NOT_TRACK` (disable-only); then `metrics.disabled` in the server user's
+  OWN config (`~/.config/bd/config.yaml`, written by `bd metrics off`). A
+  repository's `.beads/config.yaml` is ignored for this on purpose
+  (`cmd/bd/main.go` `resolveMetricsEnabled`). On first use bd prints a one-time
+  notice to stderr, except under `--json`, `--quiet` and similar.
+- Even with metrics off, bd still spawns the detached child to prune an old
+  queue (GH#5712), unless `BD_DISABLE_EVENT_FLUSH` is set.
+- Separately, OpenTelemetry export is opt-in (`BD_OTEL_ENABLED=true`,
+  `internal/telemetry/telemetry.go`) and stays off here.
+
+The runner sets `BD_DISABLE_METRICS=1` and `BD_DISABLE_EVENT_FLUSH=1` for
+every bd call, after the extra variables, so nothing can turn them back on. The
+server user's own `bd metrics` setting therefore does not matter, and no
+detached process outlives a command. The Docker image sets the same two
+variables (`Dockerfile`, after the bd `COPY`) for a bd run by hand with
+`docker exec`. `test/runner.test.ts` checks both on every call of a sweep,
+and `test/real-bd-tools.test.ts` checks that a real bd run through the tools
+creates neither `~/.beads/eventsData` nor `~/.beads/machine-id` in its home
+(without the variables, one `bd formula list` creates both).
+
+On a developer machine this changes only what the integration's own bd calls
+do. To turn metrics off for your own bd use too, run `bd metrics off` once
+(it writes `metrics.disabled: true` to `~/.config/bd/config.yaml`); `bd metrics`
+shows the current state.
 
 ## Single writer
 
@@ -390,7 +433,7 @@ the request simply gets no beads tools.
 **`beads_init` is for the supervisor only** (owner decision, 2026-10-09). The
 tool is in the tool set only when the session's resource id is
 `factory-supervisor:<projectId>` for the resolved project
-(`agent-tools.ts:75`, `:601`). Worker sessions (triage, plan, build, review)
+(`agent-tools.ts:76`, `:670`). Worker sessions (triage, plan, build, review)
 and channel sessions such as Slack never get it; they are not refused at call
 time, the tool is absent.
 
@@ -417,13 +460,13 @@ time, the tool is absent.
 - Writes are signed `--actor factory-beads/agent`, so the bead history shows
   which writes came from an agent.
 - No tool closes or deletes. `beads_update` refuses `closed` before bd runs
-  (`agent-tools.ts:415`); the only settable statuses are `open`,
+  (`agent-tools.ts:484`); the only settable statuses are `open`,
   `in_progress`, `blocked` and `deferred` (`:87`). bd itself would close
   through `update --status=closed`, so the check has to be ours.
-- `beads_update` never touches a closed bead (`agent-tools.ts:433`). bd would
+- `beads_update` never touches a closed bead (`agent-tools.ts:502`). bd would
   reopen one on `--status=open`, and its card would stay in Done with the
   close recorded, so card and bead would disagree for good.
-- `beads_create` always passes `--validate` (`agent-tools.ts:476`) and
+- `beads_create` always passes `--validate` (`agent-tools.ts:545`) and
   requires a description and a design. The type is checked first against
   `bd types --json` (core types plus the repository's `types.custom`, and bd's
   aliases `feat`, `enhancement`, `dec`, `adr`); an unknown type is refused with
@@ -455,14 +498,24 @@ library, which must never be listed or poured into another repository, client
 repositories included. So:
 
 - The tools list only formulas whose source file is inside the repository's
-  copy (`agent-tools.ts:212`), and `beads_pour` refuses any other name. bd
-  1.3.0 has no built-in formulas to allow.
+  copy (`agent-tools.ts:235`), and `beads_pour` refuses any other name. bd
+  1.3.0 has no built-in formulas to allow. "Inside" compares REAL paths
+  (`isInside`, `agent-tools.ts:217`, `fs.realpathSync.native` on both the
+  file and the copy): bd reports `source` as the path it found, so a formula
+  committed as a symlink to an absolute path on the server, or a symlinked
+  `.beads` or `formulas` directory, would otherwise read as inside. Checked on
+  bd 1.3.0: a symlinked `o.formula.toml` pointing outside the repository is
+  listed with a `source` inside `.beads/formulas`. On Linux (production) git
+  checks a committed symlink out as a real symlink, which bd follows. Git for
+  Windows has `core.symlinks` off by default and writes a plain file holding
+  the target path, which bd 1.3.0 skips silently. A path that cannot be
+  resolved counts as outside.
 - A repository formula can still pull another formula in by name, and bd
   resolves that name through the same search path: a repository formula with
   `extends = ["outside"]` pours the steps of an `outside` formula from the home
   library. So `beads_pour` follows every composition reference, recursively,
   and refuses the formula if any of them is not one of the repository's own
-  (`agent-tools.ts:246`, `:288-317`). The references are every field bd's
+  (`agent-tools.ts:269`, `:345-387`). The references are every field bd's
   formula schema composes with (`bd formula schema Formula`, `ComposeRules`,
   `ExpandRule`, `MapRule`, `Hook`, `Step`, `OnCompleteSpec`): `extends`,
   `compose.aspects`, `compose.expand[].with`, `compose.map[].with`,
@@ -477,6 +530,19 @@ repositories included. So:
   gate is closed (`bd formula schema gate`); no tool closes beads and the
   integration never cards a gate, so a poured gated step would never become
   ready. A person pours those formulas.
+- A formula that attaches a gated formula through `compose.hooks[].attach` or
+  a step's `on_complete.bond` is refused too (`deferredAttachments`,
+  `agent-tools.ts:295`, checked at `:379`), though bd 1.3.0 never applies
+  either: `bd cook` returns `compose.hooks` unexpanded, and a dry-run pour of a
+  formula with a hook attaching a gated formula creates only the root and its
+  own step. In the bd source (v1.3.0, and `main` at f21e3a8 on 2026-10-09)
+  `Hook` is declared as "automatic attachments triggered by labels or
+  conditions" (`internal/formula/types.go`), validated, and merged through
+  `extends` (`internal/formula/parser.go`), and nothing reads it at cook, pour
+  or bond time; `on_complete` is a runtime no-op with an open p1 bug to wire
+  it (gastownhall/beads#3782). Because a later bd may apply them to molecules
+  these tools poured, each attached formula is cooked on its own and refused
+  if gated; one that cannot be cooked alone is refused as well.
 
 The formulas are read from the copy's checkout, taken when the copy was
 bootstrapped: a formula committed later is offered after the copy is next
@@ -514,14 +580,20 @@ dependencies, a failed publish picked up by the next sweep, a parked
 repository, a sync conflict after a tool write parking the repository until
 reset, the repository argument, the init flow, formula list and pour, the dry
 run's mode, server-user formulas hidden and refused, gated formulas refused
-(own and inherited, checked on `cook`), composition with an outside formula
-refused at any depth, every composition field found, and the lease: waiting, the timeout, the in-process queue timeout, and no
+(own and inherited, checked on `cook`), a hook attaching a gated formula
+refused (directly and through `extends`) while one attaching an ungated formula
+pours, composition with an outside formula refused at any depth, every
+composition field and every deferred attachment found, `isInside` on real paths
+(a file symlink and a directory junction out of the repository; the file
+symlink part needs Developer Mode on Windows and always runs on Linux), and the lease: waiting, the timeout, the in-process queue timeout, and no
 overlap with a sweep. `test/real-bd-tools.test.ts` runs a real bd (local-only,
 like `real-bd.test.ts`): init by the supervisor on a repository with no beads,
 a refused and an accepted create, a refused close, a note, only the repository's
 formulas listed (the formula in its temp home excluded), a gate inherited through
-`extends` refused, `extends` to the home formula refused, a real pour dry run,
-and the sweep carding the new bead.
+`extends` refused, `extends` to the home formula refused, a committed symlink
+to a formula outside the repository refused, a hook attaching a gated formula
+refused, a real pour dry run, the sweep carding the new bead, and no usage
+metrics written.
 
 ## Write-back failures
 

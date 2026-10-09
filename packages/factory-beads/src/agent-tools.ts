@@ -19,6 +19,7 @@
  *
  * There is no close and no delete. Moving a card to Done closes its bead.
  */
+import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 
 import { createTool } from '@mastra/core/tools';
@@ -194,10 +195,31 @@ export function initPrefix(slug: string): string {
   return prefix;
 }
 
-/** True when `file` lies inside `dir` (both resolved; case-insensitive on Windows). */
-function isInside(dir: string, file: string): boolean {
-  const norm = (p: string) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
-  const rel = relative(norm(dir), norm(file));
+/** The real path (every symlink and junction resolved), or undefined when it cannot be resolved. */
+function realPath(p: string): string | undefined {
+  try {
+    return realpathSync.native(resolve(p));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when `file` lies inside `dir` once both are resolved to REAL paths
+ * (case-insensitive on Windows). Comparing path text is not enough: bd
+ * reports a formula's `source` as the path it found, so a formula file
+ * committed as a symlink to an absolute path, or a symlinked `.beads` or
+ * `formulas` directory, reads as inside the repository while bd parses a file
+ * from anywhere on the server. On Linux (production) git checks a committed
+ * symlink out as a real symlink; Git for Windows does too when core.symlinks
+ * is on. A path that cannot be resolved counts as outside.
+ */
+export function isInside(dir: string, file: string): boolean {
+  const realDir = realPath(dir);
+  const realFile = realPath(file);
+  if (!realDir || !realFile) return false;
+  const norm = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const rel = relative(norm(realDir), norm(realFile));
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
@@ -207,7 +229,8 @@ function isInside(dir: string, file: string): boolean {
  * that is the owner's personal library, which must not be listed or poured
  * into any repository, client repositories included. bd ships no built-in
  * formulas (bd 1.3.0 lists only files from its search paths), so a formula
- * counts only when its `source` file is inside the repository's copy.
+ * counts only when its `source` file is inside the repository's copy, real
+ * paths compared (isInside), so a symlink out of the repository is refused.
  */
 export async function repositoryFormulas(repo: BdRepo): Promise<Array<Record<string, unknown>>> {
   const res = await repo.runner.bd(['--readonly', 'formula', 'list', '--json'], { cwd: repo.dir });
@@ -260,6 +283,36 @@ export function formulaReferences(value: unknown, out: string[] = []): string[] 
   return out;
 }
 
+/**
+ * Formulas a formula attaches LATER rather than at cook time:
+ * `compose.hooks[].attach` and a step's `on_complete.bond`, at any depth.
+ * bd 1.3.0 applies neither (`bd cook` returns the hooks unexpanded and
+ * `mol pour` creates no bead for them), so `bd cook <name>` cannot show their
+ * gates. They are declared "automatic attachments" (internal/formula/types.go
+ * Hook) and wiring on_complete is an open bd issue (gastownhall/beads#3782),
+ * so each one is cooked on its own and refused if gated.
+ */
+export function deferredAttachments(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    for (const item of value) deferredAttachments(item, out);
+    return out;
+  }
+  if (!value || typeof value !== 'object') return out;
+  for (const [key, inner] of Object.entries(value)) {
+    if (key === 'hooks' && Array.isArray(inner)) {
+      for (const hook of inner) {
+        const attach = (hook as { attach?: unknown } | null)?.attach;
+        if (typeof attach === 'string' && attach) out.push(attach);
+      }
+    } else if (key === 'on_complete' && inner && typeof inner === 'object') {
+      const bond = (inner as { bond?: unknown }).bond;
+      if (typeof bond === 'string' && bond) out.push(bond);
+    }
+    deferredAttachments(inner, out);
+  }
+  return out;
+}
+
 async function bdJson(repo: BdRepo, args: string[], what: string): Promise<unknown> {
   const res = await repo.runner.bd(['--readonly', ...args, '--json'], { cwd: repo.dir });
   if (res.code !== 0) throw new BeadsToolError(`bd ${what} failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(-300)}`);
@@ -284,6 +337,10 @@ async function bdJson(repo: BdRepo, args: string[], what: string): Promise<unkno
  *   gate bead that blocks its step until closed (bd formula schema gate); no
  *   tool closes a bead and the integration never cards a gate, so a gated
  *   step would never become ready.
+ * - Hooks and on_complete bonds are not applied by `bd cook` or `mol pour` in
+ *   bd 1.3.0, so their formulas are cooked one by one and refused if gated
+ *   (deferredAttachments): a later bd that applies them must not bring a gate
+ *   into a molecule these tools poured.
  */
 export async function checkPourableFormula(repo: BdRepo, name: string): Promise<void> {
   const ownRows = await repositoryFormulas(repo);
@@ -295,9 +352,12 @@ export async function checkPourableFormula(repo: BdRepo, name: string): Promise<
   }
   const seen = new Set<string>([name]);
   const queue = [name];
+  const deferred = new Map<string, string>();
   while (queue.length > 0) {
     const current = queue.shift()!;
-    for (const ref of formulaReferences(await bdJson(repo, ['formula', 'show', current], 'formula show'))) {
+    const shown = await bdJson(repo, ['formula', 'show', current], 'formula show');
+    for (const ref of deferredAttachments(shown)) if (!deferred.has(ref)) deferred.set(ref, current);
+    for (const ref of formulaReferences(shown)) {
       if (!own.has(ref)) {
         throw new BeadsToolError(
           `"${name}" composes with "${ref}" (through ${current === name ? 'itself' : `"${current}"`}), which is not one of this repository's formulas. Only formulas in the repository's .beads/formulas can be poured.`,
@@ -313,6 +373,15 @@ export async function checkPourableFormula(repo: BdRepo, name: string): Promise<
     throw new BeadsToolError(
       `"${name}" has gated steps (its own or inherited). A gate becomes a bead that only closing can clear, and no tool closes beads, so its steps would never become ready. Ask a person to pour it.`,
     );
+  }
+  // Fail closed on what bd would attach later (hooks, on_complete): cook each
+  // one alone. A formula that cannot be cooked alone is refused too.
+  for (const [attached, via] of deferred) {
+    if (hasGate(await bdJson(repo, ['cook', attached], 'cook'))) {
+      throw new BeadsToolError(
+        `"${name}" attaches "${attached}" (a hook or on_complete in ${via === name ? 'itself' : `"${via}"`}), which has gated steps. A gate becomes a bead that only closing can clear, and no tool closes beads. Ask a person to pour it.`,
+      );
+    }
   }
 }
 
@@ -532,7 +601,7 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     description:
       `Pour one of the repository's own workflow formulas (bd mol pour): create a molecule (a root bead of type molecule) and its linked, ` +
       `ordered step beads in one go, with the formula's variables filled in. Only formulas from beads_formula_list, and only when every ` +
-      `formula they extend or compose with is one too. A formula with gated steps, its own or inherited, is refused, because a gate is a ` +
+      `formula they extend or compose with is one too. A formula with gated steps, its own, inherited or attached by a hook, is refused, because a gate is a ` +
       `bead only closing clears and no tool closes beads. Set dry_run to preview without writing. ` +
       `Poured steps skip create-time validation, so fill any missing design/acceptance with beads_update before work starts. ${where}`,
     inputSchema: z.object({
