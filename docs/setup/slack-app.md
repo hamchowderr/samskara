@@ -109,7 +109,7 @@ that account's **default factory** (`@mastra/factory` 0.20.0
 
 1. the link's default factory, when it still exists;
 2. otherwise, when the organization has exactly one factory, that one, which
-   is then saved as the link's default (`slack.js:120-131`);
+   is then saved as the link's default (`slack.js:128-141`; a stored default is used first, `:117-127`);
 3. otherwise the bot posts a **Pick a default factory** card in the thread and
    the run does not start.
 

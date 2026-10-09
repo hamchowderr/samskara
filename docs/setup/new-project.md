@@ -253,7 +253,7 @@ title rather than a placeholder.
    Connections → Slack → Session behavior → Default factory**.
    - A link with no default, in an organization with exactly one factory, gets
      that factory stamped as its default on its first message
-     (`slack.js:120-131`).
+     (`slack.js:128-141`; a stored default is used first, `:117-127`).
    - **Adding a factory does not move existing links.** A link already stamped
      with the first factory keeps sending its runs there, silently; no **Pick a
      default factory** card appears. Every linked person who should work in the
@@ -283,10 +283,21 @@ For each linked repository that uses beads:
    matches the repository's origin unless `--allow-git-origin` is given. Push
    with `DOLT_REMOTE_INFO_BRANCH` set to empty, so Dolt does not create a
    `__dolt_remote_info__` branch on `origin` (on hosts that build every pushed
-   branch, it can trigger a deploy). From a POSIX shell (Git Bash on Windows;
-   PowerShell cannot set an empty variable):
-   `DOLT_REMOTE_INFO_BRANCH= bd dolt push --yes`. `refs/dolt/data` must then
-   exist on `origin`.
+   branch, it can trigger a deploy). Dolt reads the variable with
+   `os.LookupEnv` and trims it, so a value that is empty after trimming turns
+   the branch off (Dolt `store/blobstore/git_refs.go:36-41`):
+
+   ```bash
+   DOLT_REMOTE_INFO_BRANCH= bd dolt push --yes                # POSIX shell
+   ```
+
+   ```powershell
+   $env:DOLT_REMOTE_INFO_BRANCH=' '; bd dolt push --yes      # PowerShell
+   ```
+
+   PowerShell deletes a variable set to `''`, so it uses one space, which Dolt
+   trims away. A persistent User-level variable holding one space works the
+   same way. `refs/dolt/data` must then exist on `origin`.
 2. **The host has `bd`.** Production: the image installs bd 1.3.0. Local:
    install bd, or set `BEADS_BD_PATH`.
 3. **The integration is on.** The `[beads]` startup line says `on`, and

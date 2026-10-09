@@ -70,7 +70,7 @@ Slack → Session behavior → Default factory**, then send the message again. S
 ## Slack runs go to the wrong factory
 
 A link that got its default automatically, while the organization had one
-factory, keeps it after a second factory is added (`slack.js:120-131`). No card
+factory, keeps it after a second factory is added (`slack.js:128-141`; a stored default is used first, `:117-127`). No card
 appears; runs go to the first factory. Change **Default factory** under
 **Settings → Connections → Slack → Session behavior**.
 

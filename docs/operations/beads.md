@@ -231,8 +231,14 @@ is off, the rule does nothing.
       URL matches the repository's origin unless `--allow-git-origin` is given.
       Push with `DOLT_REMOTE_INFO_BRANCH` empty, so Dolt does not create a
       `__dolt_remote_info__` branch on `origin` (see [Credentials](#credentials)
-      for why). From a POSIX shell (Git Bash on Windows; PowerShell cannot set
-      an empty variable): `DOLT_REMOTE_INFO_BRANCH= bd dolt push --yes`.
+      for why). Dolt reads the variable with `os.LookupEnv` and trims it, so a
+      value that is empty after trimming turns the branch off (Dolt
+      `store/blobstore/git_refs.go:36-41`).
+      - POSIX shell: `DOLT_REMOTE_INFO_BRANCH= bd dolt push --yes`
+      - PowerShell: `$env:DOLT_REMOTE_INFO_BRANCH=' '; bd dolt push --yes`
+        (one space: PowerShell deletes a variable set to `''`).
+
+      A persistent User-level variable holding one space works the same way.
    3. The GitHub App is installed on the repository with Contents: Read and
       write.
    4. The repository is linked to exactly **one** factory, in exactly **one**
