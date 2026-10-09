@@ -31,6 +31,8 @@ export interface FakeBead {
   issue_type?: string;
   description?: string;
   blockedBy?: string[];
+  /** bd refuses to close a bead held by anyone but the closing actor. */
+  assignee?: string;
   closeReason?: string | null;
   /** Only this repository's copy lists the bead (slug). Unset: every linked repository does. */
   repo?: string;
@@ -41,6 +43,8 @@ export interface FakeState {
   syncExits: number[];
   pullExits: number[];
   closeFail: string[];
+  /** Bead ids whose `--if-assignee` reassign fails as if the holder changed (exit 13). */
+  casFail?: string[];
   calls: Array<{
     argv: string[];
     cwd: string;

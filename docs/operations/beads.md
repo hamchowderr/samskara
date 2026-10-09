@@ -57,7 +57,21 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:559-625`).
+   (`packages/factory-beads/src/integration.ts:559-625`). bd refuses to close
+   a bead assigned to anyone but the closing actor, so a bead someone holds is
+   first handed over with `bd update <id> --assignee=factory-beads
+   --if-assignee=<holder>` (`repo.ts`, `BdRepo.close`). That swap fails with
+   exit 13 if the holder changed in between.
+   - **A live claim does not stop it.** The swap also takes over a bead
+     someone claimed (`in_progress`), which a plain reassign refuses without
+     `--force`. This is the owner's decision (2026-10-09): a card reaching
+     Done closes its bead even while someone holds a claim.
+   - **Every other refusal does.** The integration never passes `--force`, so
+     bd still refuses to close a pinned bead, an open gate, a bead with open
+     children or open blockers. When it does, the bead is swapped back to its
+     holder, and the card's diagnostic says so. A claim comes back without
+     its lease: a live holder restores it on its next `bd heartbeat`, but an
+     abandoned claim then has no stale lease for `bd reclaim` to find.
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
 4. **Intake.** `bd --readonly ready --json --exclude-type=epic -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed
@@ -651,7 +665,9 @@ each (`integration.ts:593-624`, retries at `:698-707`):
 The integration never retries exit 2 or 4 automatically. An operator must fix
 them, so a parked repository runs no bd command until it is reset. If
 `bd close` fails 3 times for one card, the card is marked `close-failed` and
-the integration stops trying it.
+the integration stops trying it. The card's `beadsDiagnostic` holds bd's own
+reason, for example `cannot modify pinned issue <id>` or `handing <id> over
+from "<holder>" failed`.
 
 To see problems, call `GET /web/beads/status`. Any member of the organization
 can call it, from a signed-in session: the Factory gate answers a request with
