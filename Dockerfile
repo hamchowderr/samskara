@@ -56,9 +56,9 @@ RUN apt-get update \
 # bumping BD_VERSION without the matching checksums fails the build. Needs
 # glibc >= 2.34 (bookworm has 2.36). See docs/operations/beads.md.
 FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS bd-cli
-ARG BD_VERSION=1.3.0
-ARG BD_SHA256_AMD64=2f92b904ecf35b607e44dc5c39229173af69c54f1183e8d709f1773540cdcf3b
-ARG BD_SHA256_ARM64=4ce9446a68edc13202b76c84a47d66fb3dad2787b6464c9522a108faf9c1c608
+ARG BD_VERSION=1.3.1
+ARG BD_SHA256_AMD64=3219443a9734b89b93fb16ee8d65844759fa1b3cd3cf139c606b7353cfb0715c
+ARG BD_SHA256_ARM64=c3b32c71a6c0cd6358a12c28272b17e6818db991da192f87df52339c222e423a
 ARG TARGETARCH
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
