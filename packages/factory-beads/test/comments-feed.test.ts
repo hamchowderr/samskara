@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { BEADS_COMMENT_SOURCE, BEADS_INTEGRATION_ID, BEADS_META } from '../src/index';
+import { BEADS_COMMENT_SOURCE, BEADS_INTEGRATION_ID, BEADS_META, fitFeedComment } from '../src/index';
 import { createHarness, sweep } from './harness';
 import type { Harness } from './harness';
 
@@ -101,5 +101,15 @@ describe('bd comments on the card feed (samskara-l2t.6)', () => {
     expect(rest).toHaveLength(0);
     expect(only!.body.length).toBeLessThanOrEqual(16_000);
     expect(only!.body).toMatch(/the full comment is in bd\)$/);
+  });
+});
+
+describe('fitFeedComment (samskara-l2t.6)', () => {
+  it('never splits a surrogate pair at the cut', () => {
+    const body = 'a'.repeat(16_000 - 42 - 1) + '😀'.repeat(10);
+    const cut = fitFeedComment(body);
+    expect(cut.length).toBeLessThanOrEqual(16_000);
+    expect(cut).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    expect(fitFeedComment('short')).toBe('short');
   });
 });

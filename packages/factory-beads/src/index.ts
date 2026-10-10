@@ -2,6 +2,7 @@ export {
   BeadsIntegration,
   BEADS_DATA_REF,
   BEADS_COMMENT_SOURCE,
+  fitFeedComment,
   BEADS_INTEGRATION_ID,
   BEADS_META,
   CARD_LABEL_COLORS_META,

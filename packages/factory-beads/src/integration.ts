@@ -37,6 +37,7 @@ import type { VersionControl } from '@mastra/factory/capabilities/version-contro
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
 import { LiveSessions } from '@mastra/factory/session/live-sessions';
+import { actorFromChannelAuthor } from '@mastra/factory/storage/domains/comments/actor';
 import { MAX_COMMENT_BODY_LENGTH } from '@mastra/factory/storage/domains/comments/base';
 import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
@@ -57,6 +58,17 @@ import type { TickOutcome, WithLeaseOptions } from './worker';
 export const BEADS_INTEGRATION_ID = 'beads';
 /** The `type` of a bd comment's source on the card feed (samskara-l2t.6). */
 export const BEADS_COMMENT_SOURCE = 'comment';
+const CUT_NOTE = '\n\n(cut short; the full comment is in bd)';
+
+/**
+ * A bd comment cut to what the feed takes (`MAX_COMMENT_BODY_LENGTH`), never
+ * splitting a surrogate pair, as Slack's publisher cuts its own
+ * (@mastra/factory 0.20.0 dist/integrations/slack/feed-publisher.js:23-26).
+ */
+export function fitFeedComment(body: string): string {
+  if (body.length <= MAX_COMMENT_BODY_LENGTH) return body;
+  return `${body.slice(0, MAX_COMMENT_BODY_LENGTH - CUT_NOTE.length).replace(/[\uD800-\uDBFF]$/, '')}${CUT_NOTE}`;
+}
 
 /** Card metadata keys this integration owns. */
 export const BEADS_META = {
@@ -519,6 +531,8 @@ export class BeadsIntegration implements FactoryIntegration {
    * more; the feed's own source key keeps that from duplicating anything.
    */
   readonly #commentCounts = new Map<string, number>();
+  /** Cards whose bd comments are failing to reach the feed: warned once per failure streak. */
+  readonly #commentsFailing = new Set<string>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -1975,8 +1989,12 @@ export class BeadsIntegration implements FactoryIntegration {
         }
         try {
           await this.#followComments(scope, card, bead);
+          this.#commentsFailing.delete(card.id);
         } catch (error) {
-          this.#log.warn(`[factory-beads] ${slug}: bd comments of ${beadId} not on its card yet: ${error instanceof Error ? error.message : String(error)}`);
+          if (!this.#commentsFailing.has(card.id)) {
+            this.#commentsFailing.add(card.id);
+            this.#log.warn(`[factory-beads] ${slug}: bd comments of ${beadId} not on its card yet (retried every sweep): ${error instanceof Error ? error.message : String(error)}`);
+          }
         }
         if (readyIds.has(beadId) || bead.status === 'closed') continue;
         if (card.stages.some(stage => board?.phaseKind(stage) === 'terminal')) continue;
@@ -2029,13 +2047,9 @@ export class BeadsIntegration implements FactoryIntegration {
       const result = await feed.createComment({
         orgId: scope.orgId,
         workItemId: card.id,
-        author: {
-          kind: 'user',
-          id: `${BEADS_INTEGRATION_ID}:${author}`,
-          displayName: author,
-          external: { platform: BEADS_INTEGRATION_ID, userId: author },
-        },
-        body: body.length > MAX_COMMENT_BODY_LENGTH ? `${body.slice(0, MAX_COMMENT_BODY_LENGTH - 40)}\n\n(cut short; the full comment is in bd)` : body,
+        // An unlinked sender, as Slack's ingest makes one: `beads:<author>`, never mentionable.
+        author: actorFromChannelAuthor({ platform: BEADS_INTEGRATION_ID, userId: author, userName: author }),
+        body: fitFeedComment(body),
         ...(occurredAt && !Number.isNaN(occurredAt.getTime()) ? { occurredAt } : {}),
         externalSource: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: comment.id },
       });

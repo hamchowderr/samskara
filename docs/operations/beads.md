@@ -374,6 +374,11 @@ the path Slack messages take (`@mastra/factory` 0.20.0
   that the full comment is in bd.
 - **Every card follows**, Done and Canceled included, since a comment often
   explains a close. A bead that is not carded has no feed to post to.
+- **First sweep after this shipped.** Every existing bd comment on every
+  carded bead is posted in that sweep, each one a feed event on its card.
+  bd authors are never notified (activity fan-out skips ids containing `:`,
+  `dist/storage/domains/comments/activity.js:29`), but people who follow
+  the card see the new comments.
 
 ### Card kinds
 
