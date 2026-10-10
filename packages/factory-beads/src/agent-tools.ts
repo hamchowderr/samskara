@@ -157,6 +157,18 @@ function idArg(what: string) {
   return z.string().min(1).regex(ID_PATTERN, 'not a bead id').describe(what);
 }
 
+/**
+ * A list of bd labels (samskara-l2t.5). bd's `--labels` is comma-separated,
+ * so a label may not contain a comma; whitespace around one is not a label.
+ */
+function labelsArg(what: string) {
+  return z
+    .array(z.string().min(1).regex(/^[^,\s][^,]*$/, 'a label has no comma and does not start with a space').max(100))
+    .max(20)
+    .optional()
+    .describe(what);
+}
+
 function failure(error: unknown): { error: string } {
   if (error instanceof BeadsToolError) return { error: error.message };
   return { error: `beads tool failed: ${error instanceof Error ? error.message : String(error)}` };
@@ -463,7 +475,7 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
   const beads_update = createTool({
     id: 'beads_update',
     description:
-      `Edit a bead: title, description, design, acceptance, priority, status (open, in_progress, blocked, deferred), or append to its notes. ` +
+      `Edit a bead: title, description, design, acceptance, priority, status (open, in_progress, blocked, deferred), labels, or append to its notes. ` +
       `It cannot close a bead (moving the card to Done does that), never edits or reopens a closed bead, and never replaces notes. Published to the repository immediately. ${where}\n\n${BEADS_AUTHORING_RULES}`,
     inputSchema: z.object({
       repository: repositoryArg,
@@ -475,8 +487,10 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
       priority: z.number().int().min(0).max(4).optional(),
       status: z.string().optional().describe('open, in_progress, blocked or deferred. Not closed.'),
       append_notes: z.string().min(1).optional().describe('Appended to the notes (running log, handoff). Never replaces them.'),
+      add_labels: labelsArg('Labels to add, e.g. ["frontend"]. "human" flags the bead for a person to decide.'),
+      remove_labels: labelsArg('Labels to remove.'),
     }),
-    execute: async ({ repository, id, title, description, design, acceptance, priority, status, append_notes }) => {
+    execute: async ({ repository, id, title, description, design, acceptance, priority, status, append_notes, add_labels, remove_labels }) => {
       try {
         const target = pickRepository(scope, repository);
         if (status !== undefined && !(SETTABLE_STATUSES as readonly string[]).includes(status)) {
@@ -494,6 +508,8 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
         if (priority !== undefined) args.push(`--priority=${priority}`);
         if (status) args.push(`--status=${status}`);
         if (append_notes) args.push(`--append-notes=${append_notes}`);
+        for (const label of add_labels ?? []) args.push(`--add-label=${label}`);
+        for (const label of remove_labels ?? []) args.push(`--remove-label=${label}`);
         if (args.length === 2) throw new BeadsToolError('nothing to update: pass at least one field');
         const outcome = await ops.write(target, async repo => {
           // A closed bead is left alone: bd would reopen it on --status=open,
@@ -529,8 +545,9 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
         .optional()
         .describe('What success looks like: verifiable yes/no outcomes, not steps. Required for task, bug, feature and story; the success criteria of an epic.'),
       parent: idArg('The epic this bead belongs to.').optional(),
+      labels: labelsArg('Labels, e.g. ["frontend", "api"]. "human" flags the bead for a person to decide.'),
     }),
-    execute: async ({ repository, title, type, priority, description, design, acceptance, parent }) => {
+    execute: async ({ repository, title, type, priority, description, design, acceptance, parent, labels }) => {
       try {
         const target = pickRepository(scope, repository);
         const outcome = await ops.write(target, async repo => {
@@ -546,6 +563,7 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
           ];
           if (acceptance) args.push(`--acceptance=${acceptance}`);
           if (parent) args.push(`--parent=${parent}`);
+          if (labels?.length) args.push(`--labels=${labels.join(',')}`);
           return args;
         });
         return { repository: target.slug, ...written(outcome) };

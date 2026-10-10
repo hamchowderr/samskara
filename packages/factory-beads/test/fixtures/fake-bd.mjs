@@ -346,6 +346,10 @@ switch (words[0]) {
       if (value !== undefined) bead[field] = value;
     }
     if (flagValue('priority') !== undefined) bead.priority = Number(flagValue('priority'));
+    // Like bd 1.3.1: --add-label and --remove-label are repeatable.
+    const added = flagValues('add-label');
+    const removed = flagValues('remove-label');
+    if (added.length || removed.length) bead.labels = [...new Set([...(bead.labels ?? []), ...added])].filter(l => !removed.includes(l));
     // Like bd 1.3.1: a plain reassign of someone's live in_progress claim needs
     // --force; the compare-and-swap form (--if-assignee) takes it over.
     const next = flagValue('assignee');
@@ -391,6 +395,8 @@ switch (words[0]) {
       design: flagValue('design'),
       acceptance_criteria: acceptance,
       parent: flagValue('parent'),
+      // Like bd 1.3.1: --labels is comma-separated.
+      ...(flagValue('labels') ? { labels: flagValue('labels').split(',') } : {}),
     };
     state.beads.push(bead);
     out = JSON.stringify(bead);

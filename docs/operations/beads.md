@@ -265,7 +265,7 @@ Restarting the server re-checks at once.
 | `claimKey` | `beads:<owner/name>:<bead id>` |
 | `title` | `<bead id>: <bead title>` |
 | `parentWorkItemId` | the overview card of the bead's parent container, or the card of any other parent bead, when it has one |
-| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'`; on a childless open epic's card `beadsCardKind: 'plan'`; on a card whose bead was closed outside the Factory `beadsClosedOutside` (the phase it is moved to), `beadsClosedOutsideMoves` (its stage-history length then) and, once it got there, `beadsClosedOutsideAt`; `beadsReopenPending` while a reopen move waits; `beadsLocalClose` while a close made here waits for a sync that failed |
+| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, `beadsTitle`, Factory's `labels` and `labelColors` (see [Label chips](#label-chips)), plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'`; on a childless open epic's card `beadsCardKind: 'plan'`; on a card whose bead was closed outside the Factory `beadsClosedOutside` (the phase it is moved to), `beadsClosedOutsideMoves` (its stage-history length then) and, once it got there, `beadsClosedOutsideAt`; `beadsReopenPending` while a reopen move waits; `beadsLocalClose` while a close made here waits for a sync that failed |
 
 Intake is idempotent. Before creating a card the integration looks it up by
 external source (`WorkItemsStorage.getByProjectSource`,
@@ -280,6 +280,45 @@ Cards are created with `workItems.upsert` and not with a rule decision.
 `upsert` is the call that `POST /web/factory/projects/:id/work-items` makes, and
 it accepts any external source. A card with an unknown source classifies as
 `manual` (`rules/types.d.ts:12`), so the board's `manual` rules apply to it.
+
+### Label chips
+
+Factory's board draws a chip for each string in a card's `metadata.labels`,
+for a card of any source, manual included, with the chip's dot colored from
+`metadata.labelColors` (a hex or named color) or by the label's text
+(`@mastra/factory` 0.20.0 board UI; GitHub and GitLab cards carry the same
+keys, `dist/integrations/github/rules.js:701`). Each sweep sets a beads
+card's chips from the refresh read, writing only on change
+(samskara-l2t.5; `integration.ts`, `cardChips`, applied in
+`#followBeadEdits`):
+
+| Chip | From |
+|------|------|
+| each bd label | the bead's `labels` |
+| `P0` to `P4` | the bead's priority; `P0` red, `P1` orange |
+| the type (`task`, `bug`, `epic`, ...) | the bead's `issue_type` |
+| `status: needs approval` (not drawn) | a bead labelled `human` |
+
+`beadsPriority` and `beadsType` follow the bead too. Factory has no sort
+field for cards, so priority cannot order a column; it is a chip only until
+Mastra adds one (feature request 31596da1, 2026-10-09).
+
+**A bead labelled `human`** needs a person's decision (`bd human`, bd
+v1.3.1). Its card carries Factory's own approval label, `status: needs
+approval` (`dist/rules/types.js:12-18`; the board does not draw it as a
+chip). While such a card is in Intake or Triage and not yet accepted, Work's
+Triage rule starts a prepare-approval run, which summarizes the decision
+needed, instead of an investigation (`dist/boards/work.js:51-60`). Removing
+the label in bd removes it from the card on the next sweep.
+
+**Labels and board routes.** Factory moves cards between boards by label
+only for GitHub and GitLab issue cards (`dist/routes/intake.js:85-102`), so
+a beads card's labels never move it to another board.
+
+**Agent tools.** `beads_create` takes `labels`, and `beads_update` takes
+`add_labels` and `remove_labels` (`bd create --labels`, `bd update
+--add-label` / `--remove-label`). A label may not contain a comma, since
+`--labels` is comma-separated.
 
 ### Card kinds
 
@@ -1724,7 +1763,13 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   Building linked under its parent with its kind left alone; no feed comment, and `bd ready --brief`; the
   hint text; the hint on the Requests board's Triage, Planning, Building and
   decision runs of a beads card and on no other card's; and every other
-  decision passed through unchanged.
+  decision passed through unchanged. Label chips (samskara-l2t.5,
+  `test/chips.test.ts`): bd labels, `P0`-`P4` and the type, with `P0` and
+  `P1` colored; chips following a label and priority edit in bd, written
+  only on change; a bead labelled `human` carrying the approval label and
+  getting Work's prepare-approval run in Triage; and in
+  `test/agent-tools.test.ts`, labels on `beads_create` and
+  `beads_update`, and a label with a comma refused.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote, including
   an epic with two children and a nested epic, and a real `bd mol pour` whose
@@ -1799,10 +1844,10 @@ build never runs bd.
   automated writer.
 - **No live plan-gate run yet.** The gate is proven by unit tests only. The
   transition API always acts as a person, and a live agent run costs credits.
-- **Labels, priority and type are not on the card yet** (samskara-l2t.5), and
-  bd comments do not reach the card's feed (samskara-l2t.6). A card's title,
-  its phase and its kind follow the bead; see
-  [What the agent sees](#what-the-agent-sees) and [Status sync](#status-sync).
+- **bd comments do not reach the card's feed yet** (samskara-l2t.6). A
+  card's title, phase, kind, labels, priority and type follow the bead; see
+  [What the agent sees](#what-the-agent-sees), [Status sync](#status-sync)
+  and [Label chips](#label-chips).
 - **Multi-repository start is proven by unit tests only (`samskara-srl`).**
   The tests run Mastra's own `resolveWorkItemRepository` on the cards the
   integration makes; no beads card has yet been started live in a factory
