@@ -193,6 +193,39 @@ switch (words[0]) {
     }
     break;
   }
+  case 'supersede':
+  case 'duplicate': {
+    // Like bd 1.3.1 (cmd/bd/duplicate.go:100-114, :170-184): add the edge,
+    // then close with an EMPTY reason. `--with`/`--of` as `--with=X` or `--with X`.
+    const name = words[0] === 'supersede' ? 'with' : 'of';
+    const other = flagValue(name) ?? argv[argv.indexOf(`--${name}`) + 1];
+    const bead = state.beads.find(b => b.id === words[1]);
+    if (!bead || !state.beads.some(b => b.id === other) || other === words[1]) {
+      code = 1;
+      err = `failed to resolve ${words[1]}`;
+      break;
+    }
+    if (words[0] === 'supersede') bead.supersededBy = other;
+    else bead.duplicateOf = other;
+    bead.status = 'closed';
+    bead.closeReason = null;
+    bead.updatedAt = new Date().toISOString();
+    break;
+  }
+  case 'reopen': {
+    // Like bd 1.3.1 (checked on a real copy): status open, close_reason and
+    // closed_at cleared, a supersedes/duplicates edge kept.
+    const bead = state.beads.find(b => b.id === words[1]);
+    if (!bead) {
+      code = 1;
+      err = `issue ${words[1]} not found`;
+      break;
+    }
+    bead.status = 'open';
+    bead.closeReason = null;
+    bead.updatedAt = new Date().toISOString();
+    break;
+  }
   case 'sync':
     code = state.syncExits.length ? state.syncExits.shift() : 0;
     if (code === 2) err = `CONFLICT in issues table; token was ${process.env.BEADS_GIT_TOKEN}`;
@@ -249,6 +282,10 @@ switch (words[0]) {
         const deps = [
           ...(b.parent ? [{ issue_id: b.id, depends_on_id: b.parent, type: 'parent-child' }] : []),
           ...(b.blockedBy ?? []).map(id => ({ issue_id: b.id, depends_on_id: id, type: 'blocks' })),
+          // Like bd 1.3.1 (checked on a real copy): supersede and duplicate put
+          // their edge on the closed bead's own row, and leave close_reason empty.
+          ...(b.supersededBy ? [{ issue_id: b.id, depends_on_id: b.supersededBy, type: 'supersedes' }] : []),
+          ...(b.duplicateOf ? [{ issue_id: b.id, depends_on_id: b.duplicateOf, type: 'duplicates' }] : []),
         ];
         const closed = (b.status ?? 'open') === 'closed';
         return Object.fromEntries(

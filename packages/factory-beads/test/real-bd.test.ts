@@ -452,6 +452,65 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown[0]?.status).toBe('closed');
   }, 300_000);
 
+  it('moves cards of beads closed, superseded, marked duplicate and reopened in bd (samskara-l2t.3)', async () => {
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const make = (title: string) => run('bd', ['create', title, '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    const fixed = make('Fixed elsewhere');
+    const old = make('Old spec');
+    const replacement = make('New spec');
+    const dup = make('Same report');
+    run('bd', ['dolt', 'push']);
+    await sweep(integration);
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id)!;
+    const mine = new Set([fixed, old, dup].map(id => card(id).id));
+    const decisions = (applied: Awaited<ReturnType<typeof h.workItems.applyDecisions>>) =>
+      applied.filter(a => mine.has(a.workItemId)).map(a => [a.workItemId, a.stage, a.outcome]);
+
+    // A person closes, supersedes and marks a duplicate in their own copy, and pushes.
+    run('bd', ['close', fixed, '--reason', 'fixed on a laptop']);
+    run('bd', ['supersede', old, '--with', replacement]);
+    run('bd', ['duplicate', dup, '--of', replacement]);
+    run('bd', ['dolt', 'push']);
+    await sweep(integration);
+    expect(card(old).metadata?.[BEADS_META.closedOutside]).toBe('canceled');
+    expect(decisions(await h.workItems.applyDecisions())).toEqual([
+      [card(fixed).id, 'done', 'moved'],
+      [card(old).id, 'canceled', 'moved'],
+      [card(dup).id, 'canceled', 'moved'],
+    ]);
+    const synced = await sweep(integration);
+    expect(synced.repos[0], JSON.stringify(synced)).toMatchObject({ state: 'ok' });
+    expect(card(fixed).metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+    // bd kept the person's close: write-back did not close it again as factory-beads.
+    run('bd', ['dolt', 'pull']);
+    const shown = (id: string) => (JSON.parse(run('bd', ['--readonly', 'show', id, '--json'])) as Array<{ status: string; close_reason?: string }>)[0]!;
+    expect(shown(fixed)).toMatchObject({ status: 'closed', close_reason: 'fixed on a laptop' });
+
+    // Reopened: the Done card comes back to Intake; the canceled ones stay.
+    run('bd', ['reopen', fixed]);
+    run('bd', ['reopen', old]);
+    run('bd', ['dolt', 'push']);
+    await sweep(integration);
+    expect(decisions(await h.workItems.applyDecisions())).toEqual([[card(fixed).id, 'intake', 'moved']]);
+    await sweep(integration);
+    expect(card(fixed).metadata?.[BEADS_META.syncedAt]).toBeNull();
+    expect(card(old).stages).toEqual(['canceled']);
+
+    // Its next Done closes it again, as factory-beads.
+    h.workItems.move(card(fixed).id, 'done');
+    const closed = await sweep(integration);
+    expect(closed.repos[0], JSON.stringify(closed)).toMatchObject({ state: 'ok', closed: 1 });
+    run('bd', ['dolt', 'pull']);
+    expect(shown(fixed).status).toBe('closed');
+  }, 300_000);
+
   it('BdRepo.refresh: one bd list answers every bead and its children as bd list --parent does (samskara-l2t.15)', async () => {
     const dir = join(root, 'r');
     run('git', ['init', '-q', dir], root);

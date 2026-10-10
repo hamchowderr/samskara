@@ -40,6 +40,14 @@
  * (rules/dispatcher.js:107-112), so a `planApproved` move cannot be told
  * apart from a person's approval, and is refused too. Only a person moves a
  * plan card to Done, which would close the epic without children.
+ *
+ * One exception to both Done gates (samskara-l2t.3): when the bead was
+ * already closed outside the Factory, the sync worker marks the card
+ * `beadsClosedOutside: <phase>` and commits the move as a rule decision.
+ * While the marker names the target phase, any system move there is
+ * allowed (`isClosedOutsideMove`), not only the sync worker's: see that
+ * function. The gate guards the close, and the close has already happened
+ * in bd.
  */
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
@@ -86,6 +94,33 @@ export const PLAN_APPROVAL_REASON =
   "A person approves an epic's proposed children by moving its card to Building; agents and automation never do, even when plans auto-approve";
 export const PLAN_DONE_REASON =
   "Only a person moves an epic's planning card to Done, which closes the epic with no children";
+
+/**
+ * Whether this is a system move of a card whose bead was already closed
+ * outside the Factory to the phase the card's `beadsClosedOutside` marker
+ * names (samskara-l2t.3). The sync worker sets the marker while the bead is
+ * closed and commits the move as a rule decision. The policy cannot tell
+ * that move from any other system move: Factory's dispatcher applies every
+ * committed rule decision as `{ type: 'system', id:
+ * 'factory-rule-dispatcher' }` (@mastra/factory 0.20.0
+ * dist/rules/dispatcher.js:518-524), whichever rule or integration
+ * committed it. So while the marker names the target phase, any system move
+ * to that phase passes, not only the sync worker's. The marker is cleared
+ * once the bead is open again; a deleted bead is no longer in bd's list, so
+ * the worker never reads it again and its card's marker is never cleared.
+ *
+ * A research or plan card's Done gate exists so that a person approves the
+ * close; a bead closed in bd has nothing left to approve, and refusing the
+ * move would leave the card in a working phase, or Intake, for a closed
+ * bead. An agent's own move does not get this: the actor must be the
+ * system, and no beads tool closes a bead (agent-tools.ts). A rule that
+ * turns an agent's tool result into a system move to the marked phase
+ * would pass, as any system move does.
+ */
+export function isClosedOutsideMove(context: { actor: { type: string }; toStage: string; item: { metadata?: unknown } }): boolean {
+  const metadata = context.item.metadata as Readonly<Record<string, unknown>> | null | undefined;
+  return context.actor.type === 'system' && metadata?.[BEADS_META.closedOutside] === context.toStage;
+}
 
 /** Whether a card's metadata marks it as a beads overview card. */
 export function isOverviewCard(metadata: Readonly<Record<string, unknown>> | null | undefined): boolean {
@@ -135,7 +170,7 @@ export function createBeadsTransitionPolicy(
       }
       // Not `isHumanTransition`: Work's plan gate keys on the actor alone too
       // (work-transition-policy.js:15). plansAutoApproved is deliberately unread.
-      if (context.toStage === donePhase && context.actor.type !== 'human') {
+      if (context.toStage === donePhase && context.actor.type !== 'human' && !isClosedOutsideMove(context)) {
         return { type: 'reject', code: 'approval_required', reason: RESEARCH_APPROVAL_REASON };
       }
     }
@@ -148,7 +183,7 @@ export function createBeadsTransitionPolicy(
       if (context.toStage === buildPhase && context.actor.type !== 'human') {
         return { type: 'reject', code: 'approval_required', reason: PLAN_APPROVAL_REASON };
       }
-      if (context.toStage === donePhase && context.actor.type !== 'human') {
+      if (context.toStage === donePhase && context.actor.type !== 'human' && !isClosedOutsideMove(context)) {
         return { type: 'reject', code: 'approval_required', reason: PLAN_DONE_REASON };
       }
     }

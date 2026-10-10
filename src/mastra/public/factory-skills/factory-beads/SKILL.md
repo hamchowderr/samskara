@@ -106,6 +106,14 @@ bd refuses to close any bead while one of its children is open. So a parent's ca
 - Found work in the middle of a task? Create it complete, then `beads_dep_add` it to the bead you were working on with type `discovered-from`, so the causal link survives.
 - Reversed a decision? Link the old bead to the new one with type `supersedes` and say why in the notes. Never silently drop the old one: the trail must show why it changed.
 
+## Beads closed or reopened outside the Factory
+
+People also change beads with their own `bd`. The next sync follows them:
+
+- A bead closed in bd moves its card to Done. A bead superseded (`bd supersede`), marked a duplicate (`bd duplicate`) or dismissed (`bd human dismiss`) moves its card to Canceled. This happens in whatever phase the card is in, research and planning cards included, and a run on the card ends with the move: the work was finished or dropped elsewhere. Do not move such a card back out of Done or Canceled.
+- A bead reopened in bd after its card reached Done moves the same card back to Intake. Its next Done closes the bead again. A Canceled card is never moved back.
+- An overview card is not moved this way: it still moves when its last child closes.
+
 ## When the board refuses a move
 
 The board refuses a move a card's kind does not allow, and `factory_transition_work_item` returns the reason. Read it and do what it says; do not retry the same move. An overview card's refusal tells you to move it to Intake and work on its children instead: an overview card made before overview cards existed can still have a run on it, and Intake is the one move that run has left (Done too, once no child is open).

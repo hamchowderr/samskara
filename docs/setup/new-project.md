@@ -315,7 +315,7 @@ For each linked repository that uses beads:
    - `parked` — a write-back conflict; an organization admin resets it with
      `POST /web/beads/reset` and the body `{"repo": "owner/name"}` (without it
      the route answers 400 `repo_required`,
-     `packages/factory-beads/src/integration.ts:722`).
+     `packages/factory-beads/src/integration.ts:1834`).
 
    Meanings and fixes: [operations/beads.md](../operations/beads.md#repository-states).
 

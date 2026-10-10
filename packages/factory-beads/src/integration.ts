@@ -79,7 +79,90 @@ export const BEADS_META = {
    * re-armed after the last child closed. Set once; a card is re-armed once.
    */
   closeRearmedAt: 'beadsCloseRearmedAt',
+  /**
+   * The phase a card is being moved to because its bead was closed outside
+   * the Factory (samskara-l2t.3): the done phase, or the canceled phase for
+   * a superseded, duplicate or dismissed bead. Set before the move is
+   * committed, cleared once the bead is open again. Write-back reads it to
+   * mark such a card synced without closing or syncing anything when it is
+   * the done phase, and the board policy reads it to let any system move to
+   * that phase through (board-rules.ts, `isClosedOutsideMove`). A canceled
+   * phase here never stands for a close to skip: a person's later move of
+   * the card to Done is written back as usual.
+   */
+  closedOutside: 'beadsClosedOutside',
+  /**
+   * How many stage-history entries the card had when `closedOutside` was
+   * set. An entry for the marked phase at or after that index is the card's
+   * arrival there.
+   */
+  closedOutsideMoves: 'beadsClosedOutsideMoves',
+  /**
+   * When the card was found to have reached the phase `closedOutside`
+   * names. From then on, while its bead stays closed, the closed-outside
+   * path never moves the card again: a person who moves it out of Canceled
+   * (or Done) keeps that move, as `syncedAt` already does for Done.
+   */
+  closedOutsideAt: 'beadsClosedOutsideAt',
+  /**
+   * A reopen move is committed and waits for the dispatcher: the card's
+   * stage-history length when it was committed. While the card has not
+   * moved since (same length), write-back leaves it alone; once it has, the
+   * marker is stale and cleared, so a person's later Done closes the bead.
+   */
+  reopenPending: 'beadsReopenPending',
+  /**
+   * When write-back closed the bead in the local copy and the `bd sync`
+   * that publishes it failed (exit 1, or 3 after retries). Such a card stays
+   * pending for sync wherever it is, so a person moving it out of Done does
+   * not strand the close unpublished, and the closed-outside path never
+   * takes it for a bead closed in bd. Cleared when it is marked synced.
+   */
+  localClose: 'beadsLocalClose',
 } as const;
+
+/** How many phases the card has entered: Factory appends one stage-history entry per phase entered (work-items/base.js:338-356). */
+function stageMoves(card: WorkItemRow): number {
+  return Array.isArray(card.stageHistory) ? card.stageHistory.length : 0;
+}
+
+/** Whether a committed reopen move still waits: the card has not moved since it was committed. */
+function isReopenPending(card: WorkItemRow): boolean {
+  const recorded = card.metadata?.[BEADS_META.reopenPending];
+  return typeof recorded === 'number' && recorded === stageMoves(card);
+}
+
+/** Whether a card marked `closedOutside` has reached the phase the marker names since it was set. */
+function arrivedClosedOutside(card: WorkItemRow): boolean {
+  const meta = card.metadata ?? {};
+  if (meta[BEADS_META.closedOutsideAt]) return true;
+  const target = meta[BEADS_META.closedOutside];
+  const from = meta[BEADS_META.closedOutsideMoves];
+  if (typeof target !== 'string' || typeof from !== 'number') return false;
+  return (card.stageHistory ?? []).slice(from).some(entry => entry.stage === target);
+}
+
+/**
+ * The patch that clears a card's recorded close: the write-back markers when
+ * a close was recorded (`syncedAt`), and the closed-outside markers. Only
+ * keys that are set, so a card with nothing to clear is not written.
+ */
+function clearedCloseMarkers(meta: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const key of [BEADS_META.closedOutside, BEADS_META.closedOutsideMoves, BEADS_META.closedOutsideAt]) {
+    if (meta[key] !== undefined && meta[key] !== null) patch[key] = null;
+  }
+  if (meta[BEADS_META.syncedAt]) {
+    Object.assign(patch, {
+      [BEADS_META.syncedAt]: null,
+      [BEADS_META.writeback]: null,
+      [BEADS_META.closeAttempts]: 0,
+      [BEADS_META.diagnostic]: null,
+      [BEADS_META.closeRearmedAt]: null,
+    });
+  }
+  return patch;
+}
 
 /** `BEADS_META.cardKind` of an epic's, milestone's or molecule root's card. */
 export const OVERVIEW_CARD_KIND = 'overview';
@@ -152,6 +235,12 @@ export interface BeadsIntegrationOptions {
   board?: string;
   /** Phase whose arrival closes the bead. Default `done`. */
   donePhase?: string;
+  /**
+   * Terminal phase a card moves to when its bead is superseded, marked a
+   * duplicate or dismissed outside the Factory (samskara-l2t.3). Default
+   * `canceled`; when the board has no such terminal phase, the done phase.
+   */
+  canceledPhase?: string;
   /** Poll interval. Default 60 s. */
   pollIntervalMs?: number;
   /** Where the per-repo bd copies live. Default `<tmpdir>/factory-beads`. Must survive between ticks, not restarts. */
@@ -292,6 +381,7 @@ export class BeadsIntegration implements FactoryIntegration {
   readonly id = BEADS_INTEGRATION_ID;
   readonly board: string;
   readonly donePhase: string;
+  readonly canceledPhase: string;
   readonly #options: BeadsIntegrationOptions;
   readonly #runner: BdRunner;
   readonly #cacheRoot: string;
@@ -332,6 +422,7 @@ export class BeadsIntegration implements FactoryIntegration {
     this.#options = options;
     this.board = options.board ?? 'work';
     this.donePhase = options.donePhase ?? 'done';
+    this.canceledPhase = options.canceledPhase ?? 'canceled';
     this.#cacheRoot = options.cacheDir ?? join(tmpdir(), 'factory-beads');
     this.#log = options.logger ?? console;
     this.#runner =
@@ -698,17 +789,25 @@ export class BeadsIntegration implements FactoryIntegration {
     const boot = await repo.ensure(credentials);
     if (boot) this.#log.info(`[factory-beads] bootstrapped ${slug}: clone ${boot.cloneMs}ms, bootstrap ${boot.bootstrapMs}ms`);
 
-    // 1. Write-back: cards durably in the done phase whose bead is not yet published.
+    // 1. Write-back: cards durably in the done phase whose bead is not yet
+    //    published, and cards whose bead write-back closed in the copy but
+    //    whose sync failed (`beadsLocalClose`), wherever they are now. A card
+    //    whose reopen move waits for the dispatcher is left alone: its bead
+    //    is open again on purpose.
     const maxAttempts = this.#options.maxCloseAttempts ?? 3;
-    const pending = cards.filter(
-      item =>
-        item.board === this.board &&
-        item.stages.length === 1 &&
-        item.stages[0] === this.donePhase &&
-        !item.metadata?.[BEADS_META.syncedAt] &&
+    const pending = cards.filter(item => {
+      if (item.board !== this.board || item.stages.length !== 1 || item.metadata?.[BEADS_META.syncedAt]) return false;
+      if (item.stages[0] !== this.donePhase) return Boolean(item.metadata?.[BEADS_META.localClose]);
+      return (
+        !isReopenPending(item) &&
         item.metadata?.[BEADS_META.writeback] !== 'close-failed' &&
-        Number(item.metadata?.[BEADS_META.closeAttempts] ?? 0) < maxAttempts,
-    );
+        Number(item.metadata?.[BEADS_META.closeAttempts] ?? 0) < maxAttempts
+      );
+    });
+    // Whether write-back closed, or tried to close, a bead this tick. When it
+    // did not, the copy is pulled (or an agent write published) as on a tick
+    // with nothing pending.
+    let wroteBack = false;
     if (pending.length > 0) {
       // Each bead's status and holder come from one refresh read of the copy
       // as it is, before any pull, which is what the `bd show` per card it
@@ -726,6 +825,36 @@ export class BeadsIntegration implements FactoryIntegration {
         const beadId = String(item.metadata?.[BEADS_META.id]);
         // A bead the list leaves out (a gate, a wisp) is read with bd show, as before.
         const bead = before?.get(beadId) ?? (await repo.show(beadId));
+        // Out of Done with a close made here that never reached the remote:
+        // published with this tick's sync, never closed again. If the bead is
+        // open in the copy now, there is nothing left to publish for it.
+        if (item.stages[0] !== this.donePhase) {
+          if (bead?.status === 'closed') {
+            wroteBack = true;
+            closed.push(item);
+          } else {
+            await this.#mark(orgId, item, { [BEADS_META.localClose]: null });
+          }
+          continue;
+        }
+        // Moved here because its bead was closed outside the Factory
+        // (samskara-l2t.3, #followOutsideState): nothing to close and nothing
+        // local to publish, so it is only marked synced. If the bead was
+        // reopened since, it is not closed again: the reopen pass moves the
+        // card back to Intake. Only a marker naming the done phase counts: a
+        // card a person moved here from Canceled (marker `canceled`) is the
+        // person's Done, and is closed and synced as usual.
+        if (item.metadata?.[BEADS_META.closedOutside] === this.donePhase) {
+          if (bead?.status === 'closed') {
+            await this.#mark(orgId, item, {
+              [BEADS_META.writeback]: 'synced' satisfies WritebackState,
+              [BEADS_META.syncedAt]: new Date().toISOString(),
+              [BEADS_META.diagnostic]: null,
+            });
+          }
+          continue;
+        }
+        wroteBack = true;
         if (bead?.status === 'closed') {
           closed.push(item);
           continue;
@@ -755,6 +884,7 @@ export class BeadsIntegration implements FactoryIntegration {
               [BEADS_META.writeback]: 'synced' satisfies WritebackState,
               [BEADS_META.syncedAt]: new Date().toISOString(),
               [BEADS_META.diagnostic]: null,
+              ...(item.metadata?.[BEADS_META.localClose] ? { [BEADS_META.localClose]: null } : {}),
             });
             report.closed++;
           }
@@ -775,11 +905,18 @@ export class BeadsIntegration implements FactoryIntegration {
         } else {
           // 1 (transport/auth) or 3 after our retries: the close is committed
           // locally and the cards stay pending, so the next tick syncs again.
+          // Marked, so they stay pending even if a person moves them out of
+          // Done first, and step 7 never takes the local close for one made
+          // in bd (which would mark them synced with nothing published).
+          for (const item of closed) {
+            if (!item.metadata?.[BEADS_META.localClose]) await this.#mark(orgId, item, { [BEADS_META.localClose]: new Date().toISOString() });
+          }
           report.state = 'error';
           report.diagnostic = `bd sync exit ${sync.code}: ${resultTail(sync, 300)}`;
         }
       }
-    } else if (this.#unpublished.has(slug)) {
+    }
+    if (!wroteBack && this.#unpublished.has(slug)) {
       // An agent-tool write is committed here but its own `bd sync` failed:
       // publish it now. A pull alone would never push it.
       const sync = await this.#syncWithRetry(repo, credentials);
@@ -796,7 +933,7 @@ export class BeadsIntegration implements FactoryIntegration {
         report.state = 'error';
         report.diagnostic = `bd sync exit ${sync.code} (publishing an agent write): ${resultTail(sync, 300)}`;
       }
-    } else {
+    } else if (!wroteBack) {
       const pull = await repo.pull(credentials);
       if (pull.code !== 0) {
         report.state = 'error';
@@ -932,6 +1069,173 @@ export class BeadsIntegration implements FactoryIntegration {
     // 6. Cards parked `close-failed` in Done whose children have all closed
     //    since: bd refuses to close any bead while a child is open.
     await this.#rearmParentCloses(scope, cards);
+
+    // 7. Beads closed or reopened outside the Factory (samskara-l2t.3): a
+    //    card whose bead was closed in bd moves to Done, or to Canceled when
+    //    the bead was superseded, marked a duplicate or dismissed; a card in
+    //    Done whose bead was reopened moves back to Intake.
+    await this.#followOutsideState(scope, board);
+  }
+
+  /**
+   * Step 7 of a sweep (samskara-l2t.3). Reads bead state from the refresh
+   * read only; without it nothing moves this sweep.
+   *
+   * **Closed outside.** A card in a resting or working phase whose bead is
+   * closed, and that write-back did not close (no `beadsSyncedAt`), is
+   * committed to the done phase, or to the canceled phase when
+   * `closedOutsideOutcome` says the bead was not completed. Linear's
+   * issue-closed rule does the same for a Linear card
+   * (@mastra/factory 0.20.0 dist/integrations/linear/default-rules.js:35-49:
+   * canceled to `canceled`, otherwise `done`, whatever the card's phase).
+   * The card is first marked `beadsClosedOutside` with the target, so
+   * write-back marks it synced without a close or a sync when the target is
+   * the done phase, and the board policy lets the system move a research or
+   * plan card whose bead is already closed: nothing is left for a person to
+   * approve. Once the card has reached the target (`arrivedClosedOutside`:
+   * its stage history since the marker, or this step finding it there,
+   * recorded as `beadsClosedOutsideAt`), it is never moved for that close
+   * again: a person who moves it out of Canceled keeps the move, as one who
+   * moves it out of Done does through `beadsSyncedAt`. A card whose close
+   * write-back made locally but could not sync (`beadsLocalClose`) is not a
+   * close made in bd, and is left to write-back.
+   *
+   * Not for an overview card: its own close path (step 4) moves it once its
+   * children are closed, and a container closed while a child is open keeps
+   * its card (owner decision, samskara-l2t.2.2). A card with `beadsSyncedAt`
+   * in a non-terminal phase is a card a person moved out of Done after
+   * write-back closed its bead; moving it back would undo that person's
+   * move (the two-way status sync, samskara-l2t.4, owns that case).
+   *
+   * A run on the card does not hold the move. Moving a card to a terminal
+   * phase aborts the sessions bound to it and revokes their bindings
+   * (the transition service runs terminal cleanup on every accepted move to
+   * a terminal phase, rules/transition-service.js:377-390;
+   * rules/terminal-cleanup.js:24-50), so the run stops and its later moves
+   * are refused (rules/tools.js:61-62). The work is finished or dropped in
+   * bd; a run past that point builds what nobody tracks. Waiting for the
+   * binding instead would wait up to 24 hours: a binding stays active after
+   * its run ends until the card leaves for a terminal phase or the stale
+   * sweep revokes it (rules/dispatcher.js:34-35,373-385).
+   *
+   * **Reopened.** A card in the done phase whose close was recorded
+   * (`beadsSyncedAt`, set by write-back, or `beadsClosedOutside` naming the
+   * done phase, for a card moved here because its bead was closed in bd,
+   * synced or not yet) and whose bead is no longer closed is
+   * committed to the board's initial phase (owner decision, samskara-l2t:
+   * a bead reopened after Done moves its same card Done -> Intake). In the
+   * same sweep, before the commit, its close markers are cleared and
+   * `beadsReopenPending` records its stage-history length: write-back skips
+   * it while the move waits, a later sweep re-commits (a replay at the same
+   * revision), and once the card has moved the marker is stale and cleared,
+   * so a person's Done made before the next sweep closes the bead again
+   * instead of being sent back to Intake. A card in the canceled phase is
+   * never moved back: a canceled card leaves its bead open by owner
+   * decision, so an open bead there is expected; its closed-outside markers
+   * are cleared, so a person's later Done is written back as usual.
+   *
+   * **After a reopen.** Once such a card has left the terminal phase and
+   * its bead is open, any close marker still set is cleared, and its
+   * org-wide claim, which
+   * Factory dropped when the card entered a terminal phase
+   * (storage/domains/work-items/base.js:911-920), is taken again with
+   * `claimWorkItem` (:1232-1256); that holds for any card back from a
+   * terminal phase with its bead open.
+   *
+   * Each move is a committed transition (#commitTransition): a repeat at
+   * the same card revision is a replay, so no move is committed twice.
+   */
+  async #followOutsideState(scope: IntakeScope, board: BoardPhases): Promise<void> {
+    const { orgId, projectId, slug, snapshot, initialPhase } = scope;
+    if (!snapshot) return;
+    const runtime = this.#ctx!.runtime!;
+    const canceledPhase = board.phaseKind(this.canceledPhase) === 'terminal' ? this.canceledPhase : this.donePhase;
+    // Re-read: earlier steps moved revisions.
+    const cards = await runtime.workItems.list({ orgId, factoryProjectId: projectId });
+    for (let card of cards) {
+      if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID || card.metadata?.[BEADS_META.repo] !== slug) continue;
+      const beadId = card.metadata?.[BEADS_META.id];
+      if (typeof beadId !== 'string' || card.board !== this.board || card.stages.length !== 1) continue;
+      const bead = snapshot.get(beadId);
+      // Not in the list (bd leaves gates, templates and wisps out): unknown, so left alone.
+      if (!bead?.status) continue;
+      const stage = card.stages[0]!;
+      const terminal = board.phaseKind(stage) === 'terminal';
+      const closed = bead.status === 'closed';
+      let meta = card.metadata ?? {};
+      try {
+        // A reopen move the card has made since, or any move after it, ends the wait.
+        if (meta[BEADS_META.reopenPending] != null && !isReopenPending(card)) {
+          card = await this.#mark(orgId, card, { [BEADS_META.reopenPending]: null });
+          meta = card.metadata ?? {};
+        }
+        if (!terminal && closed) {
+          // A close write-back made (synced, or still waiting for its sync)
+          // that a person moved out of Done: theirs to keep (samskara-l2t.4).
+          if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND || meta[BEADS_META.syncedAt] || meta[BEADS_META.localClose]) continue;
+          // Already moved for this close once, then moved out by a person: theirs to keep too.
+          if (arrivedClosedOutside(card)) {
+            if (!meta[BEADS_META.closedOutsideAt]) await this.#mark(orgId, card, { [BEADS_META.closedOutsideAt]: new Date().toISOString() });
+            continue;
+          }
+          const outcome = closedOutsideOutcome(bead);
+          const target = outcome === 'completed' ? this.donePhase : canceledPhase;
+          if (meta[BEADS_META.closedOutside] !== target) {
+            card = await this.#mark(orgId, card, { [BEADS_META.closedOutside]: target, [BEADS_META.closedOutsideMoves]: stageMoves(card) });
+          }
+          const result = await this.#commitTransition(orgId, card, target, 'closed-outside');
+          if (result === 'committed') {
+            this.#log.info(`[factory-beads] ${slug}: ${beadId} was ${outcome} outside the Factory; its card moves from ${stage} to ${target}`);
+          }
+        } else if (!terminal) {
+          // Open bead on a card that is not finished: clear what a past close left.
+          const patch = clearedCloseMarkers(meta);
+          if (Object.keys(patch).length > 0) card = await this.#mark(orgId, card, patch);
+          // A card back from a terminal phase (reopened, or moved back by a person).
+          if (card.claimKey === null) {
+            const claimed = await runtime.workItems.claimWorkItem({ orgId, id: card.id, claimKey: beadsClaimKey(slug, beadId) });
+            if (!claimed) {
+              this.#warnOnce(
+                `reclaim:${card.id}`,
+                `[factory-beads] ${slug}: card ${card.id} of reopened ${beadId} could not take its claim back: another card in the organization holds it`,
+              );
+            }
+          }
+        } else if (closed) {
+          // In a terminal phase with its bead closed: record that a card moved
+          // for a close made in bd has arrived, so it is never moved again
+          // for that close once a person moves it out.
+          if (meta[BEADS_META.closedOutside] === stage && !meta[BEADS_META.closedOutsideAt]) {
+            await this.#mark(orgId, card, { [BEADS_META.closedOutsideAt]: new Date().toISOString() });
+          }
+        } else if (
+          stage === this.donePhase &&
+          (meta[BEADS_META.syncedAt] || meta[BEADS_META.closedOutside] === this.donePhase || isReopenPending(card))
+        ) {
+          // The close markers are cleared before the move is committed, in
+          // this sweep, and the wait is recorded instead: write-back skips the
+          // card while the move waits, and once the card has moved, a
+          // person's Done closes the bead again instead of being undone.
+          if (!isReopenPending(card)) {
+            card = await this.#mark(orgId, card, { ...clearedCloseMarkers(meta), [BEADS_META.reopenPending]: stageMoves(card) });
+          }
+          const result = await this.#commitTransition(orgId, card, initialPhase, 'reopened');
+          if (result === 'committed') {
+            this.#log.info(`[factory-beads] ${slug}: ${beadId} was reopened (${bead.status}); its card moves from ${stage} to ${initialPhase}`);
+          }
+        } else {
+          // In a terminal phase with its bead open and no close recorded to
+          // undo: a canceled card keeps its phase (owner decision), and a
+          // closed-outside marker left from the close no longer applies.
+          const patch = clearedCloseMarkers(meta);
+          if (Object.keys(patch).length > 0) await this.#mark(orgId, card, patch);
+        }
+      } catch (error) {
+        this.#log.warn(
+          `[factory-beads] ${slug}: card of ${beadId} not moved after its bead changed outside the Factory: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
   }
 
   /**
@@ -1572,6 +1876,46 @@ export function parentsFirst<T extends { id: string; parent?: string }>(ready: r
   };
   for (const bead of ready) place(bead, new Set());
   return out;
+}
+
+/** How a bead closed outside the Factory ended: its card moves to Done, or to Canceled. */
+export type ClosedOutsideOutcome = 'completed' | 'canceled';
+
+/** The edge types bd 1.3.1 writes when it closes a bead as superseded or as a duplicate. */
+export const NOT_COMPLETED_EDGES = ['supersedes', 'duplicates'] as const;
+
+/** The close reason `bd human dismiss` writes, alone or as `Dismissed: <reason>`. */
+export const DISMISSED_REASON = 'Dismissed';
+
+/**
+ * Whether a closed bead was completed or dropped, from its refresh row
+ * (samskara-l2t.3). bd 1.3.1 has no close-reason vocabulary to read this
+ * from, so it is read from what bd's own commands leave behind:
+ *
+ *   - `bd supersede <old> --with <new>` and `bd duplicate <dup> --of <canonical>`
+ *     add a `supersedes` / `duplicates` edge from the closed bead to the
+ *     other one, then close it with an EMPTY reason (bd v1.3.1
+ *     cmd/bd/duplicate.go:100-114, :170-184). The edge is on the closed
+ *     bead's row (`dependencies`, issue_id = the bead); checked on bd 1.3.1.
+ *     So such a bead is `canceled`.
+ *   - `bd human dismiss` closes with `Dismissed` or `Dismissed: <reason>`
+ *     (cmd/bd/human.go:366-368,451): `canceled`. `bd human respond` closes
+ *     with `Responded` (:315): `completed`, as any other reason or none.
+ *
+ * Only a closed bead is read this way. A reopened bead keeps its edge
+ * (checked on bd 1.3.1: `bd reopen` clears close_reason, not the edge), so
+ * a superseded bead that is reopened and then closed normally still reads
+ * as `canceled`.
+ */
+export function closedOutsideOutcome(bead: Pick<BeadRow, 'id' | 'close_reason' | 'dependencies'>): ClosedOutsideOutcome {
+  const dropped = (bead.dependencies ?? []).some(
+    dep =>
+      (NOT_COMPLETED_EDGES as readonly string[]).includes(dep?.type ?? '') && (dep?.issue_id === undefined || dep.issue_id === bead.id),
+  );
+  if (dropped) return 'canceled';
+  const reason = bead.close_reason?.trim() ?? '';
+  if (reason === DISMISSED_REASON || reason.startsWith(`${DISMISSED_REASON}:`)) return 'canceled';
+  return 'completed';
 }
 
 /** A bead card's external source. The same for a work card and an overview card. */

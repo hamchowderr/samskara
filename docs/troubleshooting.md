@@ -150,7 +150,7 @@ repository has a state:
 - `parked` — a write-back conflict. An organization admin resets it with
   `POST /web/beads/reset` and the body `{"repo": "owner/name"}`; without it the
   route answers 400 `repo_required`
-  (`packages/factory-beads/src/integration.ts:722`).
+  (`packages/factory-beads/src/integration.ts:1834`).
 
 The meaning of each state and the fixes are in
 [operations/beads.md](operations/beads.md#repository-states). A ready bead lands
