@@ -55,7 +55,9 @@ const workExecute = workBoard.phases.execute.onEnter ?? {};
  * no working phase but Planning and reaches Done only by a person's move; and
  * a plan card (a childless epic's) enters no working phase but Planning and
  * Building, and reaches Building or Done only by a person's move, whatever
- * the auto-approve-plans setting. Every other card gets Work's answer
+ * the auto-approve-plans setting. The one exception: the sync worker's move
+ * of a card whose bead was already closed in bd (samskara-l2t.3,
+ * `isClosedOutsideMove`). Every other card gets Work's answer
  * unchanged. The working phases are read from the phases' declared `kind`,
  * and the plan phase from its `role` (configure-factory-rules/SKILL.md:65).
  * The build phase is Work's `execute`: Review shares its `work` role, so the

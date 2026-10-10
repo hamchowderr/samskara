@@ -5,11 +5,14 @@ export {
   BEADS_INTEGRATION_ID,
   BEADS_META,
   beadsClaimKey,
+  closedOutsideOutcome,
   DECISION_TYPE,
   descriptionBody,
+  DISMISSED_REASON,
   EPIC_TYPE,
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
+  NOT_COMPLETED_EDGES,
   OVERVIEW_CARD_KIND,
   parentsFirst,
   PLAN_CARD_KIND,
@@ -18,6 +21,7 @@ export {
 export type {
   BeadsIntegrationOptions,
   BeadsSourceControl,
+  ClosedOutsideOutcome,
   RepoState,
   RepoSyncReport,
   SweepSummary,
@@ -30,6 +34,7 @@ export { createBeadsEpicBuildRule, createBeadsEpicPlanningRule, EPIC_SKILL } fro
 export type { EpicSkillMode } from './epic-rule';
 export {
   createBeadsTransitionPolicy,
+  isClosedOutsideMove,
   isOverviewCard,
   isPlanCard,
   isResearchCard,

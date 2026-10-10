@@ -52,6 +52,10 @@ export interface FakeBead {
   commentCount?: number;
   /** bd's `updated_at`; the fake sets it on close and update. Default 2026-01-01. */
   updatedAt?: string;
+  /** `bd supersede <id> --with <new>`: a `supersedes` edge to the replacement. */
+  supersededBy?: string;
+  /** `bd duplicate <id> --of <canonical>`: a `duplicates` edge to the canonical bead. */
+  duplicateOf?: string;
 }
 
 export interface FakeState {
@@ -111,7 +115,7 @@ type PhaseHandler = (context: never) => unknown;
 /** The slice of a BoardDefinition the stand-in dispatcher reads. */
 export interface HarnessBoard {
   id: string;
-  phases: Record<string, { onEnter?: Record<string, PhaseHandler | undefined>; onExit?: Record<string, PhaseHandler | undefined> }>;
+  phases: Record<string, { kind?: string; onEnter?: Record<string, PhaseHandler | undefined>; onExit?: Record<string, PhaseHandler | undefined> }>;
   transitionPolicy?: BoardTransitionPolicy;
   allowsTransition(from: string, to: string): boolean;
 }
@@ -199,6 +203,26 @@ export class MemoryWorkItems {
   async getByClaimKey({ orgId, claimKey }: { orgId: string; claimKey: string }) {
     const hit = this.items.find(i => i.orgId === orgId && i.claimKey === claimKey);
     return hit ? structuredClone(hit) : null;
+  }
+
+  /**
+   * As WorkItemsStorage.claimWorkItem (work-items/base.js:1232-1256): the card
+   * takes the claim unless another card in the org holds it or the card
+   * carries a different one; null then. Taking it bumps no revision here.
+   */
+  async claimWorkItem({ orgId, id, claimKey }: { orgId: string; id: string; claimKey: string }) {
+    const holder = this.items.find(i => i.orgId === orgId && i.claimKey === claimKey);
+    if (holder && holder.id !== id) return null;
+    const item = this.items.find(i => i.orgId === orgId && i.id === id);
+    if (!item) return null;
+    if (item.claimKey !== null && item.claimKey !== claimKey) return null;
+    item.claimKey = claimKey;
+    return structuredClone(item);
+  }
+
+  /** Cards whose claim Factory dropped: a move into a terminal phase releases it (work-items/base.js:911-920). */
+  releaseClaimIfTerminal(item: WorkItemRow, board: HarnessBoard) {
+    if (board.phases[item.stages[0]!]?.kind === 'terminal' && item.stages.length === 1) item.claimKey = null;
   }
 
   /** As WorkItemsStorage.setParentWorkItemIfMissing (work-items/base.js:2512-2530): a set parent is kept. */
@@ -361,6 +385,7 @@ export class MemoryWorkItems {
     }
     item.stages = [stage];
     item.revision++;
+    this.releaseClaimIfTerminal(item, board);
     return { status: 'accepted', moved: true };
   }
 
@@ -380,6 +405,7 @@ export class MemoryWorkItems {
   move(id: string, phase: string) {
     const item = this.items.find(i => i.id === id)!;
     item.stages = [phase];
+    this.releaseClaimIfTerminal(item, requestsBoard as unknown as HarnessBoard);
   }
 
   beadCards() {
@@ -475,6 +501,8 @@ export interface Harness {
   setState(update: (s: FakeState) => void): void;
   /** Add or delete refs/dolt/data on the remote. */
   setBeadsData(present: boolean): void;
+  /** Run the fake bd as a person would, outside the Factory (e.g. `supersede x --with y`). Throws on a non-zero exit. */
+  bd(...args: string[]): void;
   integration(options?: Partial<BeadsIntegrationOptions>): BeadsIntegration;
   cleanup(): void;
 }
@@ -571,6 +599,9 @@ export function createHarness(beads: FakeBead[]): Harness {
     setBeadsData(present) {
       if (present) git('update-ref', 'refs/dolt/data', 'HEAD');
       else git('update-ref', '-d', 'refs/dolt/data');
+    },
+    bd(...args) {
+      execFileSync(process.execPath, [FAKE_BD, ...args], { cwd: dir, env: { ...process.env, FAKE_BD_STATE: statePath }, stdio: 'pipe' });
     },
     integration(options = {}) {
       const integration = new BeadsIntegration({

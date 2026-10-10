@@ -31,6 +31,12 @@ afterEach(() => {
 });
 
 const ids = (harness: Harness) => harness.workItems.beadCards().map(c => c.metadata?.[BEADS_META.id]);
+/**
+ * Committed evaluations other than inbound closes (samskara-l2t.3): tests
+ * that close a carded child bead by editing bd state also get a
+ * `closed-outside` move for its card, which they are not about.
+ */
+const ownMoves = (harness: Harness) => harness.workItems.evaluations.filter(e => e.input.ingress.triggerType !== 'beads.closed-outside');
 const cardFor = (harness: Harness, beadId: string) =>
   harness.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === beadId)!;
 /** Each call as "<command> <first operand>", skipping flags and flag values. */
@@ -1051,7 +1057,7 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     ]);
     expect(ours[1]!.result.status).toBe('accepted');
     // The dispatcher applies the first; the second finds the card already there.
-    expect((await h.workItems.applyDecisions()).map(r => r.outcome)).toEqual(['moved', 'inert']);
+    expect((await h.workItems.applyDecisions()).filter(r => r.workItemId === epicId).map(r => r.outcome)).toEqual(['moved', 'inert']);
   });
 
   it('commits nothing the board policy would refuse: a child still open, or a count that could not be read', async () => {
@@ -1076,7 +1082,7 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     h.setState(s => (s.listFail = false));
     await sweep(integration);
     expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(0);
-    expect(h.workItems.evaluations).toHaveLength(1);
+    expect(ownMoves(h)).toHaveLength(1);
   });
 
   it('leaves the card of an open container that has lost every child', async () => {
@@ -1114,12 +1120,17 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     await sweep(integration);
     // This count used to freeze at 2: intake skips a closed container, and step 3 skipped every container intake touched.
     expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(1);
-    expect(h.workItems.evaluations).toHaveLength(0);
+    // The closed epic's overview card is not moved by the inbound close (samskara-l2t.3).
+    expect(ownMoves(h)).toHaveLength(0);
+    expect(h.workItems.evaluations.map(e => e.input.workItemId)).toEqual([card(h, 'w-e.1').id]);
 
     h.setState(s => (s.beads[2]!.status = 'closed'));
     await sweep(integration);
     expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(0);
-    expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: card(h, 'w-e').id, stage: 'done', outcome: 'moved' }]);
+    const epicId = card(h, 'w-e').id;
+    expect((await h.workItems.applyDecisions()).filter(r => r.workItemId === epicId)).toEqual([
+      { workItemId: epicId, stage: 'done', outcome: 'moved' },
+    ]);
     const synced = await sweep(integration);
     expect(synced.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
     expect(commands(h)).not.toContain('close w-e');
@@ -1178,7 +1189,7 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     expect(retried.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
     expect(h.state().beads[0]!.status).toBe('closed');
     expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
-    expect(h.workItems.evaluations).toHaveLength(0);
+    expect(ownMoves(h)).toHaveLength(0);
   });
 
   it('re-arms a container card only once: a close that fails again stays parked', async () => {
@@ -1411,7 +1422,11 @@ describe('planning cards for childless epics (samskara-l2t.2.4)', () => {
       s.beads.find(b => b.id === 'w-s')!.status = 'closed';
     });
     await sweep(integration);
-    expect(h.workItems.evaluations.map(e => [e.input.workItemId, e.input.ingress.triggerType])).toEqual([[card(h, 'w-s').id, 'beads.overview-done']]);
+    expect(h.workItems.evaluations.map(e => [e.input.workItemId, e.input.ingress.triggerType])).toEqual([
+      [card(h, 'w-s').id, 'beads.overview-done'],
+      // The closed child's own card (samskara-l2t.3); never the closed epic's overview card.
+      [card(h, 'w-s.1').id, 'beads.closed-outside'],
+    ]);
   });
 });
 
