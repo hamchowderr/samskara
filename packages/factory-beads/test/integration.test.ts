@@ -7,6 +7,7 @@ import {
   beadsClaimKey,
   cacheDirFor,
   createBeadsDoneRule,
+  createBeadsTransitionPolicy,
   descriptionBody,
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
@@ -757,5 +758,272 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     h.setState(s => (s.listParentFail = []));
     await sweep(integration);
     expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
+  });
+});
+
+describe('overview cards close when the last child closes (samskara-l2t.2.2)', () => {
+  const card = (harness: Harness, beadId: string) => harness.workItems.items.find(i => i.metadata?.[BEADS_META.id] === beadId)!;
+  // The board policy the Requests board installs (board-rules.ts), with no Work policy behind it.
+  const policy = createBeadsTransitionPolicy(undefined);
+  const epicAndTwo = () =>
+    createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+      { id: 'w-e.2', title: 'Two', issue_type: 'task', parent: 'w-e' },
+    ]);
+  /** A container card as it stands in Done, made outside intake (a legacy card, or one moved by hand). */
+  const doneContainerCard = (harness: Harness, metadata: Record<string, unknown>) =>
+    harness.workItems.upsert({
+      orgId: ORG,
+      userId: 'u',
+      factoryProjectId: PROJECT,
+      input: {
+        board: 'work',
+        externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e' },
+        claimKey: beadsClaimKey(SLUG, 'w-e'),
+        title: 'w-e: Epic',
+        stages: ['done'],
+        metadata: { [BEADS_META.id]: 'w-e', [BEADS_META.repo]: SLUG, [FACTORY_REPOSITORY_META]: SLUG, ...metadata },
+      },
+    });
+
+  it('commits the epic card to done once both children are done, and the next sweep closes and syncs the epic', async () => {
+    h = epicAndTwo();
+    const integration = h.integration();
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(0);
+
+    h.workItems.move(card(h, 'w-e.1').id, 'done');
+    h.workItems.move(card(h, 'w-e.2').id, 'done');
+    const closing = await sweep(integration);
+    expect(closing.repos[0]).toMatchObject({ state: 'ok', closed: 2 });
+    const epic = card(h, 'w-e');
+    expect(epic.metadata?.[BEADS_META.openChildren]).toBe(0);
+    // Committed, not moved: Factory's dispatcher applies it.
+    expect(epic.stages).toEqual(['intake']);
+    expect(h.workItems.evaluations).toHaveLength(1);
+    const [evaluation] = h.workItems.evaluations;
+    const identity = `beads:overview-done:${epic.id}@${epic.revision}`;
+    expect(evaluation!.input).toMatchObject({
+      orgId: ORG,
+      factoryProjectId: PROJECT,
+      workItemId: epic.id,
+      expectedRevision: epic.revision,
+      ingress: { identity, triggerType: 'beads.overview-done' },
+      actor: { type: 'system', id: 'integration:beads' },
+      outcome: { status: 'accepted' },
+    });
+    expect(evaluation!.result).toMatchObject({
+      status: 'accepted',
+      decisions: [{ type: 'transition', board: 'work', stage: 'done', idempotencyKey: `${identity}:transition` }],
+    });
+    // The sweep that commits the move does not close the epic: write-back does, after the move.
+    expect(commands(h)).not.toContain('close w-e');
+
+    // A sweep before the dispatcher runs replays the same evaluation.
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(1);
+
+    // The board policy (Done only with no open children) accepts the move.
+    expect(await h.workItems.applyDecisions(policy)).toEqual([{ workItemId: epic.id, stage: 'done', outcome: 'moved' }]);
+    const closed = await sweep(integration);
+    expect(closed.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(commands(h).filter(c => c === 'close w-e')).toHaveLength(1);
+    expect(h.state().beads.find(b => b.id === 'w-e')).toMatchObject({ status: 'closed', closeReason: `Factory card ${epic.id} reached done` });
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+
+    // Settled: nothing further is committed.
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(1);
+  });
+
+  it('keys each evaluation on the card revision, so a stale one is never replayed in place of a fresh one', async () => {
+    h = epicAndTwo();
+    const integration = h.integration();
+    await sweep(integration);
+    h.setState(s => s.beads.filter(b => b.parent === 'w-e').forEach(b => (b.status = 'closed')));
+    await sweep(integration);
+    const epicId = card(h, 'w-e').id;
+    const atCommit = card(h, 'w-e').revision;
+    const first = h.workItems.evaluations[0]!;
+    expect(first.input.ingress.identity).toBe(`beads:overview-done:${epicId}@${atCommit}`);
+
+    // The card changes before the dispatcher runs (here, a person edits it).
+    await h.workItems.update({ orgId: ORG, id: epicId, userId: 'u', patch: { metadata: { note: 'edited' } } });
+    // That evaluation, committed now, would be stored as stale, with no decision.
+    const stale = await h.workItems.commitRuleEvaluation({ ...first.input, ingress: { ...first.input.ingress, identity: 'probe' } });
+    expect(stale).toMatchObject({ status: 'committed', result: { status: 'rejected', code: 'stale', decisions: [] } });
+
+    await sweep(integration);
+    const ours = h.workItems.evaluations.filter(e => e.input.ingress.identity.startsWith('beads:overview-done:'));
+    expect(ours.map(e => e.input.ingress.identity)).toEqual([
+      `beads:overview-done:${epicId}@${atCommit}`,
+      `beads:overview-done:${epicId}@${atCommit + 1}`,
+    ]);
+    expect(ours[1]!.result.status).toBe('accepted');
+    // The dispatcher applies the first; the second finds the card already there.
+    expect((await h.workItems.applyDecisions(policy)).map(r => r.outcome)).toEqual(['moved', 'inert']);
+  });
+
+  it('commits nothing the board policy would refuse: a child still open, or a count that could not be read', async () => {
+    h = epicAndTwo();
+    const integration = h.integration();
+    await sweep(integration);
+    // One child closes; the other is open.
+    h.workItems.move(card(h, 'w-e.1').id, 'done');
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(1);
+    expect(h.workItems.evaluations).toHaveLength(0);
+
+    // The last child closes, but the children cannot be read: the card's count is stale, so no move.
+    h.setState(s => {
+      s.beads[2]!.status = 'closed';
+      s.listParentFail = ['w-e'];
+    });
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(1);
+    expect(h.workItems.evaluations).toHaveLength(0);
+
+    h.setState(s => (s.listParentFail = []));
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(0);
+    expect(h.workItems.evaluations).toHaveLength(1);
+  });
+
+  it('leaves the card of an open container that has lost every child', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    // The child is moved out from under the epic: the epic is childless, not finished.
+    h.setState(s => delete s.beads[1]!.parent);
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(0);
+    expect(h.workItems.evaluations).toHaveLength(0);
+    // Closed, it is finished.
+    h.setState(s => (s.beads[0]!.status = 'closed'));
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(1);
+  });
+
+  it('keeps counting a container closed while a child is ready, and moves its card without closing it again', async () => {
+    h = epicAndTwo();
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(2);
+
+    // The epic is force-closed while w-e.2 is still ready, and w-e.1 closes.
+    h.setState(s => {
+      s.beads[0]!.status = 'closed';
+      s.beads[1]!.status = 'closed';
+    });
+    await sweep(integration);
+    // This count used to freeze at 2: intake skips a closed container, and step 3 skipped every container intake touched.
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(1);
+    expect(h.workItems.evaluations).toHaveLength(0);
+
+    h.setState(s => (s.beads[2]!.status = 'closed'));
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(0);
+    expect(await h.workItems.applyDecisions(policy)).toEqual([{ workItemId: card(h, 'w-e').id, stage: 'done', outcome: 'moved' }]);
+    const synced = await sweep(integration);
+    expect(synced.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(commands(h)).not.toContain('close w-e');
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+  });
+
+  it('marks a molecule card synced without a close call when bd auto-closes the root with its last step', async () => {
+    h = createHarness([
+      { id: 'w-mol', title: 'demo', issue_type: 'molecule' },
+      { id: 'w-mol.1', title: 'First', issue_type: 'task', parent: 'w-mol' },
+      { id: 'w-mol.2', title: 'Second', issue_type: 'task', parent: 'w-mol', blockedBy: ['w-mol.1'] },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.workItems.move(card(h, 'w-mol.1').id, 'done');
+    await sweep(integration);
+    h.workItems.move(card(h, 'w-mol.2').id, 'done');
+    await sweep(integration);
+    expect(h.state().beads[0]).toMatchObject({ status: 'closed', closeReason: 'all steps complete' });
+    expect(await h.workItems.applyDecisions(policy)).toEqual([{ workItemId: card(h, 'w-mol').id, stage: 'done', outcome: 'moved' }]);
+    await sweep(integration);
+    expect(commands(h)).not.toContain('close w-mol');
+    expect(card(h, 'w-mol').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+  });
+
+  it('re-arms a close-failed container card in Done once its children have closed, and leaves it in Done', async () => {
+    h = epicAndTwo();
+    const integration = h.integration({ maxCloseAttempts: 2 });
+    let kicks = 0;
+    const kick = integration.kick.bind(integration);
+    integration.kick = () => {
+      kicks++;
+      kick();
+    };
+    // A legacy card: made before overview cards, it carries only the bead type.
+    await doneContainerCard(h, { [BEADS_META.type]: 'epic' });
+    // bd refuses the epic's close (here: while its children are open).
+    h.setState(s => (s.closeFail = ['w-e']));
+    await sweep(integration);
+    await sweep(integration);
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed', [BEADS_META.closeAttempts]: 2 });
+    expect(card(h, 'w-e').metadata?.[BEADS_META.closeRearmedAt]).toBeUndefined();
+    expect(kicks).toBe(0);
+
+    // The children close; bd would now close the epic.
+    h.setState(s => {
+      s.beads[1]!.status = 'closed';
+      s.beads[2]!.status = 'closed';
+      s.closeFail = [];
+    });
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: null, [BEADS_META.closeAttempts]: 0 });
+    expect(card(h, 'w-e').metadata?.[BEADS_META.closeRearmedAt]).toEqual(expect.any(String));
+    expect(card(h, 'w-e').stages).toEqual(['done']);
+    expect(kicks).toBe(1);
+    const retried = await sweep(integration);
+    expect(retried.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads[0]!.status).toBe('closed');
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+    expect(h.workItems.evaluations).toHaveLength(0);
+  });
+
+  it('re-arms a container card only once: a close that fails again stays parked', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e', status: 'closed' },
+    ]);
+    const integration = h.integration({ maxCloseAttempts: 1 });
+    await doneContainerCard(h, { [BEADS_META.type]: 'epic', [BEADS_META.cardKind]: OVERVIEW_CARD_KIND });
+    h.setState(s => (s.closeFail = ['w-e']));
+    // Fails and is parked; the next sweep re-arms it, as its only child is closed.
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.closeRearmedAt]).toEqual(expect.any(String));
+    // Fails again and stays parked.
+    await sweep(integration);
+    await sweep(integration);
+    expect(commands(h).filter(c => c === 'close w-e')).toHaveLength(2);
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
+  });
+
+  it('re-arms no work card and no container card with an open child', async () => {
+    h = epicAndTwo();
+    const integration = h.integration({ maxCloseAttempts: 1 });
+    await doneContainerCard(h, { [BEADS_META.type]: 'epic' });
+    h.setState(s => (s.closeFail = ['w-e']));
+    await sweep(integration);
+    h.workItems.move(card(h, 'w-e.1').id, 'done');
+    h.setState(s => (s.closeFail = ['w-e', 'w-e.1']));
+    await sweep(integration);
+    await sweep(integration);
+    for (const id of ['w-e', 'w-e.1']) {
+      expect(card(h, id).metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
+      expect(card(h, id).metadata?.[BEADS_META.closeRearmedAt]).toBeUndefined();
+    }
   });
 });

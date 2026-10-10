@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { BdRepo, BdRunner, BEADS_META } from '../src/index';
+import { BdRepo, BdRunner, BEADS_META, createBeadsTransitionPolicy } from '../src/index';
 import { createHarness, sweep } from './harness';
 import type { Harness } from './harness';
 
@@ -176,6 +176,81 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     const revisions = h.workItems.beadCards().map(c => [c.id, c.revision, c.parentWorkItemId]);
     await sweep(integration);
     expect(h.workItems.beadCards().map(c => [c.id, c.revision, c.parentWorkItemId])).toEqual(revisions);
+  }, 300_000);
+
+  it('moves an overview card to Done when its last child closes: the epic closed by factory-beads, a molecule root by bd (samskara-l2t.2.2)', async () => {
+    const make = (title: string, type: string, parent?: string) =>
+      run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])]).split(/\r?\n/)[0]!;
+    const epic = make('Closing epic', 'epic');
+    const one = make('Closing one', 'task', epic);
+    const two = make('Closing two', 'task', epic);
+    mkdirSync(join(seed, '.beads', 'formulas'), { recursive: true });
+    writeFileSync(join(seed, '.beads', 'formulas', 'demo.formula.toml'), DEMO_FORMULA);
+    const poured = JSON.parse(run('bd', ['mol', 'pour', 'demo', '--var', 'name=closing', '--json'])) as {
+      new_epic_id: string;
+      id_mapping: Record<string, string>;
+    };
+    const mol = poured.new_epic_id;
+    const first = poured.id_mapping['demo.first']!;
+    const second = poured.id_mapping['demo.second']!;
+    run('bd', ['dolt', 'push']);
+
+    // Every bd call the integration makes, to show which beads it closed itself.
+    const calls: string[][] = [];
+    class RecordingRunner extends BdRunner {
+      override bd(args: readonly string[], options: Parameters<BdRunner['bd']>[1]) {
+        calls.push([...args]);
+        return super.bd(args, options);
+      }
+    }
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new RecordingRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id)!;
+    const closedBy = (id: string) => calls.filter(c => c.includes('close') && c.includes(id));
+    const policy = createBeadsTransitionPolicy(undefined);
+    const show = (id: string) =>
+      (JSON.parse(run('bd', ['--readonly', 'show', id, '--json'])) as Array<{ status: string; close_reason?: string }>)[0]!;
+
+    await sweep(integration);
+    h.workItems.move(card(one).id, 'done');
+    h.workItems.move(card(two).id, 'done');
+    h.workItems.move(card(first).id, 'done');
+    const children = await sweep(integration);
+    expect(children.repos[0], JSON.stringify(children)).toMatchObject({ state: 'ok', closed: 3 });
+    expect(card(epic).metadata?.[BEADS_META.openChildren]).toBe(0);
+    expect(card(mol).metadata?.[BEADS_META.openChildren]).toBe(1);
+    // The second step became ready when the first closed.
+    h.workItems.move(card(second).id, 'done');
+    const steps = await sweep(integration);
+    expect(steps.repos[0], JSON.stringify(steps)).toMatchObject({ state: 'ok', closed: 1 });
+    expect(card(mol).metadata?.[BEADS_META.openChildren]).toBe(0);
+
+    // Both moves were committed, and the board policy accepts each.
+    const moved = await h.workItems.applyDecisions(policy);
+    expect(moved).toEqual(
+      expect.arrayContaining([
+        { workItemId: card(epic).id, stage: 'done', outcome: 'moved' },
+        { workItemId: card(mol).id, stage: 'done', outcome: 'moved' },
+      ]),
+    );
+    expect(closedBy(epic)).toHaveLength(0);
+    const settled = await sweep(integration);
+    expect(settled.repos[0], JSON.stringify(settled)).toMatchObject({ state: 'ok', closed: 2 });
+    for (const id of [epic, mol]) expect(card(id).metadata?.[BEADS_META.writeback], id).toBe('synced');
+    // The epic was closed by the integration, as its actor; the molecule root by bd, with its last step.
+    expect(closedBy(epic)).toEqual([expect.arrayContaining(['--actor', 'factory-beads', 'close', epic])]);
+    expect(closedBy(mol)).toHaveLength(0);
+
+    // Both closes are on the remote.
+    run('bd', ['dolt', 'pull']);
+    expect(show(epic)).toMatchObject({ status: 'closed', close_reason: `Factory card ${card(epic).id} reached done` });
+    expect(show(mol)).toMatchObject({ status: 'closed', close_reason: 'all steps complete' });
   }, 300_000);
 
   it('BdRepo.close: takes over a live claim, never forces, and returns a bead bd refuses to close', async () => {

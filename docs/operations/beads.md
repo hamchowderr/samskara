@@ -241,9 +241,92 @@ policy reads only the card snapshot it is given: a policy must not read
 storage (`node_modules/@mastra/factory/factory-skills/configure-factory-rules/SKILL.md:61-63`),
 which is why the sync worker keeps the open-children count on the card.
 
-Closing an overview card when its last child closes is the next step
-(samskara-l2t.2.2). Until then, a person moves it to Done once its children
-are closed, and write-back closes the container bead like any other.
+#### Closing when the last child closes
+
+An overview card moves to Done by itself once every direct child of its
+container is closed (samskara-l2t.2.2). Nobody moves it, and nothing runs on it.
+
+1. **Tick N.** Write-back closes the last child's bead. Later in the same
+   tick, the worker reads the container's children again, writes
+   `beadsOpenChildren: 0` to the card, and commits a move to Done
+   (`integration.ts`, `#closeSettledOverviews`).
+2. **Factory's dispatcher** applies the move within about a second (it polls
+   every 1 s, `dist/rules/dispatcher.js:17,295`). The move goes through the
+   board's transition service as actor system, so the board policy and Done's
+   rules run as for any other move (`dispatcher.js:507-534`). The Done rule
+   wakes the worker.
+3. **Tick N+1** (about a second later, after the kick). Write-back closes the
+   container bead as the integration's actor (`factory-beads`) with the reason
+   `Factory card <id> reached done`, runs `bd sync`, and marks the card
+   `synced`. For a molecule root, bd has already closed the root together with
+   its last step ("Auto-closed completed molecule", reason `all steps
+   complete`; checked on bd 1.3.1), so write-back finds the bead closed, makes
+   no close call, and only syncs and marks the card.
+
+The move is not `bd epic close-eligible`. That command closes every eligible
+epic in the repository, as actor `system` (owner decision, samskara-l2t.2).
+
+**How the move is made.** The worker commits a rule evaluation that carries
+a `transition` decision, through `workItems.commitRuleEvaluation`. Linear's
+issue-closed rule moves a card the same way
+(`dist/integrations/linear/default-rules.js:35-49`, committed at
+`integrations/linear/rules.js:131-158`). The worker does not set the card's
+stages itself, which would skip the board policy and Done's rules. The
+evaluation's ingress identity is `beads:overview-done:<card id>@<revision>`.
+`commitRuleEvaluation` replays an identity it has stored before, and stores
+an evaluation whose expected revision is not the card's current revision as
+rejected, code `stale` (`dist/storage/domains/work-items/base.js:1424-1473`).
+Because the identity includes the revision, a later revision of the card gets
+a new evaluation. A tick at the same revision replays the stored evaluation
+and changes nothing. The helper (`#commitTransition`) takes any stage and
+reason key.
+
+**When no move is committed.**
+
+| Case | Result |
+|------|--------|
+| A child is still open | No move. The board policy would refuse it. |
+| The container's children could not be read this tick | No move. The count on the card may be out of date. The next tick tries again. |
+| The open container has no children left (they were moved elsewhere) | No move. A childless epic is not finished work (samskara-l2t.2.4). If the container is closed, the card moves. |
+| The card is already in Done or Canceled | Nothing to do. |
+
+**A container closed early.** If someone closes the container bead while a
+child is still open, its card stays and its count stays current. The count
+used to freeze in this case: intake stops at a closed container before
+counting, and the count pass skipped every container that intake had
+touched. When the last child closes, the card moves to Done, and write-back
+marks it synced without closing the bead again.
+
+**Timing and retries.**
+
+- *A child added after the count was read.* The policy reads the count on
+  the card, which the worker writes once per tick, so it does not see a child
+  added since that tick. The move goes through, and bd then refuses to close
+  the container while that child is open. Write-back counts the failed
+  attempts, and after `maxCloseAttempts` (3) it parks the card as
+  `close-failed`. The re-arm below recovers it.
+- *A refused move.* The card stays where it is. The dispatcher retries a
+  failed decision up to 5 times (`dispatcher.js:19,39-41`), but every retry
+  uses the same transition ingress (`decision:<key>`, `dispatcher.js:526`),
+  and the transition service replays a stored rejection for a seen ingress
+  (`transition-service.js:129-130`). So a refused move is replayed, not
+  re-evaluated, and after 5 attempts it shows as an "automation-failed"
+  attention item until the card reaches a terminal phase. A real move comes
+  only from a new evaluation, which the next tick that finds the count at 0
+  commits on the card's new revision.
+- *A person cancels the card just after the move is committed.* The
+  dispatcher applies a transition at the card's current revision
+  (`dispatcher.js:507-520`), and Work allows Canceled to Done, so the card
+  still lands in Done and the container is closed. Every child is already
+  closed by then.
+- *Re-arm.* A container card in Done that is parked `close-failed` gets its
+  write-back re-armed once every child is closed: `beadsCloseAttempts` is set
+  back to 0 and `beadsWriteback` is cleared. The card stays in Done, and the
+  next tick tries the close again (`#rearmOverviewCloses`). This also applies
+  to cards made before overview cards existed, which carry only
+  `beadsType: epic | milestone | molecule`. It happens once per card
+  (`beadsCloseRearmedAt`). If the close fails again for another reason, the
+  card stays parked for an operator (`POST /web/beads/reset`).
 
 ### Multi-repository factories: the card names its repository
 
@@ -825,7 +908,18 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   milestone each carded before their children and linked to them; childless
   containers and non-container parents; back-fill of a missing parent and a
   hand-set parent kept; the open-children count, written only on change; a
-  child or a container carded in another project; a failed children read. The
+  child or a container carded in another project; a failed children read.
+  Closing overview cards (samskara-l2t.2.2): the epic card committed to Done
+  when both children are done, and the next tick closing and syncing the
+  epic; a replay at the same revision and a new evaluation at a new one (the
+  harness stores a stale evaluation as rejected, as Factory does); no move
+  with a child open, with an unread count, or for an open childless
+  container; the count of a container closed while a child is ready; a
+  molecule root closed by bd and synced with no close call; the re-arm of a
+  `close-failed` container card, its once-only limit, and no re-arm for a
+  work card or a container with an open child. The harness records each
+  `commitRuleEvaluation`, and its `applyDecisions()` stands in for the
+  dispatcher: it asks the real beads board policy before it moves a card. The
   harness store checks `parentWorkItemId` with Factory's own
   `validateParentRelation`. The harness remote carries `refs/dolt/data` unless a test
   removes it (`setBeadsData`). The fake feed
@@ -833,7 +927,10 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote, including
   an epic with two children and a nested epic, and a real `bd mol pour` whose
-  root card is linked to its first step's card. It is
+  root card is linked to its first step's card. It also closes an epic and a
+  molecule with their last children: the epic is closed by `factory-beads`,
+  the molecule root by bd with its last step, and both closes reach the
+  remote. It is
   **local-only**: it is skipped when `bd` is not on PATH, and the CI workflow
   does not install bd. Set `FACTORY_BEADS_REAL_BD=0` to skip it on a machine
   that has bd.

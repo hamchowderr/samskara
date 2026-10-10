@@ -12,7 +12,14 @@ import { fileURLToPath } from 'node:url';
 import type { IntegrationContext } from '@mastra/factory/integrations/base';
 import { SourceControlConnectionNotFoundError } from '@mastra/factory/storage/domains/source-control/base';
 import { validateParentRelation, WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
-import type { CreateWorkItemInput, ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
+import type {
+  CommitFactoryRuleEvaluationInput,
+  CommitFactoryRuleEvaluationResult,
+  CreateWorkItemInput,
+  ExternalWorkItemSource,
+  WorkItemRow,
+} from '@mastra/factory/storage/domains/work-items/base';
+import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
 import { BdRunner, BeadsIntegration } from '../src/index';
 import type { BeadsIntegrationOptions } from '../src/index';
@@ -61,6 +68,13 @@ export interface FakeState {
       serverSecret: string | null;
     };
   }>;
+}
+
+/** One committed rule evaluation, and which of its decisions `applyDecisions` has applied (by index). */
+export interface RecordedEvaluation {
+  input: CommitFactoryRuleEvaluationInput;
+  result: Record<string, unknown> & { status: 'accepted' | 'rejected'; itemId: string | null; code: string | null; decisions: Record<string, unknown>[] };
+  applied: number[];
 }
 
 /** A minimal WorkItemsStorage: the calls the integration makes, with the real semantics it relies on. */
@@ -154,6 +168,77 @@ export class MemoryWorkItems {
     item.parentWorkItemId = parentWorkItemId;
     item.revision++;
     return structuredClone(item);
+  }
+
+  /**
+   * Every rule evaluation committed, as WorkItemsStorage.commitRuleEvaluation
+   * stores it (@mastra/factory 0.20.0 storage/domains/work-items/base.js:1424-1537):
+   * a seen identity replays, a missing card is `missing`, and an expected
+   * revision that is not the card's is stored as rejected (`stale`) with no
+   * decisions.
+   */
+  evaluations: RecordedEvaluation[] = [];
+
+  async commitRuleEvaluation(input: CommitFactoryRuleEvaluationInput): Promise<CommitFactoryRuleEvaluationResult> {
+    const prior = this.evaluations.find(
+      e => e.input.orgId === input.orgId && e.input.factoryProjectId === input.factoryProjectId && e.input.ingress.identity === input.ingress.identity,
+    );
+    if (prior) return { status: 'replayed', result: structuredClone(prior.result) };
+    const item = input.workItemId
+      ? this.items.find(i => i.id === input.workItemId && i.orgId === input.orgId && i.factoryProjectId === input.factoryProjectId)
+      : undefined;
+    if (input.workItemId !== null && !item) return { status: 'missing' };
+    const stale = item !== undefined && item.revision !== input.expectedRevision;
+    const status = stale ? 'rejected' : input.outcome.status;
+    const result = {
+      status,
+      itemId: item?.id ?? null,
+      revision: item?.revision ?? null,
+      code: stale ? 'stale' : (input.outcome.code ?? null),
+      reason: stale ? 'The work item changed before this rule evaluation committed.' : (input.outcome.reason ?? null),
+      decisions: status === 'accepted' ? structuredClone(input.decisions) : [],
+    };
+    this.evaluations.push({ input: structuredClone(input), result, applied: [] });
+    return { status: 'committed', result: structuredClone(result) };
+  }
+
+  /**
+   * Stands in for Factory's dispatcher (rules/dispatcher.js:507-534): applies
+   * each accepted, not yet applied `transition` decision to the card as it is
+   * now, as actor system, after asking `policy` (the board's transitionPolicy)
+   * as the transition service does (rules/transition-service.js:245-262). A
+   * move to the card's current stage is inert. Returns what each did.
+   */
+  async applyDecisions(policy?: BoardTransitionPolicy): Promise<Array<{ workItemId: string; stage: string; outcome: 'moved' | 'inert' | 'rejected'; reason?: string }>> {
+    const out: Array<{ workItemId: string; stage: string; outcome: 'moved' | 'inert' | 'rejected'; reason?: string }> = [];
+    for (const evaluation of this.evaluations) {
+      for (const [index, decision] of (evaluation.result.decisions as Array<Record<string, unknown>>).entries()) {
+        if (decision.type !== 'transition' || evaluation.applied.includes(index)) continue;
+        evaluation.applied.push(index);
+        const item = this.items.find(i => i.id === evaluation.result.itemId)!;
+        const stage = String(decision.stage);
+        if (item.stages.length === 1 && item.stages[0] === stage) {
+          out.push({ workItemId: item.id, stage, outcome: 'inert' });
+          continue;
+        }
+        const verdict = await policy?.({
+          board: String(decision.board),
+          fromStage: item.stages[0]!,
+          toStage: stage,
+          actor: { type: 'system', id: 'factory-rule-dispatcher' },
+          isHumanTransition: false,
+          item: { id: item.id, stages: item.stages, metadata: item.metadata },
+        } as unknown as Parameters<BoardTransitionPolicy>[0]);
+        if (verdict && 'type' in verdict && verdict.type === 'reject') {
+          out.push({ workItemId: item.id, stage, outcome: 'rejected', reason: verdict.reason });
+          continue;
+        }
+        item.stages = [stage];
+        item.revision++;
+        out.push({ workItemId: item.id, stage, outcome: 'moved' });
+      }
+    }
+    return out;
   }
 
   /** Simulates the board moving a card (the transition API's job, not ours). */
