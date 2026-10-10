@@ -89,6 +89,33 @@ describe('card comments to bd (samskara-l2t.7)', () => {
     expect(h.feed.on(card(h, 'w-1').id)).toHaveLength(1);
   });
 
+  it('writes one bd comment when a client retry offers the same comment again mid-copy', async () => {
+    const { harness, integration } = await setup([{ id: 'w-1', title: 'One' }]);
+    h = harness;
+    const publisher = integration.feedPublisher(h.ctx);
+    h.feed.publishers = [];
+    const created = await comment(h, 'w-1', { kind: 'user', id: 'u1', displayName: 'Jane' }, 'Once');
+    if (created.status !== 'created') throw new Error(created.status);
+    const row = h.feed.on(card(h, 'w-1').id)[0]!;
+    const item = card(h, 'w-1');
+    const [first, retry] = await Promise.all([publisher.publish(row as never, item), publisher.publish(row as never, item)]);
+    expect(retry).toEqual(first);
+    expect(beadComments(h, 'w-1')).toHaveLength(1);
+  });
+
+  it('finds a copied comment on a feed longer than one page', async () => {
+    const { harness } = await setup([{ id: 'w-1', title: 'One' }]);
+    h = harness;
+    h.feed.pageSize = 1;
+    for (const body of ['Copied', 'Second', 'Third']) {
+      const created = await comment(h, 'w-1', { kind: 'user', id: 'u1', displayName: 'Jane' }, body);
+      if (created.status !== 'created') throw new Error(created.status);
+      await created.mirrored;
+    }
+    await sweep(h.integration());
+    expect(h.feed.on(card(h, 'w-1').id)).toHaveLength(3);
+  });
+
   it('copies nothing from an agent, from bd itself, or on a card that is not a beads card', async () => {
     const { harness, integration } = await setup([{ id: 'w-1', title: 'One' }]);
     h = harness;

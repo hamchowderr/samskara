@@ -517,20 +517,29 @@ export class MemoryFeed {
       if (comment.externalSource?.integrationId === publisher.id) continue;
       try {
         const published = await publisher.publish(structuredClone(comment), workItem);
-        if (published) comment.externalSource = published.source;
+        // First platform wins (comments/base.js:441).
+        if (published && !comment.externalSource) comment.externalSource = published.source;
       } catch {
         // Factory logs a failed publish and never fails the create.
       }
     }
   }
 
-  /** `WorkItemCommentsStorage.list`: every row, deleted ones included, newest first. */
-  async list(input: { orgId: string; workItemId: string }) {
-    const comments = this.comments
+  /** Page size of `list`; Factory's is at most 100 (comments/base.js:42). */
+  pageSize = 100;
+
+  /** `WorkItemCommentsStorage.list`: every row, deleted ones included, newest first, paged by `before`. */
+  async list(input: { orgId: string; workItemId: string; limit?: number; before?: string }) {
+    const all = this.comments
       .filter(c => c.orgId === input.orgId && c.workItemId === input.workItemId)
-      .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime())
-      .map(c => structuredClone(c));
-    return { comments };
+      .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime() || (a.id < b.id ? 1 : -1));
+    const start = input.before ? all.findIndex(c => c.id === input.before) + 1 : 0;
+    const size = Math.min(input.limit ?? this.pageSize, this.pageSize);
+    const page = all.slice(start, start + size);
+    return {
+      comments: page.map(c => structuredClone(c)),
+      ...(start + size < all.length ? { nextCursor: page.at(-1)!.id } : {}),
+    };
   }
 
   on(workItemId: string) {

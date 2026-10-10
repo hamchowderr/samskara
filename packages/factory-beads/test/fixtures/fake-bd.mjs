@@ -489,7 +489,7 @@ switch (words[0]) {
     } else if (add) {
       // `--author` (or the actor) names the author; `-f` reads the text from a file.
       const spaced = name => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
-      const author = spaced('--author') ?? spaced('--actor') ?? flagValue('actor') ?? 'tester';
+      const author = spaced('--author') ?? flagValue('author') ?? spaced('--actor') ?? flagValue('actor') ?? 'tester';
       const file = spaced('-f');
       const text = file !== undefined ? readFileSync(file, 'utf8') : words[3];
       const created_at = new Date(Date.UTC(2026, 0, 2, 0, 0, (bead.comments ?? []).length)).toISOString().replace('.000', '');

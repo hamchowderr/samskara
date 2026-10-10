@@ -417,6 +417,16 @@ the source the publisher returns on the comment (`@mastra/factory` 0.20.0
   deleted comments included, `base.js:302-323`). Between the bd write and
   Factory recording the source, the ids this process just wrote are held
   in memory, so a sweep in that window skips them too.
+- **One copy per comment.** A client that retries posting a comment gets
+  the stored comment back, and Factory offers it to the publishers again
+  before the first copy has recorded its source
+  (`dist/storage/domains/comments/base.js:180-191`, `domain.js:89-108`).
+  Copies are remembered by comment id while they run and for ten minutes
+  after, so a retry gets the first copy's result, not a second bd comment.
+- **Two ways a comment can still come back once.** The server stops after
+  the bd write and before Factory records the source; or bd writes the
+  comment but prints no id, so no source is recorded. Either way the next
+  sweep posts the bd comment to the card as a second comment.
 - **Not copied:** edits and deletions on the card (the publisher seam has no
   hook for them), and a comment whose repository is no longer linked to the
   project (logged).
@@ -1884,7 +1894,8 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   `test/comments-to-bd.test.ts`): a person's comment copied under their
   name with a leading dash intact, as the integration's actor; its bd id
   recorded on the card comment; not posted back by later sweeps, after a
-  restart, or by a sweep that runs before Factory records the source; no
+  restart, by a sweep that runs before Factory records the source, or
+  found on a feed longer than one page; one bd comment for a client retry; no
   copy for an agent, an unlinked chat sender or a card that is not a beads
   card; an email name cut to its local part. The harness keeps a
   published web comment's own feed key, as Factory does. In
@@ -1964,6 +1975,9 @@ build never runs bd.
   automated writer.
 - **No live plan-gate run yet.** The gate is proven by unit tests only. The
   transition API always acts as a person, and a live agent run costs credits.
+- **An email in a comment's text reaches bd as written** (samskara-l2t.18).
+  Only the author's name is cut to the part before the `@`; an
+  address typed or inserted by a mention in the body is copied as it is.
 - **Card comment edits and deletions stay on the card.** A new comment on a
   card reaches bd ([Card comments to bd](#card-comments-to-bd)) and bd
   comments reach the card ([bd comments on the feed](#bd-comments-on-the-feed)),

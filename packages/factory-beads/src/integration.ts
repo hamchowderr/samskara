@@ -61,6 +61,8 @@ import type { TickOutcome, WithLeaseOptions } from './worker';
 export const BEADS_INTEGRATION_ID = 'beads';
 /** The `type` of a bd comment's source on the card feed (samskara-l2t.6). */
 export const BEADS_COMMENT_SOURCE = 'comment';
+/** How long a settled card-comment copy is remembered (samskara-l2t.7). */
+const COPY_MEMORY_MS = 10 * 60_000;
 const CUT_NOTE = '\n\n(cut short; the full comment is in bd)';
 
 /**
@@ -545,6 +547,18 @@ export class BeadsIntegration implements FactoryIntegration {
    * carries the id.
    */
   readonly #mirroredComments = new Set<string>();
+  /**
+   * Copies to bd by Factory comment id, in flight or just done. A client
+   * retry of a web comment returns the stored row and offers it to the
+   * publishers again, with no source recorded yet while the first copy waits
+   * on the lease, pulls or syncs (@mastra/factory 0.20.0
+   * dist/storage/domains/comments/base.js:180-191, domain.js:89-108); the
+   * retry gets the first copy's result instead of a second bd comment.
+   * Kept a while after it settles, until Factory has recorded the source,
+   * after which Factory itself never offers the comment to beads again
+   * (domain.js:111).
+   */
+  readonly #copies = new Map<string, Promise<{ source: ExternalWorkItemSource } | null>>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -624,7 +638,15 @@ export class BeadsIntegration implements FactoryIntegration {
   feedPublisher(ctx: IntegrationContext): WorkItemFeedPublisher {
     return {
       id: BEADS_INTEGRATION_ID,
-      publish: (comment, card) => this.#publishComment(ctx, comment, card),
+      publish: (comment, card) => {
+        const running = this.#copies.get(comment.id);
+        if (running) return running;
+        const copy = this.#publishComment(ctx, comment, card);
+        this.#copies.set(comment.id, copy);
+        const forget = () => setTimeout(() => this.#copies.delete(comment.id), COPY_MEMORY_MS).unref?.();
+        copy.then(forget, forget);
+        return copy;
+      },
     };
   }
 
@@ -656,7 +678,7 @@ export class BeadsIntegration implements FactoryIntegration {
       await writeFile(file, comment.body, 'utf8');
       const { output, published, publishNote } = await this.#tools().write(
         target,
-        async () => ['comments', 'add', beadId, '--author', author, '-f', file],
+        async () => ['comments', 'add', beadId, `--author=${author}`, '-f', file],
         { actor: this.#runner.actor },
       );
       const id = (output as { id?: unknown } | null)?.id;
