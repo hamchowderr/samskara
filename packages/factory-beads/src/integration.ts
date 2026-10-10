@@ -1183,7 +1183,7 @@ export class BeadsIntegration implements FactoryIntegration {
       if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND && board.phaseKind(card.stages[0]!) === 'working') continue;
       if (bead.status === 'closed' || meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND) {
         try {
-          if (await this.#leaveStatusSync(scope, card, bead, actor)) wrote = true;
+          if (await this.#leaveStatusSync(scope, board, card, bead, actor)) wrote = true;
         } catch (error) {
           this.#log.warn(`[factory-beads] ${slug}: status markers of ${beadId} not cleared: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -1238,18 +1238,21 @@ export class BeadsIntegration implements FactoryIntegration {
    * with its children). The hold and the recorded pair are cleared, so a
    * person who later moves the card out of Done is not refused for a hold
    * the closed bead no longer has. An overview card whose epic this sync set
-   * `in_progress` while it was a planning card in Planning or Building has
-   * its epic set back to `open` first, unless someone else holds it: an
+   * `in_progress` while it was a planning card in Planning or Building (the
+   * pair recorded on the card says so) has its epic set back to `open`
+   * first, unless someone else holds it: an
    * overview card rests in Intake (samskara-l2t.2.2). Returns whether it
    * wrote to the bead; the caller publishes.
    */
-  async #leaveStatusSync(scope: IntakeScope, card: WorkItemRow, bead: BeadRow, actor: string): Promise<boolean> {
+  async #leaveStatusSync(scope: IntakeScope, board: BoardPhases, card: WorkItemRow, bead: BeadRow, actor: string): Promise<boolean> {
     const meta = card.metadata ?? {};
     if (meta[BEADS_META.statusStage] == null && meta[BEADS_META.held] == null) return false;
     const beadId = String(meta[BEADS_META.id]);
     const theirs = Boolean(bead.assignee) && bead.assignee !== actor;
     let wrote = false;
-    if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND && bead.status === 'in_progress' && !theirs) {
+    // Only an in_progress this sync wrote: the one recorded with a working phase.
+    const ours = meta[BEADS_META.status] === 'in_progress' && board.phaseKind(String(meta[BEADS_META.statusStage])) === 'working';
+    if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND && bead.status === 'in_progress' && ours && !theirs) {
       const res = await scope.repo.setStatus(beadId, 'open', 'in_progress');
       // 13: changed in bd since the read; theirs to keep, and nothing is left to undo.
       if (res.code !== 0 && res.code !== 13) throw new Error(`bd update exit ${res.code}: ${resultTail(res, 300)}`);

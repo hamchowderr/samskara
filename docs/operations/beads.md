@@ -1136,13 +1136,14 @@ of its own moves.
 
 **Left out.** Overview cards (their bead closes with its children), a card
 whose bead is closed (write-back and step 7 own it), and a card whose
-reopen move waits for the dispatcher. When a card leaves the sync because
-its bead closed or it became an overview card, its `beadsStatus`,
+reopen move waits for the dispatcher. When a card the sync has marked
+leaves it because its bead closed or it became an overview card, its `beadsStatus`,
 `beadsStatusStage` and `beadsHeld` are cleared, so a person who moves it
 out of Done later is not refused for a hold the closed bead no longer has.
 A planning card in Planning or Building had its epic set `in_progress`;
-when the epic gets children and the card becomes an overview card, the
-epic is set back to `open` (unless someone else holds it), since an
+when the epic gets children while that is still the status the sync wrote and the card becomes an overview card, the
+epic is set back to `open` (unless someone else holds it, or the status
+was set in bd since), since an
 overview card rests in Intake.
 
 **First tick after this shipped.** Cards made before have no
@@ -1151,7 +1152,8 @@ working phase sets its bead `in_progress`, and one in Intake or Canceled
 sets an unassigned `in_progress` bead back to `open`. After that only
 moves are written.
 
-**Not followed yet.** `bd ready` lists only `open` beads, so intake's
+**Not followed yet.** `bd ready` lists open beads with no active blocker,
+never an `in_progress` one (`bd ready --help`, v1.3.1), so intake's
 updates of an existing card (its kind, its parent link, the description
 back-fill) skip a card whose bead is `in_progress` until it is `open`
 again. Reading those from the refresh read instead is samskara-l2t.8.

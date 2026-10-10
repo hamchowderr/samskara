@@ -296,6 +296,24 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     expect(writes(h, after)).toEqual([]);
   });
 
+  it('keeps an epic a person set in_progress in bd when its planning card becomes an overview card', async () => {
+    h = createHarness([{ id: 'w-e', title: 'Epic', issue_type: 'epic' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    // The planning card rests in Intake; a person starts the epic in bd, unclaimed, and files a child.
+    h.bd('update', 'w-e', '--status=in_progress');
+    await sweep(integration);
+    h.setState(s => {
+      s.beads.push({ id: 'w-e.1', title: 'Child', parent: 'w-e' });
+    });
+    const from = h.state().calls.length;
+    await sweep(integration);
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(OVERVIEW_CARD_KIND);
+    expect(writes(h, from)).toEqual([]);
+    expect(bead(h, 'w-e').status).toBe('in_progress');
+  });
+
   it('holds a card for deferred, pinned, hooked and custom statuses, and moves one with no run straight away', async () => {
     h = createHarness([
       { id: 'w-d', title: 'Deferred' },
