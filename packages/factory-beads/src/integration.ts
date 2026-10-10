@@ -68,8 +68,8 @@ export const BEADS_META = {
   diagnostic: 'beadsDiagnostic',
   closeAttempts: 'beadsCloseAttempts',
   /**
-   * `overview` on a container's card, `research` on an open decision's card;
-   * absent on a work card.
+   * `overview` on a container's card, `research` on an open decision's card,
+   * `plan` on a childless open epic's card; absent on a work card.
    */
   cardKind: 'beadsCardKind',
   /** Overview cards: how many of the container's direct children are not closed. */
@@ -97,8 +97,24 @@ export const RESEARCH_CARD_KIND = 'research';
 export const DECISION_TYPE = 'decision';
 
 /**
- * The card kind intake gives a ready (non-container) bead: `research` for a
- * decision, none for work. Overview kinds are set by #resolveOverview.
+ * `BEADS_META.cardKind` of an open epic's card while the epic has no
+ * children: a planning card (owner decision, samskara-l2t.2; built in
+ * samskara-l2t.2.4). In Planning an agent proposes child beads into the
+ * epic's notes and creates nothing. A person approves by moving the card to
+ * Building, where a run files exactly the approved children and moves the
+ * card back to Intake. The next sweep finds the children and makes it an
+ * overview card. Only a person ever moves it to Building, whatever the
+ * project's auto-approve-plans setting (board-rules.ts).
+ */
+export const PLAN_CARD_KIND = 'plan';
+
+/** The bd issue type whose childless open beads become planning cards. */
+export const EPIC_TYPE = 'epic';
+
+/**
+ * The card kind intake gives a ready bead that is not an epic: `research` for
+ * a decision, none for work. Epics are sorted in the intake loop, and
+ * overview kinds are set by #resolveOverview.
  */
 function readyCardKind(bead: Pick<BeadDetails, 'issue_type'>): string | undefined {
   return bead.issue_type === DECISION_TYPE ? RESEARCH_CARD_KIND : undefined;
@@ -237,6 +253,8 @@ interface IntakeScope {
    * by container bead id: `open` children not closed, `total` children.
    */
   counted: Map<string, { open: number; total: number }>;
+  /** Open containers whose children were read this sweep and that have none, by bead id. */
+  childless: Set<string>;
 }
 
 /** What committing a rule-evaluated transition came to. */
@@ -751,7 +769,17 @@ export class BeadsIntegration implements FactoryIntegration {
     //    on the card's feed (back-filled for cards that predate it). A bead
     //    with a parent container is linked under the container's overview
     //    card, which is made first.
-    const scope: IntakeScope = { orgId, projectId, slug, repo, initialPhase, report, overviews: new Map(), counted: new Map() };
+    const scope: IntakeScope = {
+      orgId,
+      projectId,
+      slug,
+      repo,
+      initialPhase,
+      report,
+      overviews: new Map(),
+      counted: new Map(),
+      childless: new Set(),
+    };
     for (const bead of await repo.ready()) {
       // No `workspaceId` in the source: POST /web/factory/projects/:id/work-items
       // drops it (routes/contracts.js externalSourceSchema), so a key carrying
@@ -772,15 +800,28 @@ export class BeadsIntegration implements FactoryIntegration {
           continue;
         }
       }
+      let kind = readyCardKind(bead);
+      // An open epic (bd ready lists one with open children too): with
+      // children it is an overview card, made and counted by #overview; with
+      // none, a planning card (samskara-l2t.2.4). Only a confirmed empty
+      // children read makes a planning card: when the epic or its children
+      // could not be read, or its card lives in another project, nothing is
+      // carded or changed for it this sweep.
+      if (bead.issue_type === EPIC_TYPE) {
+        if (await this.#overview(scope, bead.id, new Set())) continue;
+        if (!scope.childless.has(bead.id)) continue;
+        kind = PLAN_CARD_KIND;
+      }
       const parent = bead.parent ? await this.#overview(scope, bead.parent, new Set()) : undefined;
-      const kind = readyCardKind(bead);
       if (existing) {
         report.existing++;
         let card = existing;
-        // The research kind follows the bead's type: set on a decision's card
-        // (one made before research cards existed included), cleared when the
-        // bead is no longer a decision. Only on change: every metadata write
-        // bumps the card's revision. An overview card's kind is left alone.
+        // The research and plan kinds follow the bead: set on a decision's or
+        // a childless epic's card (one made before these kinds existed
+        // included), cleared when the bead no longer qualifies. Only on
+        // change: every metadata write bumps the card's revision. An overview
+        // card's kind is left alone: an epic that lost its children is not
+        // turned back into a planning card.
         const current = card.metadata?.[BEADS_META.cardKind];
         if (current !== OVERVIEW_CARD_KIND && (current ?? undefined) !== kind) {
           card = await this.#mark(orgId, card, { [BEADS_META.cardKind]: kind ?? null });
@@ -801,10 +842,17 @@ export class BeadsIntegration implements FactoryIntegration {
     //    The board policy reads the count to refuse Done while a child is
     //    open, and a policy may not read storage itself
     //    (configure-factory-rules/SKILL.md:63).
+    //    A planning card intake did not reach (its epic is blocked, say) is
+    //    resolved here too, so it becomes an overview card as soon as its
+    //    epic has children, whether or not the epic is ready.
     for (const card of cards) {
       const beadId = card.metadata?.[BEADS_META.id];
-      if (card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || typeof beadId !== 'string') continue;
-      if (scope.counted.has(beadId) || card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
+      if (typeof beadId !== 'string' || card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
+      if (card.metadata?.[BEADS_META.cardKind] === PLAN_CARD_KIND) {
+        if (!scope.overviews.has(beadId)) await this.#overview(scope, beadId, new Set());
+        continue;
+      }
+      if (card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || scope.counted.has(beadId)) continue;
       try {
         const children = await repo.children(beadId);
         const open = children.filter(child => child.status !== 'closed').length;
@@ -823,9 +871,14 @@ export class BeadsIntegration implements FactoryIntegration {
     //    step), only marks the card synced. Not `bd epic close-eligible`: it
     //    closes every eligible epic in the repository, as actor system (owner
     //    decision, samskara-l2t.2).
-    await this.#closeSettledOverviews(scope, phaseKind);
+    const moved = await this.#closeSettledOverviews(scope, phaseKind);
 
-    // 5. Overview cards parked `close-failed` in Done whose children have all
+    // 5. Overview cards stranded in a working phase move to Intake: a
+    //    planning card that became an overview card while it sat in Planning
+    //    or Building, or a card made before overview cards existed.
+    await this.#resetStrandedOverviews(scope, phaseKind, moved);
+
+    // 6. Overview cards parked `close-failed` in Done whose children have all
     //    closed since: bd refused the close while a child was open.
     await this.#rearmOverviewCloses(scope, cards);
   }
@@ -842,10 +895,13 @@ export class BeadsIntegration implements FactoryIntegration {
    * A child added after the count was read is caught by bd instead, which
    * refuses the container's close; step 5 re-arms that close once the child
    * closes.
+   *
+   * Returns the ids of the cards whose move is committed.
    */
-  async #closeSettledOverviews(scope: IntakeScope, phaseKind: (phase: string) => string | undefined): Promise<void> {
+  async #closeSettledOverviews(scope: IntakeScope, phaseKind: (phase: string) => string | undefined): Promise<Set<string>> {
+    const moved = new Set<string>();
     const settled = [...scope.counted].filter(([, count]) => count.open === 0);
-    if (settled.length === 0) return;
+    if (settled.length === 0) return moved;
     const { orgId, projectId, slug, repo } = scope;
     // Re-read: revisions moved during this sweep, and a commit naming any but
     // the card's current revision is stored as rejected.
@@ -863,6 +919,7 @@ export class BeadsIntegration implements FactoryIntegration {
       try {
         if (count.total === 0 && (await repo.status(beadId)) !== 'closed') continue;
         const outcome = await this.#commitTransition(orgId, card, this.donePhase, 'overview-done');
+        if (outcome === 'committed' || outcome === 'replayed') moved.add(card.id);
         if (outcome === 'committed') {
           this.#log.info(`[factory-beads] ${slug}: every child of ${beadId} is closed; its card moves to ${this.donePhase}`);
         }
@@ -872,10 +929,58 @@ export class BeadsIntegration implements FactoryIntegration {
         );
       }
     }
+    return moved;
   }
 
   /**
-   * Step 5 of a sweep. bd refuses to close a container while a child is open,
+   * Step 5 of a sweep. An overview card never runs, so one in a working phase
+   * is stranded. The board policy refuses every move of it into a working
+   * phase, but a planning card becomes an overview card wherever it sits (the
+   * children its file run creates are seen by the next sweep, possibly before
+   * the run moves the card back), and a card made before overview cards
+   * existed may already be in one. Such a card with no active run binding
+   * moves to the board's initial phase (Intake), where overview cards rest.
+   * The move is a committed transition, as in step 4, and the policy allows
+   * it: Intake is not a working phase.
+   *
+   * An active binding is Factory's record of a seat bound to the card
+   * (`WorkItemsStorage.listRunBindings`, @mastra/factory 0.20.0
+   * storage/domains/work-items/base.d.ts:730). A binding stays active after
+   * its run ends, until the card reaches a terminal phase or the session
+   * takes another role (storage/domains/work-items/base.js:2121-2190), so a
+   * card whose run ended without moving it keeps its binding and is not moved
+   * here: a person moves it. `moved` holds the cards step 4 just committed to
+   * Done.
+   */
+  async #resetStrandedOverviews(
+    scope: IntakeScope,
+    phaseKind: (phase: string) => string | undefined,
+    moved: Set<string>,
+  ): Promise<void> {
+    const runtime = this.#ctx!.runtime!;
+    const { orgId, projectId, slug, initialPhase } = scope;
+    const cards = await runtime.workItems.list({ orgId, factoryProjectId: projectId });
+    for (const card of cards) {
+      if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID || card.metadata?.[BEADS_META.repo] !== slug) continue;
+      if (card.board !== this.board || card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || moved.has(card.id)) continue;
+      if (card.stages.length !== 1 || phaseKind(card.stages[0]!) !== 'working') continue;
+      try {
+        const bindings = await runtime.workItems.listRunBindings(orgId, projectId, card.id);
+        if (bindings.some(binding => binding.status === 'active')) continue;
+        const outcome = await this.#commitTransition(orgId, card, initialPhase, 'overview-intake');
+        if (outcome === 'committed') {
+          this.#log.info(`[factory-beads] ${slug}: overview card ${card.id} sat in ${card.stages[0]} with no run binding; it moves to ${initialPhase}`);
+        }
+      } catch (error) {
+        this.#log.warn(
+          `[factory-beads] ${slug}: overview card ${card.id} not moved to ${initialPhase}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Step 6 of a sweep. bd refuses to close a container while a child is open,
    * so an overview card that reached Done early (moved by hand, or a child was
    * added after the count was read) is parked `close-failed` after
    * `maxCloseAttempts`, and write-back never tries it again. Once every child
@@ -974,8 +1079,9 @@ export class BeadsIntegration implements FactoryIntegration {
    *
    * Undefined when there is no card to link under: the bead is not a
    * container, is closed, cannot be read, has no children (owner decision
-   * 2026-10-09: a childless container gets no overview card), or is carded in
-   * another project. Never throws.
+   * 2026-10-09: a childless container gets no overview card; a childless open
+   * epic is recorded in `scope.childless` and becomes a planning card), or is
+   * carded in another project. Never throws.
    */
   #overview(scope: IntakeScope, id: string, trail: Set<string>): Promise<WorkItemRow | undefined> {
     if (trail.has(id)) return Promise.resolve(undefined);
@@ -1002,7 +1108,10 @@ export class BeadsIntegration implements FactoryIntegration {
     }
     if (!(OVERVIEW_TYPES as readonly string[]).includes(bead.issue_type ?? '') || bead.status === 'closed') return undefined;
     const children = await scope.repo.children(id);
-    if (children.length === 0) return undefined;
+    if (children.length === 0) {
+      scope.childless.add(id);
+      return undefined;
+    }
     const open = children.filter(child => child.status !== 'closed').length;
     scope.counted.set(id, { open, total: children.length });
     const parent = bead.parent ? await this.#overview(scope, bead.parent, trail) : undefined;

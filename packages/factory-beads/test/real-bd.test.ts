@@ -13,10 +13,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { RequestContext } from '@mastra/core/request-context';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { BdRepo, BdRunner, BEADS_META, createBeadsTransitionPolicy } from '../src/index';
-import { createHarness, sweep } from './harness';
+import { createHarness, PROJECT, sweep } from './harness';
 import type { Harness } from './harness';
 
 /** A two-step workflow; the second step needs the first. */
@@ -108,11 +109,18 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     });
 
     const first = await sweep(integration);
-    expect(first.repos[0], JSON.stringify(first)).toMatchObject({ state: 'ok', created: 1 });
-    const cards = () => h.workItems.beadCards().map(c => c.metadata?.[BEADS_META.id]);
+    // Alpha, and the childless epic as a planning card (samskara-l2t.2.4).
+    expect(first.repos[0], JSON.stringify(first)).toMatchObject({ state: 'ok', created: 2 });
+    const cards = () =>
+      h.workItems
+        .beadCards()
+        .filter(c => c.metadata?.[BEADS_META.cardKind] === undefined)
+        .map(c => c.metadata?.[BEADS_META.id]);
     expect(cards()).toEqual([ids.alpha]);
+    const epicCard = h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === ids.epic);
+    expect(epicCard?.metadata).toMatchObject({ beadsCardKind: 'plan', beadsType: 'epic' });
 
-    h.workItems.move(h.workItems.beadCards()[0]!.id, 'done');
+    h.workItems.move(h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === ids.alpha)!.id, 'done');
     const second = await sweep(integration);
     expect(second.repos[0], JSON.stringify(second)).toMatchObject({ state: 'ok', closed: 1, created: 1 });
     expect(cards()).toEqual([ids.alpha, ids.beta]);
@@ -288,6 +296,61 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     const shown = JSON.parse(run('bd', ['--readonly', 'show', open, '--json'])) as Array<{ status: string }>;
     expect(shown[0]?.status).toBe('closed');
     expect(card(settled)).toBeUndefined();
+  }, 300_000);
+
+  it('cards a childless epic as a planning card; children filed through the beads tools make it an overview card (samskara-l2t.2.4)', async () => {
+    const make = (title: string, type: string, parent?: string) =>
+      run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])]).split(/\r?\n/)[0]!;
+    const epic = make('Plan me', 'epic');
+    run('bd', ['dolt', 'push']);
+
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id);
+    const planned = await sweep(integration);
+    expect(planned.repos[0], JSON.stringify(planned)).toMatchObject({ state: 'ok' });
+    expect(card(epic)?.metadata).toMatchObject({ beadsCardKind: 'plan', beadsType: 'epic' });
+    // Stable: a further sweep writes nothing to it.
+    const revision = card(epic)!.revision;
+    await sweep(integration);
+    expect(card(epic)!.revision).toBe(revision);
+
+    // File mode: the work seat's tools create the approved children under the epic and link them.
+    const projects = h.ctx.storage.projects as unknown as { getById?: unknown };
+    projects.getById = async ({ id }: { id: string }) => h.sourceControl.projects.find(p => p.id === id) ?? null;
+    const rc = {
+      get: (key: string) => (key === 'controller' ? { resourceId: `factory-supervisor:${PROJECT}`, getState: () => ({}) } : undefined),
+    } as unknown as RequestContext;
+    type Tools = Record<string, { execute: (input: unknown) => Promise<Record<string, unknown> & { error?: string }> }>;
+    const tools = (await integration.agentTools({ requestContext: rc })) as unknown as Tools;
+    const child = async (title: string) => {
+      const created = await tools.beads_create!.execute({
+        title,
+        type: 'task',
+        description: `${title}: the problem.`,
+        design: 'How, and why.',
+        acceptance: 'It is done.',
+        parent: epic,
+      });
+      expect(created, JSON.stringify(created)).toMatchObject({ published: true });
+      return (created.result as { id: string }).id;
+    };
+    const one = await child('Child A');
+    const two = await child('Child B');
+    expect(await tools.beads_dep_add!.execute({ issue: two, depends_on: one })).toMatchObject({ published: true });
+
+    const flipped = await sweep(integration);
+    expect(flipped.repos[0], JSON.stringify(flipped)).toMatchObject({ state: 'ok' });
+    expect(card(epic)!.metadata).toMatchObject({ beadsCardKind: 'overview', beadsOpenChildren: 2 });
+    expect(card(one)?.parentWorkItemId).toBe(card(epic)!.id);
+    // Blocked by the first child, so not ready and not carded yet.
+    expect(card(two)).toBeUndefined();
   }, 300_000);
 
   it('BdRepo.close: takes over a live claim, never forces, and returns a bead bd refuses to close', async () => {

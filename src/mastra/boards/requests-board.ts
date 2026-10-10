@@ -36,25 +36,37 @@
 
 import { defineBoard, workBoard } from '@mastra/factory';
 import type { FactoryRuleHandler, FactoryStageRuleContext } from '@mastra/factory/rules/types';
-import { createBeadsDoneRule, createBeadsPlanningRule, createBeadsTransitionPolicy } from '@samskara/factory-beads';
+import {
+  createBeadsDoneRule,
+  createBeadsEpicBuildRule,
+  createBeadsEpicPlanningRule,
+  createBeadsPlanningRule,
+  createBeadsTransitionPolicy,
+} from '@samskara/factory-beads';
 
 const workTriage = workBoard.phases.triage.onEnter ?? {};
 const workPlanning = workBoard.phases.planning.onEnter ?? {};
+const workExecute = workBoard.phases.execute.onEnter ?? {};
 
 /**
  * Work's own policy, wrapped so a beads overview card (an epic's, milestone's
  * or molecule root's card) never enters a working phase and never reaches
- * Done while a child is open, and a research card (an open decision's) enters
- * no working phase but Planning and reaches Done only by a person's move;
- * every other card gets Work's answer unchanged. The working phases are read
- * from the phases' declared `kind`, and the plan phase from its `role`
- * (configure-factory-rules/SKILL.md:65). See docs/operations/beads.md.
+ * Done while a child is open; a research card (an open decision's) enters
+ * no working phase but Planning and reaches Done only by a person's move; and
+ * a plan card (a childless epic's) enters no working phase but Planning and
+ * Building, and reaches Building or Done only by a person's move, whatever
+ * the auto-approve-plans setting. Every other card gets Work's answer
+ * unchanged. The working phases are read from the phases' declared `kind`,
+ * and the plan phase from its `role` (configure-factory-rules/SKILL.md:65).
+ * The build phase is Work's `execute`: Review shares its `work` role, so the
+ * role alone does not name it. See docs/operations/beads.md.
  */
 const transitionPolicy = createBeadsTransitionPolicy(workBoard.transitionPolicy, {
   workingPhases: Object.entries(workBoard.phases)
     .filter(([, phase]) => phase.kind === 'working')
     .map(([id]) => id),
   planningPhase: Object.entries(workBoard.phases).find(([, phase]) => phase.role === 'plan')?.[0],
+  buildPhase: 'execute',
 });
 
 /**
@@ -79,10 +91,19 @@ export const requestsBoard = defineBoard({
     },
     planning: {
       ...workBoard.phases.planning,
-      // A beads research card (an open decision) runs the
+      // A beads plan card (a childless epic) runs the factory-beads-epic
+      // skill in propose mode, a research card (an open decision) the
       // factory-beads-decision skill; every other `manual` card gets Work's
       // own planning decision. See docs/operations/beads.md.
-      onEnter: { ...workPlanning, manual: createBeadsPlanningRule(workPlanning.manual) },
+      onEnter: { ...workPlanning, manual: createBeadsEpicPlanningRule(createBeadsPlanningRule(workPlanning.manual)) },
+    },
+    execute: {
+      ...workBoard.phases.execute,
+      // A beads plan card, moved here by a person, runs the factory-beads-epic
+      // skill in file mode: it files the approved children, with no code,
+      // branch or pull request. Every other `manual` card gets Work's own
+      // build decision. See docs/operations/beads.md.
+      onEnter: { ...workExecute, manual: createBeadsEpicBuildRule(workExecute.manual) },
     },
     done: {
       ...workBoard.phases.done,

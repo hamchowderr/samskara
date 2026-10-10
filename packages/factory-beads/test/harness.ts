@@ -17,6 +17,7 @@ import type {
   CommitFactoryRuleEvaluationResult,
   CreateWorkItemInput,
   ExternalWorkItemSource,
+  FactoryRunBindingRecord,
   WorkItemRow,
 } from '@mastra/factory/storage/domains/work-items/base';
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
@@ -241,6 +242,18 @@ export class MemoryWorkItems {
     return out;
   }
 
+  /**
+   * Run bindings, as WorkItemsStorage.listRunBindings returns them
+   * (storage/domains/work-items/base.d.ts:730, base.js): a test adds rows.
+   */
+  runBindings: FactoryRunBindingRecord[] = [];
+
+  async listRunBindings(orgId: string, factoryProjectId: string, workItemId?: string) {
+    return this.runBindings
+      .filter(b => b.orgId === orgId && b.factoryProjectId === factoryProjectId && (workItemId === undefined || b.workItemId === workItemId))
+      .map(b => structuredClone(b));
+  }
+
   /** Simulates the board moving a card (the transition API's job, not ours). */
   move(id: string, phase: string) {
     const item = this.items.find(i => i.id === id)!;
@@ -365,7 +378,9 @@ export function createHarness(beads: FakeBead[]): Harness {
   const board = {
     id: 'work',
     initialPhase: 'intake',
-    phaseKind: (p: string) => (['intake', 'triage', 'planning', 'execute', 'review'].includes(p) ? 'working' : p === 'done' || p === 'canceled' ? 'terminal' : undefined),
+    // Work's phase kinds (boards/work.js:152-198): Intake rests.
+    phaseKind: (p: string) =>
+      p === 'intake' ? 'resting' : ['triage', 'planning', 'execute', 'review'].includes(p) ? 'working' : p === 'done' || p === 'canceled' ? 'terminal' : undefined,
   };
   const sourceControl: FakeSourceControl = {
     projects: [{ id: PROJECT, orgId: ORG }],

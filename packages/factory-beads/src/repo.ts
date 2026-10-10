@@ -61,6 +61,14 @@ export const CONTAINER_TYPES = ['epic', 'milestone'] as const;
  */
 export const OVERVIEW_TYPES = [...CONTAINER_TYPES, 'molecule'] as const;
 
+/**
+ * Issue types `ready` leaves out: a milestone is only ever a parent (an
+ * overview card above its children, or no card). An epic is read: one with
+ * children becomes an overview card, a childless open one a planning card
+ * (samskara-l2t.2.4). A molecule root bd ready never lists.
+ */
+export const NEVER_READY_TYPES = ['milestone'] as const;
+
 const MARKER = 'factory-beads-bootstrapped';
 const PARKED = 'factory-beads-parked';
 
@@ -134,23 +142,25 @@ export class BdRepo {
   }
 
   /**
-   * Ready beads that hold work. Epics and milestones are containers ("contains no work itself", `bd types`),
-   * and bd ready returns both (bd v1.3.1 internal/storage/sqlbuild/ready.go:16-38 excludes neither); pinned
-   * beads, gates and molecule roots it already leaves out (`:117`, `:16-38`).
+   * Ready beads, milestones left out. Epics and milestones are containers ("contains no work itself",
+   * `bd types`), and bd ready returns both (bd v1.3.1 internal/storage/sqlbuild/ready.go:16-38 excludes
+   * neither; an epic with open children is listed too, checked on bd 1.3.1). Epics are read so that a
+   * childless one can be carded for planning; the caller tells the two kinds of epic apart. Pinned beads,
+   * gates and molecule roots bd already leaves out (`:117`, `:16-38`).
    * No `--brief`: in bd 1.3.0 it omits description, design, acceptance and notes (`bd ready --help`),
    * and the description is posted to the card's feed.
    */
   async ready(): Promise<ReadyBead[]> {
     const res = await this.runner.bd(
-      ['--readonly', 'ready', '--json', `--exclude-type=${CONTAINER_TYPES.join(',')}`, '-n', '0'],
+      ['--readonly', 'ready', '--json', `--exclude-type=${NEVER_READY_TYPES.join(',')}`, '-n', '0'],
       { cwd: this.dir },
     );
     if (res.code !== 0) throw new Error(`bd ready failed (exit ${res.code}): ${tail(res)}`);
     const parsed = JSON.parse(res.stdout.trim() || '[]') as unknown;
     if (!Array.isArray(parsed)) return [];
-    // Belt and braces: never card a container even if a bd version ignores the flag.
+    // Belt and braces: never read a milestone even if a bd version ignores the flag.
     return (parsed as ReadyBead[]).filter(
-      bead => typeof bead?.id === 'string' && !(CONTAINER_TYPES as readonly string[]).includes(bead.issue_type ?? ''),
+      bead => typeof bead?.id === 'string' && !(NEVER_READY_TYPES as readonly string[]).includes(bead.issue_type ?? ''),
     );
   }
 
