@@ -36,21 +36,25 @@
 
 import { defineBoard, workBoard } from '@mastra/factory';
 import type { FactoryRuleHandler, FactoryStageRuleContext } from '@mastra/factory/rules/types';
-import { createBeadsDoneRule, createBeadsTransitionPolicy } from '@samskara/factory-beads';
+import { createBeadsDoneRule, createBeadsPlanningRule, createBeadsTransitionPolicy } from '@samskara/factory-beads';
 
 const workTriage = workBoard.phases.triage.onEnter ?? {};
+const workPlanning = workBoard.phases.planning.onEnter ?? {};
 
 /**
  * Work's own policy, wrapped so a beads overview card (an epic's, milestone's
  * or molecule root's card) never enters a working phase and never reaches
- * Done while a child is open; every other card gets Work's answer unchanged.
- * The working phases are read from the phases' declared `kind`
+ * Done while a child is open, and a research card (an open decision's) enters
+ * no working phase but Planning and reaches Done only by a person's move;
+ * every other card gets Work's answer unchanged. The working phases are read
+ * from the phases' declared `kind`, and the plan phase from its `role`
  * (configure-factory-rules/SKILL.md:65). See docs/operations/beads.md.
  */
 const transitionPolicy = createBeadsTransitionPolicy(workBoard.transitionPolicy, {
   workingPhases: Object.entries(workBoard.phases)
     .filter(([, phase]) => phase.kind === 'working')
     .map(([id]) => id),
+  planningPhase: Object.entries(workBoard.phases).find(([, phase]) => phase.role === 'plan')?.[0],
 });
 
 /**
@@ -72,6 +76,13 @@ export const requestsBoard = defineBoard({
       ...workBoard.phases.triage,
       // The line this board exists for: `manual` gets the triage skill.
       onEnter: { ...workTriage, manual: triageEntry },
+    },
+    planning: {
+      ...workBoard.phases.planning,
+      // A beads research card (an open decision) runs the
+      // factory-beads-decision skill; every other `manual` card gets Work's
+      // own planning decision. See docs/operations/beads.md.
+      onEnter: { ...workPlanning, manual: createBeadsPlanningRule(workPlanning.manual) },
     },
     done: {
       ...workBoard.phases.done,

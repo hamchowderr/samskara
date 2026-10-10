@@ -12,6 +12,7 @@ import {
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
   OVERVIEW_CARD_KIND,
+  RESEARCH_CARD_KIND,
 } from '../src/index';
 import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
 // Factory's own resolver, the one dispatch runs (rules/start-coordinator.js:80, routes/surface.js:159).
@@ -758,6 +759,94 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     h.setState(s => (s.listParentFail = []));
     await sweep(integration);
     expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
+  });
+});
+
+describe('research cards for decision beads (samskara-l2t.2.3)', () => {
+  const card = (harness: Harness, beadId: string) => harness.workItems.items.find(i => i.metadata?.[BEADS_META.id] === beadId);
+
+  it('cards an open decision as a research card, a work bead with no kind, and never a closed decision', async () => {
+    h = createHarness([
+      { id: 'w-d', title: 'Which queue?', issue_type: 'decision', description: 'Which queue should jobs use?' },
+      { id: 'w-old', title: 'Settled', issue_type: 'decision', status: 'closed' },
+      { id: 'w-1', title: 'Work', issue_type: 'task' },
+    ]);
+    const summary = await sweep(h.integration());
+
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 2 });
+    expect(ids(h).sort()).toEqual(['w-1', 'w-d']);
+    expect(card(h, 'w-d')).toMatchObject({ stages: ['intake'], title: 'w-d: Which queue?' });
+    expect(card(h, 'w-d')!.metadata).toMatchObject({
+      [BEADS_META.cardKind]: RESEARCH_CARD_KIND,
+      [BEADS_META.type]: 'decision',
+    });
+    expect(card(h, 'w-1')!.metadata?.[BEADS_META.cardKind]).toBeUndefined();
+    // The question reaches the agent on the card's feed like any description.
+    expect(h.feed.on(card(h, 'w-d')!.id).map(c => c.body)).toEqual(['Which queue should jobs use?']);
+  });
+
+  it("links a decision under its epic's overview card and counts it as an open child", async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'Which store?', issue_type: 'decision', parent: 'w-e' },
+    ]);
+    await sweep(h.integration());
+    expect(card(h, 'w-e.1')!.metadata?.[BEADS_META.cardKind]).toBe(RESEARCH_CARD_KIND);
+    expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
+    expect(card(h, 'w-e')!.metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
+  });
+
+  it('marks a decision card made before research cards existed, once, and writes nothing on later sweeps', async () => {
+    h = createHarness([{ id: 'w-d', title: 'Which queue?', issue_type: 'decision' }]);
+    await h.workItems.upsert({
+      orgId: ORG,
+      userId: 'u',
+      factoryProjectId: PROJECT,
+      input: {
+        board: 'work',
+        externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-d' },
+        claimKey: beadsClaimKey(SLUG, 'w-d'),
+        title: 'w-d: Which queue?',
+        stages: ['intake'],
+        metadata: { [BEADS_META.id]: 'w-d', [BEADS_META.repo]: SLUG, [FACTORY_REPOSITORY_META]: SLUG, [BEADS_META.type]: 'decision' },
+      },
+    });
+    const integration = h.integration();
+    await sweep(integration);
+    const marked = card(h, 'w-d')!;
+    expect(marked.metadata?.[BEADS_META.cardKind]).toBe(RESEARCH_CARD_KIND);
+
+    await sweep(integration);
+    await sweep(h.integration());
+    expect(card(h, 'w-d')!.revision).toBe(marked.revision);
+    expect(h.workItems.beadCards()).toHaveLength(1);
+  });
+
+  it('clears the research kind when the bead is no longer a decision', async () => {
+    h = createHarness([{ id: 'w-d', title: 'Which queue?', issue_type: 'decision' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-d')!.metadata?.[BEADS_META.cardKind]).toBe(RESEARCH_CARD_KIND);
+
+    h.setState(s => {
+      s.beads.find(b => b.id === 'w-d')!.issue_type = 'task';
+    });
+    await sweep(integration);
+    const cleared = card(h, 'w-d')!;
+    expect(cleared.metadata?.[BEADS_META.cardKind] ?? null).toBeNull();
+    await sweep(integration);
+    expect(card(h, 'w-d')!.revision).toBe(cleared.revision);
+  });
+
+  it('closes the decision bead when a person approves its card by moving it to Done', async () => {
+    h = createHarness([{ id: 'w-d', title: 'Which queue?', issue_type: 'decision' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.workItems.move(card(h, 'w-d')!.id, 'done');
+    const approved = await sweep(integration);
+    expect(approved.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads.find(b => b.id === 'w-d')!.status).toBe('closed');
+    expect(card(h, 'w-d')!.metadata?.[BEADS_META.writeback]).toBe('synced');
   });
 });
 

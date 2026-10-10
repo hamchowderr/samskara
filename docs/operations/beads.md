@@ -138,7 +138,7 @@ Restarting the server re-checks at once.
 | `claimKey` | `beads:<owner/name>:<bead id>` |
 | `title` | `<bead id>: <bead title>` |
 | `parentWorkItemId` | the overview card of the bead's parent container, if it has one |
-| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren` |
+| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'` |
 
 Intake is idempotent. Before creating a card the integration looks it up by
 external source (`WorkItemsStorage.getByProjectSource`,
@@ -327,6 +327,91 @@ marks it synced without closing the bead again.
   `beadsType: epic | milestone | molecule`. It happens once per card
   (`beadsCloseRearmedAt`). If the close fails again for another reason, the
   card stays parked for an operator (`POST /web/beads/reset`).
+
+### Research cards
+
+An open `decision` bead gets a **research card** (owner decision, 2026-10-09,
+samskara-l2t.2; built in samskara-l2t.2.3). An agent researches the options
+and writes the decision into the bead. A person approves it by moving the card
+to Done, which closes the bead through the normal write-back. A research card
+never reaches Building, and no code, branch or pull request comes from it.
+The write-up lives in the bead only, not in a docs file or a pull request.
+
+**Intake.** A ready bead of type `decision` is carded like any other bead, plus
+`beadsCardKind: 'research'` (`integration.ts`, `readyCardKind` and the intake
+loop). The kind follows the bead's type: a decision card made before research
+cards existed gets it on the next tick, and a card whose bead is no longer a
+decision has it cleared. It is written only when it changes, because every
+metadata write bumps the card's revision. An overview card's kind is never
+touched here. A closed decision is a record: bd ready never lists a closed
+bead, so it is never carded (checked on bd 1.3.1 in `test/real-bd.test.ts`).
+A decision under an epic is linked under the epic's overview card and counts
+as one of its open children.
+
+An agent files an open question with `beads_create`, which validates
+(`--validate`). bd requires `## Decision`, `## Rationale` and
+`## Alternatives Considered` in a decision's description, and accepts them
+empty (checked on bd 1.3.1). So an open question is filed as the question
+followed by the three empty or `Open.` sections. The `factory-beads` skill
+says so.
+
+**Planning runs the decision skill.** The Requests board's planning phase has
+a `manual` handler, `createBeadsPlanningRule`
+(`packages/factory-beads/src/decision-rule.ts`, wired in
+`src/mastra/boards/requests-board.ts`). It wraps Work's own planning handler
+(`planWorkItem`, `@mastra/factory` 0.20.0 `dist/boards/work.js:101-109,176`).
+Beads cards classify as `manual`, so this is the handler a beads card
+triggers. For a research card it returns:
+
+| Field | Value |
+|-------|-------|
+| `type` | `invokeSkill` |
+| `role` | `plan` |
+| `skillName` | `factory-beads-decision` |
+| `arguments` | `Decision bead <bead id> in repository <owner/name>` |
+| `idempotencyKey` | `<ingress id>:factory-beads-decision`, the same scheme as Work's `<ingress id>:factory-plan` |
+
+Every other card gets Work's own decision unchanged. The decision shape is
+checked against `dist/rules/types.d.ts:429-457` and against Factory's own
+`validateFactoryRuleDecision` in the tests. The skill is a project skill:
+Factory merges `src/mastra/public/factory-skills` over its bundled skills
+(`dist/workspace.js:23-33`, `:119-136`), as it does for `factory-beads`.
+
+**The skill** (`src/mastra/public/factory-skills/factory-beads-decision/SKILL.md`)
+reads the bead with `beads_show`, researches the options in the codebase, the
+vendor documentation and the web when a tool for it is available, and writes
+the result with one `beads_update`: the original question first, unchanged,
+then the three sections in the description; `design` and `append_notes` where
+they help. It never writes code, opens a branch or pull request, closes the
+bead, calls `submit_plan` or requests a transition. It ends by asking a person
+to review the bead and move the card to Done, or to send it back with
+feedback. Each entry into Planning runs the skill again, and the kickoff
+carries the card's feed (`dist/rules/dispatcher.js:635-639`), so feedback left
+on the card reaches the next run.
+
+**The board policy.** `createBeadsTransitionPolicy` refuses these moves of a
+research card (`board-rules.ts`):
+
+| Move of a research card | Result |
+|-------------------------|--------|
+| Into Triage, Building (`execute`) or Review, by anyone | Rejected, `forbidden`. |
+| Into Done by an agent, the system, or any other actor that is not a person | Rejected, `approval_required`: "A person approves a decision by moving its card to Done; agents and automation never do, even when plans auto-approve". |
+| Into Planning by a person | Allowed; Work's policy accepts the card, as for any card a person starts. |
+| Into Done or Canceled by a person | Allowed (then Work's own policy decides). |
+
+Auto-approve plans never approves a decision (owner decision). Work's policy
+reads the project's setting only for Planning to Building
+(`dist/boards/work-transition-policy.js:15-19`), and the transition service
+hands it to the policy as `plansAutoApproved`
+(`dist/rules/transition-service.js:241-262`). The research rules never read
+it, and Building is refused outright. So an approved `submit_plan` result,
+which Work turns into a move to Building (`dist/boards/work-tool-rules.js:8-16`),
+is refused as well. A person is `actor.type === 'human'`, the same test Work's
+plan gate uses.
+
+Planning is the board's phase with `role: 'plan'`, read from Work's
+definition. Moves into Planning or Canceled by an agent are left to Work's
+policy.
 
 ### Multi-repository factories: the card names its repository
 
@@ -917,7 +1002,11 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   container; the count of a container closed while a child is ready; a
   molecule root closed by bd and synced with no close call; the re-arm of a
   `close-failed` container card, its once-only limit, and no re-arm for a
-  work card or a container with an open child. The harness records each
+  work card or a container with an open child. Research cards
+  (samskara-l2t.2.3): an open decision carded as `research`, a task with no
+  kind, a closed decision never carded; a decision linked under its epic; the
+  kind back-filled once on an older card and cleared when the bead stops being
+  a decision, with no write on later sweeps; a person's Done closing the bead. The harness records each
   `commitRuleEvaluation`, and its `applyDecisions()` stands in for the
   dispatcher: it asks the real beads board policy before it moves a card. The
   harness store checks `parentWorkItemId` with Factory's own
@@ -930,14 +1019,22 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   root card is linked to its first step's card. It also closes an epic and a
   molecule with their last children: the epic is closed by `factory-beads`,
   the molecule root by bd with its last step, and both closes reach the
-  remote. It is
+  remote. It also cards an open decision (filed with empty required sections,
+  through `--validate`) as a research card, never cards a closed one, and
+  closes the open one when its card reaches Done. It is
   **local-only**: it is skipped when `bd` is not on PATH, and the CI workflow
   does not install bd. Set `FACTORY_BEADS_REAL_BD=0` to skip it on a machine
   that has bd.
-- The plan gate for cards that are not created by a person, and the overview
+- The plan gate for cards that are not created by a person, the overview
   card policy (every working phase refused for a person, an agent and the
   system; Done refused with open children; Done and Canceled allowed
-  otherwise; other cards unchanged), are covered by
+  otherwise; other cards unchanged), and the research card policy and
+  planning rule (Triage, Building and Review refused for every actor; Done
+  refused with `approval_required` for a plan agent, a work agent and the
+  system, with and without auto-approved plans; Done, Canceled and Planning
+  allowed for a person; the decision skill started for a research card and
+  Work's `factory-plan` decision for every other card; the skill file's
+  location and frontmatter) are covered by
   `tests/boards/requests-board.test.ts`.
 
 ## Build note
