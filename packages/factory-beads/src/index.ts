@@ -2,6 +2,8 @@ export {
   BeadsIntegration,
   BEADS_DATA_REF,
   BEADS_COMMENT_SOURCE,
+  bdAuthorName,
+  bdCommentText,
   fitFeedComment,
   BEADS_INTEGRATION_ID,
   BEADS_META,

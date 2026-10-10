@@ -51,7 +51,7 @@ import { createBeadsTools, resolveToolProject } from './agent-tools';
 import type { ToolScope } from './agent-tools';
 import { registerLive } from './done-rule';
 import { BdRepo, cacheDirFor, OVERVIEW_TYPES, resultTail } from './repo';
-import type { BeadDetails, BeadRow, BeadSnapshot } from './repo';
+import type { BeadComment, BeadDetails, BeadRow, BeadSnapshot } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
 import { BeadsToolOps } from './tool-ops';
@@ -61,6 +61,43 @@ import type { TickOutcome, WithLeaseOptions } from './worker';
 export const BEADS_INTEGRATION_ID = 'beads';
 /** The `type` of a bd comment's source on the card feed (samskara-l2t.6). */
 export const BEADS_COMMENT_SOURCE = 'comment';
+/**
+ * The bd author of a card comment copied to bd (samskara-l2t.7): the person's
+ * Factory name. Factory falls back to the person's email when they have no
+ * name (actorFromAuthUser, @mastra/factory 0.20.0
+ * dist/storage/domains/comments/actor.js:5-13); bd data is pushed to git, so
+ * an address is never written there, only the part before the @.
+ */
+export function bdAuthorName(displayName: string | undefined): string {
+  const shown = displayName?.trim() || 'Factory user';
+  return shown.includes('@') ? shown.slice(0, shown.indexOf('@')) || 'Factory user' : shown;
+}
+
+/**
+ * Whether a card comment is one l2t.7 copies to bd: a person's (owner
+ * decision), so its author is a signed-in Factory user, `kind: 'user'` with
+ * a bare id (actor.js:1-4), and it is not deleted.
+ */
+function copiedToBd(comment: Pick<WorkItemCommentRow, 'author' | 'deletedAt'>): boolean {
+  return comment.author.kind === 'user' && isMentionableActorId(comment.author.id) && !comment.deletedAt;
+}
+
+/** An email address: a local part, an @, and a domain with a dot. */
+const EMAIL = /([A-Za-z0-9._%+-]+)@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+
+/**
+ * The text a card comment is copied to bd with (samskara-l2t.7): the comment
+ * as written, with every email address cut to the part before its @ (owner
+ * decision, samskara-l2t.18), as the author name is. bd data is pushed to
+ * git. An address gets into a comment by being typed, or by a mention: the
+ * board inserts `@<name>`, and a person's Factory name falls back to their
+ * email (the board UI `mastra` 1.33.0 ships, dist/factory/assets/index-*.js:
+ * `Wg` returns `name ?? id`; actor.js:5-13). The card keeps the original.
+ */
+export function bdCommentText(body: string): string {
+  return body.replace(EMAIL, '$1');
+}
+
 /** How long a settled card-comment copy is remembered (samskara-l2t.7). */
 const COPY_MEMORY_MS = 10 * 60_000;
 const CUT_NOTE = '\n\n(cut short; the full comment is in bd)';
@@ -659,23 +696,19 @@ export class BeadsIntegration implements FactoryIntegration {
     const beadId = card.metadata?.[BEADS_META.id];
     const slug = card.metadata?.[BEADS_META.repo];
     if (typeof beadId !== 'string' || typeof slug !== 'string') return null;
-    if (comment.author.kind !== 'user' || !isMentionableActorId(comment.author.id) || comment.deletedAt) return null;
+    if (!copiedToBd(comment)) return null;
     const target = (await this.#linkedRepos(ctx, card.factoryProjectId)).find(r => r.slug === slug);
     if (!target) {
       this.#log.warn(`[factory-beads] ${slug}: card comment on ${beadId} not copied to bd: the repository is no longer linked to the project`);
       return null;
     }
-    // Factory's display name falls back to the person's email
-    // (actorFromAuthUser, actor.js:5-13); bd data is pushed to git, so an
-    // address is never written there, only the part before the @.
-    const shown = comment.author.displayName?.trim() || 'Factory user';
-    const author = shown.includes('@') ? shown.slice(0, shown.indexOf('@')) || 'Factory user' : shown;
+    const author = bdAuthorName(comment.author.displayName);
     // The text goes in a file: bd reads an argument that starts with a dash
     // as a flag, and the write appends `--json` after the arguments.
     const dir = await mkdtemp(join(tmpdir(), 'factory-beads-comment-'));
     try {
       const file = join(dir, 'comment.md');
-      await writeFile(file, comment.body, 'utf8');
+      await writeFile(file, bdCommentText(comment.body), 'utf8');
       const { output, published, publishNote } = await this.#tools().write(
         target,
         async () => ['comments', 'add', beadId, `--author=${author}`, '-f', file],
@@ -2139,10 +2172,12 @@ export class BeadsIntegration implements FactoryIntegration {
     const count = bead.comment_count ?? 0;
     if (!feed || (this.#commentCounts.get(card.id) ?? 0) === count) return;
     const comments = await scope.repo.comments(bead.id);
-    const onFeed = await this.#beadsCommentIds(scope, card);
+    const onFeed = await this.#feedComments(scope, card);
     for (const comment of comments) {
       // Copied from this card (l2t.7), or already posted: never posted back.
-      if (onFeed.has(comment.id) || this.#mirroredComments.has(comment.id)) continue;
+      if (onFeed.beadsIds.has(comment.id) || this.#mirroredComments.has(comment.id)) continue;
+      // A copy whose source Factory never recorded: link it, do not post it.
+      if (await this.#linkUnrecordedCopy(scope, onFeed.unlinked, comment)) continue;
       const body = comment.text.trim() ? comment.text : '';
       if (!body) continue;
       const author = comment.author?.trim() || 'unknown';
@@ -2172,21 +2207,57 @@ export class BeadsIntegration implements FactoryIntegration {
    * `work-item-comments`, base.js:132-135), whose list returns deleted rows
    * too (base.js:302-323). Empty without factory storage.
    */
-  async #beadsCommentIds(scope: IntakeScope, card: WorkItemRow): Promise<Set<string>> {
-    const ids = new Set<string>();
-    const storage = this.#ctx?.factoryStorage;
-    if (!storage) return ids;
-    const comments = storage.getDomain<WorkItemCommentsStorage>('work-item-comments');
+  async #feedComments(scope: IntakeScope, card: WorkItemRow): Promise<{ beadsIds: Set<string>; unlinked: WorkItemCommentRow[] }> {
+    const beadsIds = new Set<string>();
+    const unlinked: WorkItemCommentRow[] = [];
+    const comments = this.#commentsStore();
+    if (!comments) return { beadsIds, unlinked };
     let before: string | undefined;
     do {
       const page = await comments.list({ orgId: scope.orgId, factoryProjectId: scope.projectId, workItemId: card.id, limit: 100, ...(before ? { before } : {}) });
       for (const row of page.comments) {
         const source = row.externalSource;
-        if (source?.integrationId === BEADS_INTEGRATION_ID && source.type === BEADS_COMMENT_SOURCE) ids.add(source.externalId);
+        if (source?.integrationId === BEADS_INTEGRATION_ID && source.type === BEADS_COMMENT_SOURCE) beadsIds.add(source.externalId);
+        else if (!source && copiedToBd(row)) unlinked.push(row);
       }
       before = page.nextCursor;
     } while (before);
-    return ids;
+    // Oldest first, so identical comments pair with their copies in order.
+    unlinked.reverse();
+    return { beadsIds, unlinked };
+  }
+
+  #commentsStore(): WorkItemCommentsStorage | undefined {
+    return this.#ctx?.factoryStorage?.getDomain<WorkItemCommentsStorage>('work-item-comments');
+  }
+
+  /**
+   * A card comment copied to bd whose bd id Factory never recorded: the
+   * server stopped between the bd write and Factory's `attachExternalSource`,
+   * or bd printed no id. Factory knows this gap for its own publishers
+   * ("a process that restarts mid-flight drops the post. Both need an
+   * outbox", dist/storage/domains/comments/domain.js:101-108). The bd comment
+   * is matched to a person's card comment with no source, by the bd author
+   * name and the text the copy wrote, oldest first and each card comment at
+   * most once, and linked to it with the same `attachExternalSource` Factory
+   * uses (dist/storage/domains/comments/base.js:434-452), so it is not posted
+   * back and the next sweep finds it by id. Two identical comments by one
+   * person pair with their two copies in order; a person who writes in bd
+   * exactly what they wrote on the card, as the same name, is taken for a copy.
+   */
+  async #linkUnrecordedCopy(scope: IntakeScope, unlinked: WorkItemCommentRow[], comment: BeadComment): Promise<boolean> {
+    const store = this.#commentsStore();
+    if (!store) return false;
+    const match = unlinked.findIndex(row => bdAuthorName(row.author.displayName) === comment.author && bdCommentText(row.body) === comment.text);
+    if (match === -1) return false;
+    const [row] = unlinked.splice(match, 1);
+    await store.attachExternalSource({
+      orgId: scope.orgId,
+      commentId: row!.id,
+      source: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: comment.id },
+    });
+    this.#log.info(`[factory-beads] ${scope.slug}: bd comment ${comment.id} linked to the card comment it was copied from`);
+    return true;
   }
 
   /** A new card for `bead`, under `parent` when given. Undefined when another project in the org holds its claim. */

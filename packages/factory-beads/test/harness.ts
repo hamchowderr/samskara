@@ -525,6 +525,14 @@ export class MemoryFeed {
     }
   }
 
+  /** `attachExternalSource`: the first platform wins and the source key never changes (comments/base.js:434-452). */
+  async attachExternalSource(input: { orgId: string; commentId: string; source: ExternalWorkItemSource }) {
+    const row = this.comments.find(c => c.orgId === input.orgId && c.id === input.commentId);
+    if (!row) return null;
+    if (!row.externalSource) row.externalSource = input.source;
+    return structuredClone(row);
+  }
+
   /** Page size of `list`; Factory's is at most 100 (comments/base.js:42). */
   pageSize = 100;
 

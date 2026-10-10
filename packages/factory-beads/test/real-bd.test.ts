@@ -599,7 +599,7 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
       orgId: card.orgId,
       workItemId: card.id,
       author: { kind: 'user', id: 'u1', displayName: 'Jane Doe' },
-      body: '--flag-like start\nsecond "line"',
+      body: '--flag-like start\nsecond "line" cc @sam@example.com',
     });
     if (created.status !== 'created') throw new Error(created.status);
     await created.mirrored;
@@ -607,7 +607,7 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     run('bd', ['dolt', 'pull']);
     const inBd = JSON.parse(run('bd', ['--readonly', 'comments', bead, '--json'])) as Array<{ id: string; author: string; text: string }>;
     expect(inBd).toHaveLength(1);
-    expect(inBd[0]).toMatchObject({ author: 'Jane Doe', text: '--flag-like start\nsecond "line"' });
+    expect(inBd[0]).toMatchObject({ author: 'Jane Doe', text: '--flag-like start\nsecond "line" cc @sam' });
     expect(h.feed.on(card.id)[0]!.externalSource).toMatchObject({ integrationId: 'beads', type: 'comment', externalId: inBd[0]!.id });
 
     await sweep(integration);

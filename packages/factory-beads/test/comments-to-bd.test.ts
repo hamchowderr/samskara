@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { BEADS_COMMENT_SOURCE, BEADS_INTEGRATION_ID, BEADS_META } from '../src/index';
+import { bdAuthorName, bdCommentText, BEADS_COMMENT_SOURCE, BEADS_INTEGRATION_ID, BEADS_META } from '../src/index';
 import type { BeadsIntegration } from '../src/index';
 import { createHarness, ORG, sweep } from './harness';
 import type { Harness } from './harness';
@@ -116,6 +116,30 @@ describe('card comments to bd (samskara-l2t.7)', () => {
     expect(h.feed.on(card(h, 'w-1').id)).toHaveLength(3);
   });
 
+  it('links a copy whose source Factory never recorded instead of posting it back, pairing identical comments in order', async () => {
+    const { harness, integration } = await setup([{ id: 'w-1', title: 'One' }]);
+    h = harness;
+    // The server stops after the bd write, before Factory records the source.
+    const real = integration.feedPublisher(h.ctx);
+    h.feed.publishers = [{ id: real.id, publish: async (row, item) => (await real.publish(row as never, item), null) }];
+    for (const body of ['Same words', 'Same words', 'Other']) {
+      const created = await comment(h, 'w-1', { kind: 'user', id: 'u1', displayName: 'jane@example.com' }, body);
+      if (created.status !== 'created') throw new Error(created.status);
+      await created.mirrored;
+    }
+    // A comment written in bd by someone else with the same words is not a copy.
+    h.bd('comments', 'add', 'w-1', 'Other', '--actor=bob');
+    expect(beadComments(h, 'w-1')).toHaveLength(4);
+
+    const restarted = h.integration();
+    await sweep(restarted);
+    await sweep(restarted);
+    const feed = h.feed.on(card(h, 'w-1').id);
+    expect(feed.map(c => c.body)).toEqual(['Same words', 'Same words', 'Other', 'Other']);
+    const bdIds = beadComments(h, 'w-1').map(c => c.id);
+    expect(feed.map(c => c.externalSource?.externalId)).toEqual(bdIds);
+  });
+
   it('copies nothing from an agent, from bd itself, or on a card that is not a beads card', async () => {
     const { harness, integration } = await setup([{ id: 'w-1', title: 'One' }]);
     h = harness;
@@ -141,5 +165,27 @@ describe('card comments to bd (samskara-l2t.7)', () => {
     if (created.status !== 'created') throw new Error(created.status);
     await created.mirrored;
     expect(beadComments(h, 'w-1')[0]).toMatchObject({ author: 'jane' });
+  });
+});
+
+describe('what reaches bd (samskara-l2t.18)', () => {
+  it('cuts every email address in the text to the part before its @, and leaves the rest alone', () => {
+    expect(bdCommentText('Ask @jane@example.com or mail bob.smith+x@mail.example.co.uk today')).toBe('Ask @jane or mail bob.smith+x today');
+    expect(bdCommentText('[mail](mailto:ann@corp.io) @Jane Doe, see a@b and x@y.z1')).toBe('[mail](mailto:ann) @Jane Doe, see a@b and x@y.z1');
+    expect(bdAuthorName('jane@example.com')).toBe('jane');
+    expect(bdAuthorName(undefined)).toBe('Factory user');
+  });
+
+  it('copies a comment with its addresses cut, keeps the original on the card, and still never posts it back', async () => {
+    const { harness, integration } = await setup([{ id: 'w-1', title: 'One' }]);
+    h = harness;
+    const real = integration.feedPublisher(h.ctx);
+    h.feed.publishers = [{ id: real.id, publish: async (row, item) => (await real.publish(row as never, item), null) }];
+    const created = await comment(h, 'w-1', { kind: 'user', id: 'u1', displayName: 'Jane' }, 'cc @sam@example.com');
+    if (created.status !== 'created') throw new Error(created.status);
+    await created.mirrored;
+    expect(beadComments(h, 'w-1').map(c => c.text)).toEqual(['cc @sam']);
+    await sweep(h.integration());
+    expect(h.feed.on(card(h, 'w-1').id).map(c => c.body)).toEqual(['cc @sam@example.com']);
   });
 });
