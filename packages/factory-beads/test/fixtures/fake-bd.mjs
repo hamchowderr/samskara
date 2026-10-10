@@ -12,6 +12,7 @@
 // Criteria" and "Success Criteria"), and `mol pour` refuses missing
 // required variables.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -305,7 +306,7 @@ switch (words[0]) {
             dependencies: deps.length ? deps : undefined,
             dependency_count: 0,
             dependent_count: 0,
-            comment_count: b.commentCount ?? 0,
+            comment_count: b.comments?.length ?? b.commentCount ?? 0,
             parent: b.parent,
           }).filter(([, v]) => v !== undefined && v !== null && v !== ''),
         );
@@ -475,6 +476,27 @@ switch (words[0]) {
       mapping[`${formula.name}.${step}`] = bead.id;
     }
     out = JSON.stringify({ created: formula.steps.length + 1, id_mapping: mapping, new_epic_id: epic.id, phase: 'liquid' });
+    break;
+  }
+  case 'comments': {
+    // bd 1.3.1: `comments <id> --json` lists them oldest first; `comments add
+    // <id> <text>` adds one as the actor. Ids are content-derived UUIDs.
+    const add = words[1] === 'add';
+    const bead = state.beads.find(b => b.id === words[add ? 2 : 1]);
+    if (!bead) {
+      code = 1;
+      err = `resolving ${words[add ? 2 : 1]}: no issue found`;
+    } else if (add) {
+      const author = flagValue('actor') ?? 'tester';
+      const text = words[3];
+      const created_at = new Date(Date.UTC(2026, 0, 2, 0, 0, (bead.comments ?? []).length)).toISOString().replace('.000', '');
+      const h = createHash('sha1').update(`${bead.id}|${author}|${text}|${created_at}`).digest('hex');
+      const id = `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+      bead.comments = [...(bead.comments ?? []), { id, issue_id: bead.id, author, text, created_at }];
+      out = JSON.stringify(bead.comments.at(-1));
+    } else {
+      out = JSON.stringify(bead.comments ?? []);
+    }
     break;
   }
   default:
