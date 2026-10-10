@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { IntegrationContext } from '@mastra/factory/integrations/base';
 import { SourceControlConnectionNotFoundError } from '@mastra/factory/storage/domains/source-control/base';
-import { validateParentRelation, WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
+import { applyStageTransition, validateParentRelation, WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
 import type {
   CommitFactoryRuleEvaluationInput,
   CommitFactoryRuleEvaluationResult,
@@ -172,7 +172,8 @@ export class MemoryWorkItems {
       parentWorkItemId: input.parentWorkItemId ?? null,
       title: input.title,
       stages: input.stages ?? ['intake'],
-      stageHistory: [],
+      // As Factory stamps it on create (work-items/base.js:2291).
+      stageHistory: applyStageTransition([], [], input.stages ?? ['intake'], userId, now),
       sessions: {},
       metadata: input.metadata ?? null,
       triageType: null,
@@ -195,7 +196,10 @@ export class MemoryWorkItems {
     if (!item) return null;
     // Same merge as WorkItemsStorage.applyUpdate (work-items/base.js:379-382).
     if (patch.metadata !== undefined) item.metadata = patch.metadata === null ? null : { ...(item.metadata ?? {}), ...patch.metadata };
-    if (patch.stages) item.stages = patch.stages;
+    if (patch.stages) {
+      item.stageHistory = applyStageTransition(item.stageHistory, item.stages, patch.stages, 'test', new Date());
+      item.stages = patch.stages;
+    }
     item.revision++;
     return { item: structuredClone(item), previous: { stages: [], sessionRoles: [] } };
   }
@@ -383,6 +387,7 @@ export class MemoryWorkItems {
       const decision = (await handler?.({ ...snapshot, stage } as never)) as { type?: string; code?: string; reason?: string } | undefined;
       if (decision?.type === 'reject') return { status: 'rejected', code: String(decision.code), reason: String(decision.reason) };
     }
+    item.stageHistory = applyStageTransition(item.stageHistory, item.stages, [stage], 'factory-rule-dispatcher', new Date());
     item.stages = [stage];
     item.revision++;
     this.releaseClaimIfTerminal(item, board);
@@ -404,6 +409,8 @@ export class MemoryWorkItems {
   /** Simulates the board moving a card (the transition API's job, not ours). */
   move(id: string, phase: string) {
     const item = this.items.find(i => i.id === id)!;
+    // Stage history as Factory keeps it (work-items/base.js:338-356): one entry per phase entered.
+    item.stageHistory = applyStageTransition(item.stageHistory, item.stages, [phase], 'user_test', new Date());
     item.stages = [phase];
     this.releaseClaimIfTerminal(item, requestsBoard as unknown as HarnessBoard);
   }

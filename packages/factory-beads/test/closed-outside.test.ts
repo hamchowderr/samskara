@@ -245,6 +245,61 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
     expect(card(h, 'w-2').stages).toEqual(['canceled']);
   });
 
+  it('never pulls a card back to Canceled once a person has moved it out, seen there by a sweep or not', async () => {
+    h = createHarness([
+      { id: 'w-a', title: 'A' },
+      { id: 'w-b', title: 'B' },
+      { id: 'w-new', title: 'New' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.bd('supersede', 'w-a', '--with', 'w-new');
+    h.bd('supersede', 'w-b', '--with', 'w-new');
+    await sweep(integration);
+    expect(await h.workItems.applyDecisions()).toHaveLength(2);
+    // w-b: a person moves it out before any sweep saw it in Canceled; its stage history shows the arrival.
+    h.workItems.move(card(h, 'w-b').id, 'planning');
+    // w-a: a sweep sees it in Canceled and records the arrival; then a person moves it out.
+    await sweep(integration);
+    expect(card(h, 'w-a').metadata?.[BEADS_META.closedOutsideAt]).toEqual(expect.any(String));
+    h.workItems.move(card(h, 'w-a').id, 'review');
+    await sweep(integration);
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(2);
+    expect(await h.workItems.applyDecisions()).toEqual([]);
+    expect(card(h, 'w-a').stages).toEqual(['review']);
+    expect(card(h, 'w-b').stages).toEqual(['planning']);
+    expect(card(h, 'w-b').metadata?.[BEADS_META.closedOutsideAt]).toEqual(expect.any(String));
+  });
+
+  it('keeps a close write-back made but could not sync pending, and never takes it for a close made in bd', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    const integration = h.integration({ syncRetry: { retries: 0, baseDelayMs: 1 } });
+    await sweep(integration);
+    h.workItems.move(card(h, 'w-1').id, 'done');
+    h.setState(s => (s.syncExits = [1]));
+    const failed = await sweep(integration);
+    expect(failed.repos[0]).toMatchObject({ state: 'error', closed: 0 });
+    expect(h.state().beads[0]!.status).toBe('closed');
+    expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.localClose]: expect.any(String) });
+    // A person moves the card out of Done before the close is published.
+    h.workItems.move(card(h, 'w-1').id, 'review');
+    const from = h.state().calls.length;
+    const recovered = await sweep(integration);
+    expect(recovered.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    // Published by this tick's sync, not closed again, and the card stays where the person put it.
+    expect(writes(integrationCalls(h, from))).toEqual(['sync']);
+    expect(h.workItems.evaluations).toHaveLength(0);
+    expect(card(h, 'w-1').stages).toEqual(['review']);
+    expect(card(h, 'w-1').metadata).toMatchObject({
+      [BEADS_META.writeback]: 'synced',
+      [BEADS_META.syncedAt]: expect.any(String),
+      [BEADS_META.localClose]: null,
+    });
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(0);
+  });
+
   it('moves nothing while the refresh read fails', async () => {
     h = createHarness([{ id: 'w-1', title: 'One' }]);
     const integration = h.integration();
@@ -348,5 +403,90 @@ describe('beads reopened outside the Factory (samskara-l2t.3)', () => {
     await sweep(integration);
     expect(h.workItems.evaluations).toHaveLength(1);
     expect(card(h, 'w-old').stages).toEqual(['canceled']);
+  });
+
+  it("closes the bead on a person's Done after a reopened bead's card stayed in Canceled", async () => {
+    h = createHarness([
+      { id: 'w-a', title: 'A' },
+      { id: 'w-b', title: 'B' },
+      { id: 'w-new', title: 'New' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.bd('supersede', 'w-a', '--with', 'w-new');
+    h.bd('supersede', 'w-b', '--with', 'w-new');
+    await sweep(integration);
+    await h.workItems.applyDecisions();
+    await sweep(integration);
+    h.bd('reopen', 'w-a');
+    h.bd('reopen', 'w-b');
+    // w-a: a sweep sees the reopen first and drops its canceled marker.
+    await sweep(integration);
+    expect(card(h, 'w-a').metadata?.[BEADS_META.closedOutside]).toBeNull();
+    expect(card(h, 'w-b').metadata?.[BEADS_META.closedOutside]).toBeNull();
+    h.workItems.move(card(h, 'w-a').id, 'done');
+    const from = h.state().calls.length;
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(writes(integrationCalls(h, from))).toEqual(['close w-a', 'sync']);
+    expect(card(h, 'w-a').stages).toEqual(['done']);
+    expect(h.workItems.evaluations.filter(e => e.input.ingress.triggerType === 'beads.reopened')).toHaveLength(0);
+  });
+
+  it("closes the bead on a person's Done made while a stale canceled marker is still on the card", async () => {
+    h = createHarness([
+      { id: 'w-a', title: 'A' },
+      { id: 'w-new', title: 'New' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.bd('supersede', 'w-a', '--with', 'w-new');
+    await sweep(integration);
+    await h.workItems.applyDecisions();
+    // Reopened and moved to Done by a person before any sweep: the marker still says canceled.
+    h.bd('reopen', 'w-a');
+    h.workItems.move(card(h, 'w-a').id, 'done');
+    expect(card(h, 'w-a').metadata?.[BEADS_META.closedOutside]).toBe('canceled');
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads.find(b => b.id === 'w-a')!.status).toBe('closed');
+    await sweep(integration);
+    expect(card(h, 'w-a').stages).toEqual(['done']);
+    expect(h.workItems.evaluations).toHaveLength(1);
+  });
+
+  it("clears the close markers in the sweep that commits the reopen, so a person's Done before the next sweep stands", async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    const id = card(h, 'w-1').id;
+    h.workItems.move(id, 'done');
+    await sweep(integration);
+    expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+
+    h.bd('reopen', 'w-1');
+    await sweep(integration);
+    expect(moves(h)).toEqual([[id, 'beads.reopened', 'intake']]);
+    // Cleared at once (the live check saw `synced` on the card right after the move).
+    expect(card(h, 'w-1').metadata).toMatchObject({
+      [BEADS_META.writeback]: null,
+      [BEADS_META.syncedAt]: null,
+      [BEADS_META.reopenPending]: expect.any(Number),
+    });
+    // While the move waits, write-back leaves the open bead alone and a repeat is a replay.
+    await sweep(integration);
+    expect(h.state().beads[0]!.status).toBe('open');
+    expect(h.workItems.evaluations).toHaveLength(1);
+
+    expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: id, stage: 'intake', outcome: 'moved' }]);
+    // A person moves it back to Done before the next sweep.
+    h.workItems.move(id, 'done');
+    const again = await sweep(integration);
+    expect(again.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads[0]!.status).toBe('closed');
+    expect(card(h, 'w-1').metadata?.[BEADS_META.reopenPending]).toBeNull();
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(1);
+    expect(card(h, 'w-1').stages).toEqual(['done']);
   });
 });

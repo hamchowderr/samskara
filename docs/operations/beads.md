@@ -49,7 +49,7 @@ App:
    [Repository states](#repository-states)). This runs every tick for a
    repository that has the ref, so a ref deleted on origin, or a copy
    bootstrapped before this check existed, is caught too
-   (`packages/factory-beads/src/integration.ts:700-712`).
+   (`packages/factory-beads/src/integration.ts:773-785`).
 1. **Bootstrap, first time only.** `git clone --depth 1`, then
    `bd --sandbox bootstrap --yes`, in `<BEADS_CACHE_DIR>/<owner>__<name>`. A
    marker file in `.git/` records that the copy is ready. The copy is kept
@@ -57,12 +57,18 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:719-820`). Each bead's status
+   (`packages/factory-beads/src/integration.ts:792-918`). Each bead's status
    and holder come from one [refresh read](#refresh-read) of the copy, taken
    before the first close, not from a `bd show` per card; a bead already closed is
    only synced and marked. A card that reached Done because its bead was
-   closed outside the Factory (`beadsClosedOutside`) is only marked synced:
-   nothing is closed, and nothing is published for it. Once a close lands, every later bead in the tick is
+   closed outside the Factory (`beadsClosedOutside: done`) is only marked synced:
+   nothing is closed, and nothing is published for it. A `canceled` marker
+   never counts here: a card a person moved from Canceled to Done is closed
+   and synced as usual. A close made here whose `bd sync` failed (exit 1, or 3
+   after retries) is marked `beadsLocalClose` and stays pending for sync even
+   if a person moves the card out of Done, so the close is still published;
+   a card whose reopen move waits for the dispatcher (`beadsReopenPending`) is
+   skipped. Once a close lands, every later bead in the tick is
    read with `bd show` right before its close: a close can change other
    beads (closing a molecule's last open step closes its root, bd v1.3.1
    `cmd/bd/close.go:700-735`), and a holder read before it would hand over,
@@ -214,7 +220,7 @@ the list leaves out and for an overview card's first description comment.
 
 Two things cannot change while the server runs. Each is checked once, at the
 first tick, and a failure logs **one** line and leaves the integration idle
-(`#checkPreconditions`, `integration.ts:386-403`). Nothing is synced until the
+(`#checkPreconditions`, `integration.ts:459-476`). Nothing is synced until the
 server restarts; `GET /web/beads/status` shows `state: 'idle'` and the reason.
 
 | Precondition | Log line |
@@ -249,7 +255,7 @@ Restarting the server re-checks at once.
 | `claimKey` | `beads:<owner/name>:<bead id>` |
 | `title` | `<bead id>: <bead title>` |
 | `parentWorkItemId` | the overview card of the bead's parent container, or the card of any other parent bead, when it has one |
-| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'`; on a childless open epic's card `beadsCardKind: 'plan'`; on a card whose bead was closed outside the Factory `beadsClosedOutside` (the phase it is moved to) |
+| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'`; on a childless open epic's card `beadsCardKind: 'plan'`; on a card whose bead was closed outside the Factory `beadsClosedOutside` (the phase it is moved to), `beadsClosedOutsideMoves` (its stage-history length then) and, once it got there, `beadsClosedOutsideAt`; `beadsReopenPending` while a reopen move waits; `beadsLocalClose` while a close made here waits for a sync that failed |
 
 Intake is idempotent. Before creating a card the integration looks it up by
 external source (`WorkItemsStorage.getByProjectSource`,
@@ -424,7 +430,7 @@ handler runs it and the policy refuses its moves into other working phases.
 Each tick commits a move of such a card to Intake unless **the phase's own
 seat is bound to it**: an active run binding whose role is the seat the
 phase seats (`roleForPhase`, so `work` in Building)
-(`integration.ts:1225-1248`, `#resetStrandedOverviews`; bindings from
+(`integration.ts:1363-1386`, `#resetStrandedOverviews`; bindings from
 `WorkItemsStorage.listRunBindings`, `dist/storage/domains/work-items/base.d.ts:730`).
 A binding for another seat does not hold the card: the `chat` seat a
 person's "Start session" takes neither runs the phase nor moves the card.
@@ -564,7 +570,7 @@ marks it synced without closing the bead again.
   write-back re-armed once every child of its bead is closed:
   `beadsCloseAttempts` is set back to 0 and `beadsWriteback` is cleared.
   The card stays in Done, and the next tick tries the close again
-  (`integration.ts:1264-1292`, `#rearmParentCloses`). bd refuses to close
+  (`integration.ts:1402-1430`, `#rearmParentCloses`). bd refuses to close
   any bead while a child is open ("cannot close <id>: 1 open child
   issue(s)"; checked on bd 1.3.1 for an epic and for a task with a subtask),
   so this covers overview cards, cards made before overview cards existed,
@@ -588,7 +594,7 @@ treats it as Work does.
 - **Linking.** For each ready bead with a `parent`, intake first resolves
   the parent as a container (`#overview`); when that gives no overview card,
   it looks up the card the parent bead already has in this project
-  (`getByProjectSource`; `integration.ts:1378-1387`, `#parentCard`). No card
+  (`getByProjectSource`; `integration.ts:1516-1525`, `#parentCard`). No card
   is made for the parent here: it is carded only when it is ready itself.
   bd 1.3.1 lists a task with an open subtask as ready (checked by hand), so
   both are usually carded together. Intake orders the ready list so that a
@@ -917,7 +923,7 @@ are still created, and the integration logs one warning per process. A failed
 
 People close, supersede, deduplicate and reopen beads with their own `bd`
 and push. The card follows on the next tick (samskara-l2t.3; step 7,
-`integration.ts:1037`, `#followOutsideState`). Bead state comes from the
+`integration.ts:1148`, `#followOutsideState`). Bead state comes from the
 [refresh read](#refresh-read) only, so a tick whose refresh read failed
 moves nothing.
 
@@ -926,7 +932,7 @@ moves nothing.
 | closed with any reason, or none (`bd close`, `bd human respond`) | in Intake or a working phase, not an overview card, and never closed by write-back | committed to Done |
 | closed by `bd supersede`, `bd duplicate` or `bd human dismiss` | the same | committed to Canceled |
 | reopened (`bd reopen`, or any status other than `closed`) | in Done, its close recorded | committed to Intake |
-| reopened | in Canceled | none: a canceled card leaves its bead open by owner decision (samskara-l2t), so an open bead there is expected |
+| reopened | in Canceled | none: a canceled card leaves its bead open by owner decision (samskara-l2t), so an open bead there is expected. Its closed-outside markers are cleared, so a person's later move to Done closes the bead |
 
 **How a superseded or duplicate bead is told apart.** bd 1.3.1 has no
 close-reason vocabulary. `bd supersede <old> --with <new>` and `bd duplicate
@@ -937,7 +943,7 @@ row the edge is in the closed bead's own `dependencies`, with `issue_id` the
 closed bead (checked on bd 1.3.1). `bd human dismiss` closes with
 `Dismissed` or `Dismissed: <reason>` (`cmd/bd/human.go:366-368,451`), and
 `bd human respond` with `Responded` (`:315`). `closedOutsideOutcome`
-(`integration.ts:1772`) reads these: an edge or a `Dismissed` reason is
+(`integration.ts:1910`) reads these: an edge or a `Dismissed` reason is
 Canceled, anything else Done. `bd reopen` clears `close_reason` but keeps
 the edge (checked on bd 1.3.1), so a superseded bead that is reopened and
 later closed normally still moves its card to Canceled. An agent can add a
@@ -952,14 +958,25 @@ committed transition through `#commitTransition`, ingress
 `beads:reopened:<card id>@<revision>`, actor system. A repeat at the same
 revision is a replay, so a tick before the dispatcher runs commits nothing
 new. Before the closed-outside move, the card is marked
-`beadsClosedOutside: <target phase>`, once. When the board has no terminal
+`beadsClosedOutside: <target phase>` and `beadsClosedOutsideMoves: <its
+stage-history length>`, once. When the board has no terminal
 `canceled` phase (`canceledPhase`), Canceled falls back to Done.
 
+**Once it got there.** The card has arrived when its stage history has an
+entry for the target phase at or after `beadsClosedOutsideMoves` (Factory
+appends one entry per phase entered, `dist/storage/domains/work-items/base.js:338-356`),
+or when a tick finds it in that phase; the arrival is recorded as
+`beadsClosedOutsideAt`. From then on, while the bead stays closed, the card
+is never moved for that close again: a person who moves it out of Canceled
+keeps that move, as one who moves it out of Done does through
+`beadsSyncedAt`. The stage history covers a move out made before any tick
+saw the card in the target phase.
+
 **Write-back after an outside close.** The Done rule wakes the worker as for
-any move. Write-back finds the card in Done with `beadsClosedOutside` and its
+any move. Write-back finds the card in Done with `beadsClosedOutside: done` and its
 bead closed, and marks it `synced` with no `bd close` and no `bd sync`: the
 close is the person's, already published, and bd keeps their reason
-(`integration.ts:756`). If the bead was reopened before that, write-back
+(`integration.ts:847`). If the bead was reopened before that, write-back
 leaves it alone instead of closing it again; the reopen move below handles
 the card.
 
@@ -968,11 +985,19 @@ person's move, because that move approves the decision or the epic and
 closes the bead ([Research cards](#research-cards), [Planning cards](#planning-cards)).
 When the bead is already closed in bd, nothing is left to approve, and
 refusing the move would leave the card in Planning, Building or Intake for a
-closed bead. So the policy allows the system's move to the phase the card's
-`beadsClosedOutside` names (`board-rules.ts:107`, `isClosedOutsideMove`).
-An agent's move is still refused: the actor must be the system, and no beads
-tool closes a bead. The worker sets the marker only while the bead is closed
-and clears it once the bead is open again.
+closed bead. So the policy allows a system move to the phase the card's
+`beadsClosedOutside` names (`board-rules.ts`, `isClosedOutsideMove`). The
+policy cannot tell the sync worker's move from any other system move:
+Factory's dispatcher applies every committed rule decision as actor
+`{ type: 'system', id: 'factory-rule-dispatcher' }`
+(`dist/rules/dispatcher.js:518-524`), whichever rule or integration
+committed it. So while the marker names the target phase, any system move
+there passes the gate, not only the sync worker's. An agent's own move is
+still refused: the actor must be the system, and no beads tool closes a
+bead. The worker sets the marker while the bead is closed and clears it once
+the bead is open again. A bead deleted from bd is no longer in the refresh
+read, so the worker never looks at its card again, and that card's marker
+is never cleared.
 
 **What is not moved.**
 
@@ -984,7 +1009,10 @@ and clears it once the bead is open again.
   a person moved out of Done after write-back closed its bead. Moving it back
   would undo that person's move, and the next tick would repeat it. Keeping
   card and bead in step in that case is the two-way status sync
-  (samskara-l2t.4).
+  (samskara-l2t.4). The same holds for a card with `beadsLocalClose`: its
+  bead was closed by write-back, not in bd, and write-back publishes it.
+- *A card a person moved out after it got there.* See
+  [Once it got there](#beads-closed-outside-the-factory).
 - *A card already in Done or Canceled.* A card a person canceled leaves its
   bead open (owner decision); if the bead is then closed in bd, the card stays
   in Canceled.
@@ -1004,14 +1032,18 @@ phase or the dispatcher's stale sweep revokes it 24 hours after it was made
 either.
 
 **Reopened after Done.** A card in Done whose close was recorded
-(`beadsSyncedAt`, or `beadsClosedOutside`) and whose bead is no longer closed
+(`beadsSyncedAt`, or `beadsClosedOutside: done`) and whose bead is no longer closed
 is committed to Intake: the same card, not a new one (owner decision,
-samskara-l2t). Once it has left Done and the bead is still open, the next tick
-clears `beadsSyncedAt`, `beadsWriteback`, `beadsCloseAttempts`,
-`beadsDiagnostic`, `beadsCloseRearmedAt` and `beadsClosedOutside`, so its next
-arrival in Done closes the bead again. The markers stay until the card has
-left Done, so write-back never re-closes the bead while the move waits for
-the dispatcher. Factory dropped the card's org-wide claim when it entered
+samskara-l2t). In the same tick, before the commit, `beadsSyncedAt`,
+`beadsWriteback`, `beadsCloseAttempts`, `beadsDiagnostic`,
+`beadsCloseRearmedAt` and the closed-outside markers are cleared, and
+`beadsReopenPending` records the card's stage-history length. While the card
+has not moved since (same length), write-back skips it, so the bead is not
+re-closed while the move waits for the dispatcher, and a later tick
+re-commits the move (a replay at the same revision). Once the card has
+moved, the marker is stale and is cleared: a person who moves the card back
+to Done before the next tick closes the bead again, and that Done is not
+undone. Factory dropped the card's org-wide claim when it entered
 Done (`dist/storage/domains/work-items/base.js:911-920`), so the same tick
 takes it back with `claimWorkItem` (`:1232-1256`); if another project's card
 holds it by then, that is logged once. A reopened epic whose children are all
@@ -1245,10 +1277,10 @@ gets them too: the same provider serves it, and its tools sit beside the
 `factoryProjectId`, else its resource id, which for a supervisor is
 `factory-supervisor:<projectId>` (`dist/supervisor/session.js:4-16`). A caller
 from another org gets no tools. A project with no linked repository gets none.
-Code: `packages/factory-beads/src/integration.ts:445-474` (`agentTools`),
+Code: `packages/factory-beads/src/integration.ts:518-547` (`agentTools`),
 `src/agent-tools.ts` (the tools), `src/tool-ops.ts` (host-side runs).
 
-`agentTools` never throws (`integration.ts:445-474`). The SDK awaits the
+`agentTools` never throws (`integration.ts:518-547`). The SDK awaits the
 merged provider without a catch (`@mastra/code-sdk`
 `dist/agents/tools.js:120-122`), so a storage error in one integration would
 otherwise remove every tool from every session. A failure is logged once and
@@ -1274,13 +1306,13 @@ time, the tool is absent.
   (no auto-push), then `bd sync` (`tool-ops.ts:177`). When the sync fails:
   - exit 1, or 3 after retries: the write stays on the host copy, the agent is
     told, and the next sweep publishes it with `bd sync` instead of a pull
-    (`integration.ts:821-837`).
+    (`integration.ts:919-935`).
   - exit 2 or 4: the repository is **parked**, exactly as for a write-back
     conflict: state `parked`, no pull, no intake and no tool writes until an
     operator resolves it and calls `POST /web/beads/reset` (`tool-ops.ts:200`).
     The park is a marker in the copy's own `.git`, so it lasts exactly as long
     as the conflicted copy; the reset drops the copy and the marker together
-    (`integration.ts:654-667`, `:688-693`, `:1622-1643`). Reads still work while parked.
+    (`integration.ts:727-740`, `:761-766`, `:1760-1781`). Reads still work while parked.
 - Writes are signed `--actor factory-beads/agent`, so the bead history shows
   which writes came from an agent.
 - No tool closes or deletes. `beads_update` refuses `closed` before bd runs
@@ -1423,7 +1455,7 @@ metrics written.
 ## Write-back failures
 
 `bd sync` exit codes (from `bd sync --help`), and what the integration does with
-each (`integration.ts:719-820`, retries in `#syncWithRetry` at `:1544-1553`):
+each (`integration.ts:792-918`, retries in `#syncWithRetry` at `:1682-1691`):
 
 | Exit | Meaning | Action |
 |------|---------|--------|
@@ -1549,7 +1581,15 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   write-back, or a failed refresh read; a reopened bead moving the same card
   Done -> Intake, its markers cleared, its claim taken back, and its next Done
   closing the bead again; a card closed outside and reopened before or after
-  write-back marked it synced; a canceled card never moved back. The fake bd
+  write-back marked it synced; a canceled card never moved back; a card a
+  person moved out of Canceled never pulled back, whether or not a tick saw
+  it there first; a close whose sync failed published by the next tick after
+  a person moved its card out of Done, with no closed-outside move; a
+  person's Done on a canceled card whose bead was reopened closing the bead,
+  with the canceled marker cleared or still on the card; and the reopen's
+  markers cleared in the tick that commits it, so a person's Done before the
+  next tick closes the bead and is not undone. The harness keeps each card's
+  stage history as Factory does (`applyStageTransition`). The fake bd
   runs `supersede`, `duplicate` and `reopen` in bd 1.3.1's shapes (the edge
   on the closed bead, no close reason; reopen clears the reason and keeps the
   edge), and `Harness.bd` runs it as a person would. The harness

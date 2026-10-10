@@ -43,9 +43,11 @@
  *
  * One exception to both Done gates (samskara-l2t.3): when the bead was
  * already closed outside the Factory, the sync worker marks the card
- * `beadsClosedOutside: <phase>` and commits the move as the system; that
- * move is allowed (`isClosedOutsideMove`). The gate guards the close, and
- * the close has already happened in bd.
+ * `beadsClosedOutside: <phase>` and commits the move as a rule decision.
+ * While the marker names the target phase, any system move there is
+ * allowed (`isClosedOutsideMove`), not only the sync worker's: see that
+ * function. The gate guards the close, and the close has already happened
+ * in bd.
  */
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
@@ -94,15 +96,26 @@ export const PLAN_DONE_REASON =
   "Only a person moves an epic's planning card to Done, which closes the epic with no children";
 
 /**
- * Whether this is the sync worker's move of a card whose bead was already
- * closed outside the Factory to the phase it marked (samskara-l2t.3,
- * `beadsClosedOutside`). The worker sets the marker only while the bead is
- * closed and clears it once the bead is open again, and commits the move
- * as actor system. A research or plan card's Done gate exists so that a
- * person approves the close; a bead closed in bd has nothing left to
- * approve, and refusing the move would leave the card in a working phase,
- * or Intake, for a closed bead. Agents never get this: no beads tool closes
- * a bead (agent-tools.ts), and the actor must be the system.
+ * Whether this is a system move of a card whose bead was already closed
+ * outside the Factory to the phase the card's `beadsClosedOutside` marker
+ * names (samskara-l2t.3). The sync worker sets the marker while the bead is
+ * closed and commits the move as a rule decision. The policy cannot tell
+ * that move from any other system move: Factory's dispatcher applies every
+ * committed rule decision as `{ type: 'system', id:
+ * 'factory-rule-dispatcher' }` (@mastra/factory 0.20.0
+ * dist/rules/dispatcher.js:518-524), whichever rule or integration
+ * committed it. So while the marker names the target phase, any system move
+ * to that phase passes, not only the sync worker's. The marker is cleared
+ * once the bead is open again; a deleted bead is no longer in bd's list, so
+ * the worker never reads it again and its card's marker is never cleared.
+ *
+ * A research or plan card's Done gate exists so that a person approves the
+ * close; a bead closed in bd has nothing left to approve, and refusing the
+ * move would leave the card in a working phase, or Intake, for a closed
+ * bead. An agent's own move does not get this: the actor must be the
+ * system, and no beads tool closes a bead (agent-tools.ts). A rule that
+ * turns an agent's tool result into a system move to the marked phase
+ * would pass, as any system move does.
  */
 export function isClosedOutsideMove(context: { actor: { type: string }; toStage: string; item: { metadata?: unknown } }): boolean {
   const metadata = context.item.metadata as Readonly<Record<string, unknown>> | null | undefined;
