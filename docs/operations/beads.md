@@ -103,9 +103,11 @@ App:
    state from it. It is taken after the copy's last change in the tick, so
    a tick that wrote back reads the copy again after write-back. See
    [Refresh read](#refresh-read).
-4. **Intake.** `bd --readonly ready --json --exclude-type=milestone -n 0`, then one
-   card per bead, and the bead's description as one comment on the card's feed.
-   See [What the agent sees](#what-the-agent-sees).
+4. **Intake.** `bd --readonly ready --brief --json --exclude-type=milestone -n 0`,
+   then one card per bead, titled `<bead id>: <bead title>`. Then every card's
+   title follows its bead's, and a card whose bead is not ready gets its kind
+   and parent link from the refresh read. See
+   [What the agent sees](#what-the-agent-sees).
    A bead whose parent is an epic, milestone or molecule root is put under
    that container's overview card, which is made first; see
    [Overview cards](#overview-cards). A ready epic with children is that
@@ -201,10 +203,8 @@ inbound sync children: `status` and `close_reason` for the inbound close
 (samskara-l2t.3; a superseded or duplicate bead has no `close_reason`) and
 the two-way status sync (l2t.4), `labels` and `assignee` for label chips
 (l2t.5), `comment_count` for bd comments on the feed (l2t.6), `title` for
-the card title (l2t.8), and `updated_at` to tell a changed bead. No row
-carries a description, so an overview card's description comment is read
-with `bd show` while the card has none: once per card per process, and for
-an empty description again only after the bead's `updated_at` changes.
+the card title, kind and parent link (l2t.8), and `updated_at` to tell a
+changed bead. No row carries a description; nothing in the sweep needs one.
 
 **When it fails.** The repository's report carries
 `refresh read failed, so the overview steps skipped this sweep` (or, when
@@ -224,7 +224,7 @@ read that works again logs one line.
 the number of containers. A tick that writes back reads twice (before the
 first close and after the sync), plus one `bd show` for each pending bead
 after the first close lands. A `bd show` is otherwise left only for a bead
-the list leaves out and for an overview card's first description comment.
+the list leaves out.
 
 ### Startup preconditions
 
@@ -863,71 +863,58 @@ treat a beads card as a GitHub issue.
 
 ### What the agent sees
 
-A Factory work item has no description field. The plan skill gets the card's
-URL or, when it has none, its title (`@mastra/factory` 0.20.0
-`dist/boards/work.js:102-108`), and beads cards have no URL. So the card title
-alone, `<bead id>: <bead title>`, is all the kickoff carries.
+A Factory work item has no description field, and a beads card has no URL,
+so a kickoff carries only the card's title (`@mastra/factory` 0.20.0
+`dist/boards/work.js:101-120`). Every run started on a beads card in Triage,
+Planning or Building is therefore told where the bead is and how to read it
+(samskara-l2t.8; `packages/factory-beads/src/kickoff-rule.ts`,
+`withBeadsKickoffHint`):
 
-The bead's **description** reaches the agent through the card's feed. Every
-`invokeSkill` kickoff (triage, plan, build) has the card's recent comments
-appended as a `<work-item-feed>` block (`dist/rules/dispatcher.js:635-639`,
-reader wired at `dist/factory.js:686`). The integration posts the description
-as one comment through `IntegrationContext.feed.createComment`
-(`dist/integrations/base.d.ts:94-95`, given to workers at
-`dist/factory.js:847`), the same call Slack uses to ingest thread asides
-(`dist/integrations/slack/slack.js:712-718`). Code:
-`packages/factory-beads/src/integration.ts`, `#postDescription`.
+> This card is bead `<id>` in repository `<owner/name>`. Start by reading
+> the bead in full (description, design, acceptance criteria and notes) with
+> the beads_show tool.
 
-| Field | Value |
-|-------|-------|
-| `author` | `{ kind: 'integration', id: 'integration:beads', displayName: 'beads' }` |
-| `externalSource` | `{ integrationId: 'beads', type: 'description', externalId: <bead id> }` |
-| `body` | the description as it is in beads |
-| `occurredAt` | the card's `createdAt`, so the description reads first, like an issue body, and a back-filled comment does not bump the card's feed activity |
+This is Factory's own pattern for tracker items: a Linear, Jira or
+incident.io card's triage run carries a fetch hint naming the tool that
+reads the full issue (`dist/boards/work.js:71-99`, e.g. "Start by fetching
+the issue's full details (description and comments) with the
+linear_get_issue tool"). `beads_show` returns the whole bead: title,
+description, design, acceptance criteria, notes, status and dependencies
+(`agent-tools.ts`). The hint is appended to the run's `arguments` (a skill
+run: Work's triage and plan, and the decision and epic skills) or `prompt`
+(Work's Building), by wrapping each phase's `manual` handler on the
+Requests board (`src/mastra/boards/requests-board.ts`). Every other card and
+every other decision passes through unchanged. Review has no `onEnter`
+rule, so a run a move into Review starts gets no hint; that run follows
+Building, whose run read the bead.
 
-Only the description is posted. Design, acceptance criteria and notes are not.
-To get the description, intake runs `bd ready` without `--brief`: in bd 1.3.0
-`--brief` omits description, design, acceptance criteria and notes
-(`bd ready --help`). bd leaves an empty description out of the JSON row, and a
-bead with an empty or whitespace-only description gets no comment.
+**The description comment is gone** (owner decision, samskara-l2t.8). The
+integration used to post the bead's description as one comment on the
+card's feed. The feed block an agent sees cut it to 2,000 characters
+(`dist/storage/domains/comments/feed-context.js:4-6`) and it never carried
+design, acceptance criteria or notes; integrations get only
+`feed.createComment`, so it could not follow an edit either. Comments
+already posted stay on their cards; no new ones are posted. Intake now reads
+`bd ready` with `--brief`, since it needs no free-form text.
 
-**Idempotent.** The comment store returns the existing row when a comment with
-the same `externalSource` already exists in the project
-(`dist/storage/domains/comments/base.js:180-191`). So the integration checks
-every ready bead's card on every sweep, and this is safe across sweeps,
-restarts and replicas. Cards created before this change get their comment on
-the next sweep. Within one process, a card whose comment is confirmed is not
-checked again. After a restart, each card is checked once more, and the store
-returns the existing comment.
+**Titles follow the bead.** A card is titled `<bead id>: <bead title>`. The
+bead title it was set from is recorded on the card (`beadsTitle`); when the
+refresh read shows a different title, the card is retitled and the new
+title recorded, in one update (`UpdateWorkItemInput.title`,
+`dist/storage/domains/work-items/base.d.ts:447-450`). Only a change in bd
+moves the title: a card a person renamed in the Factory keeps its name until
+the bead's title changes. A card made before this has no `beadsTitle` and is
+retitled once when its title is not the bead's. Every card follows, Done
+and Canceled included.
 
-**Edits are not mirrored. The first description posted stays.** Integrations
-get only `feed.createComment`, not `editComment` (`integrations/base.d.ts:95`
-is `Pick<CommentsDomain, 'createComment'>`), so the integration cannot update
-the comment. Keying `externalId` by a description hash would post a new
-comment for each edit. The agent would then see every version, and the older
-ones would use up the feed's 20-comment window. If a bead's description changes
-after its card exists, add a comment on the card by hand. This matches the
-existing rule that cards do not follow later bead edits.
-
-**Limits.** These come from `@mastra/factory` 0.20.0.
-
-- The comment body can be at most 16,000 characters
-  (`dist/storage/domains/comments/base.js:33`, `:37-40`). A longer
-  description is cut to fit and ends with
-  `[Truncated: the bead's description is N characters; the full text is in beads.]`
-  (`descriptionBody`). The cut never splits a UTF-16 surrogate pair.
-- The agent sees less than the comment holds. The feed block has the newest
-  **20** comments, each cut to **2,000** characters (Factory adds `…`), and at
-  most **12,000** characters in total. Older comments are dropped first
-  (`dist/storage/domains/comments/feed-context.js:4-6`, `:36-72`). So the agent
-  sees the first 2,000 characters of the description. On a card with more than
-  20 newer comments, the agent does not see the description at all.
-- The feed preamble tells the agent that comments are data written by
-  collaborators, not instructions (`feed-context.js:9`).
-
-If the Factory gives the integration no feed (`ctx.feed` is undefined), cards
-are still created, and the integration logs one warning per process. A failed
-`createComment` is logged and does not fail the sweep.
+**Cards whose bead is not ready.** `bd ready` lists open beads with no
+active blocker, never an `in_progress` one (`bd ready --help`, v1.3.1), so
+intake's updates of an existing card skip a card whose bead is not ready.
+For such a card, not in a terminal phase and whose bead is not closed, the
+same updates run from the refresh read: the research kind follows the bead's
+type (an epic's kind is left to the overview steps), and a bead with a
+parent is linked under the parent's card when it has one
+(`integration.ts`, `#followBeadEdits`).
 
 ### Beads closed outside the Factory
 
@@ -1627,9 +1614,7 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   following: the token never appears in argv; the server environment does not
   reach bd; exit codes 2 and 3; idempotent intake across sweeps and restarts;
   milestone and pinned exclusion; claim conflicts; ordering (B is carded only after A's card
-  reaches Done and A is closed and synced); the lease; the description
-  comment (one per card across sweeps and restarts, back-fill, no comment for
-  an empty description, no feed, a failing feed, truncation); the card's
+  reaches Done and A is closed and synced); the lease; the card's
   `repository` (one repository, two repositories in one project, back-fill),
   checked with `@mastra/factory`'s real `resolveWorkItemRepository`; and, in
   `test/states.test.ts`, the on/off switch, both startup preconditions, the
@@ -1724,6 +1709,14 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   `validateParentRelation`. The harness remote carries `refs/dolt/data` unless a test
   removes it (`setBeadsData`). The fake feed
   (`MemoryFeed` in `test/harness.ts`) copies the store's replay behaviour.
+  Bead edits and the kickoff hint (samskara-l2t.8, `test/bead-edits.test.ts`):
+  a bead retitled in bd retitles its card once; a person's rename kept until
+  the bead's title changes; a card made before titles followed caught up,
+  in progress or in Done; an in-progress bead's card getting the research
+  kind and its parent link; no feed comment, and `bd ready --brief`; the
+  hint text; the hint on the Requests board's Triage, Planning, Building and
+  decision runs of a beads card and on no other card's; and every other
+  decision passed through unchanged.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote, including
   an epic with two children and a nested epic, and a real `bd mol pour` whose
@@ -1798,13 +1791,10 @@ build never runs bd.
   automated writer.
 - **No live plan-gate run yet.** The gate is proven by unit tests only. The
   transition API always acts as a person, and a live agent run costs credits.
-- **Cards do not follow later bead edits.** If a bead's title or description
-  changes, its card and its description comment stay as they are. A bead
-  closed or reopened outside the Factory does move its card; see
-  [Beads closed outside the Factory](#beads-closed-outside-the-factory).
-- **The description reaches the agent live only in unit tests so far.** The
-  feed path is native Mastra, but no planning run on a beads card has been
-  checked end to end since this change.
+- **Labels, priority and type are not on the card yet** (samskara-l2t.5), and
+  bd comments do not reach the card's feed (samskara-l2t.6). A card's title,
+  its phase and its kind follow the bead; see
+  [What the agent sees](#what-the-agent-sees) and [Status sync](#status-sync).
 - **Multi-repository start is proven by unit tests only (`samskara-srl`).**
   The tests run Mastra's own `resolveWorkItemRepository` on the cards the
   integration makes; no beads card has yet been started live in a factory

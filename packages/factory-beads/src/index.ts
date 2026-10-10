@@ -1,17 +1,14 @@
 export {
   BeadsIntegration,
-  BEADS_COMMENT_AUTHOR,
   BEADS_DATA_REF,
   BEADS_INTEGRATION_ID,
   BEADS_META,
   beadsClaimKey,
   closedOutsideOutcome,
   DECISION_TYPE,
-  descriptionBody,
   DISMISSED_REASON,
   EPIC_TYPE,
   FACTORY_REPOSITORY_META,
-  MAX_COMMENT_BODY,
   NOT_COMPLETED_EDGES,
   OVERVIEW_CARD_KIND,
   parentsFirst,
@@ -30,6 +27,7 @@ export type {
   WritebackState,
 } from './integration';
 export { createBeadsDoneRule } from './done-rule';
+export { beadsKickoffHint, withBeadsKickoffHint } from './kickoff-rule';
 export { createBeadsPlanningRule, DECISION_SKILL } from './decision-rule';
 export { createBeadsEpicBuildRule, createBeadsEpicPlanningRule, EPIC_SKILL } from './epic-rule';
 export type { EpicSkillMode } from './epic-rule';

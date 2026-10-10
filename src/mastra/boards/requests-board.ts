@@ -42,6 +42,7 @@ import {
   createBeadsEpicPlanningRule,
   createBeadsPlanningRule,
   createBeadsTransitionPolicy,
+  withBeadsKickoffHint,
 } from '@samskara/factory-beads';
 
 const workTriage = workBoard.phases.triage.onEnter ?? {};
@@ -88,8 +89,9 @@ export const requestsBoard = defineBoard({
     ...workBoard.phases,
     triage: {
       ...workBoard.phases.triage,
-      // The line this board exists for: `manual` gets the triage skill.
-      onEnter: { ...workTriage, manual: triageEntry },
+      // The line this board exists for: `manual` gets the triage skill. A beads
+      // card's run is told to read its bead with beads_show (kickoff-rule.ts).
+      onEnter: { ...workTriage, manual: withBeadsKickoffHint(triageEntry) },
     },
     planning: {
       ...workBoard.phases.planning,
@@ -97,7 +99,7 @@ export const requestsBoard = defineBoard({
       // skill in propose mode, a research card (an open decision) the
       // factory-beads-decision skill; every other `manual` card gets Work's
       // own planning decision. See docs/operations/beads.md.
-      onEnter: { ...workPlanning, manual: createBeadsEpicPlanningRule(createBeadsPlanningRule(workPlanning.manual)) },
+      onEnter: { ...workPlanning, manual: withBeadsKickoffHint(createBeadsEpicPlanningRule(createBeadsPlanningRule(workPlanning.manual))) },
     },
     execute: {
       ...workBoard.phases.execute,
@@ -105,7 +107,7 @@ export const requestsBoard = defineBoard({
       // skill in file mode: it files the approved children; the agent writes
       // no code and opens no pull request. Every other `manual` card gets Work's own
       // build decision. See docs/operations/beads.md.
-      onEnter: { ...workExecute, manual: createBeadsEpicBuildRule(workExecute.manual) },
+      onEnter: { ...workExecute, manual: withBeadsKickoffHint(createBeadsEpicBuildRule(workExecute.manual)) },
     },
     done: {
       ...workBoard.phases.done,

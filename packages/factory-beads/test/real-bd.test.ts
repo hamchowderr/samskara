@@ -183,7 +183,6 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(card(nested)!.metadata).toMatchObject({ beadsCardKind: 'overview', beadsOpenChildren: 1 });
     // A poured root is a molecule, which bd ready never lists; its steps carry parent-child edges to it.
     expect(card(mol)!.metadata).toMatchObject({ beadsCardKind: 'overview', beadsOpenChildren: 2, beadsType: 'molecule' });
-    expect(h.feed.on(card(mol)!.id).map(c => c.body)).toEqual(['Demo workflow']);
     // The second step needs the first, so it is not ready yet.
     expect(card(second)).toBeUndefined();
     expect(card(grand)?.metadata?.beadsCardKind).toBeUndefined();
@@ -340,7 +339,6 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     const first = await sweep(integration);
     expect(first.repos[0], JSON.stringify(first)).toMatchObject({ state: 'ok' });
     expect(card(open)?.metadata).toMatchObject({ beadsCardKind: 'research', beadsType: 'decision' });
-    expect(h.feed.on(card(open)!.id).map(c => c.body)[0]).toContain('Which queue should jobs use?');
     // bd ready never lists a closed bead, so a settled decision is a record, not a card.
     expect(card(settled)).toBeUndefined();
 

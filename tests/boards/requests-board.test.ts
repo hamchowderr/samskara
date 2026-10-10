@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { workBoard } from '@mastra/factory';
 import { validateFactoryRuleDecision } from '@mastra/factory/rules/validation';
 import {
+  beadsKickoffHint,
   DECISION_SKILL,
   EPIC_SKILL,
   OVERVIEW_WORKING_REASON,
@@ -19,7 +20,13 @@ import {
   PLAN_WORKING_REASON,
   RESEARCH_APPROVAL_REASON,
   RESEARCH_WORKING_REASON,
+  withBeadsKickoffHint,
 } from '@samskara/factory-beads';
+
+/** The kickoff hint a beads card's run carries (samskara-l2t.8). */
+const hint = (beadsId: string) => `
+
+${beadsKickoffHint({ beadsId, beadsRepo: 'acme/widgets' })}`;
 import { FACTORY_RULE_SOURCES } from '@mastra/factory/rules/types';
 import type { FactoryRuleActor } from '@mastra/factory/rules/types';
 import type { BoardTransitionPolicyContext } from '@mastra/factory/boards/transition-policy';
@@ -368,16 +375,16 @@ describe('beads research cards (samskara-l2t.2.3)', () => {
         idempotencyKey: `ing-7:${DECISION_SKILL}`,
         role: 'plan',
         skillName: 'factory-beads-decision',
-        arguments: 'Decision bead w-d in repository acme/widgets',
+        arguments: `Decision bead w-d in repository acme/widgets${hint('w-d')}`,
       });
       // Factory's own validation accepts it, as the transition service runs it.
       expect(() => validateFactoryRuleDecision(decision, 0)).not.toThrow();
     });
 
-    it("returns Work's own planning decision for every other manual card", () => {
+    it("returns Work's own planning decision for every other manual card, with the kickoff hint on a beads card", () => {
       for (const metadata of [null, { beadsId: 'w-1', beadsType: 'task' }, { beadsId: 'w-d', beadsType: 'decision' }]) {
         const context = entry(metadata, 'A request');
-        expect((planning.manual as Rule)(context)).toEqual((workPlanning.manual as Rule)(context));
+        expect((planning.manual as Rule)(context)).toEqual(withBeadsKickoffHint(workPlanning.manual as never)(context as never));
       }
       expect((planning.manual as Rule)(entry(null, 'A request'))).toMatchObject({ skillName: 'factory-plan', role: 'plan' });
     });
@@ -569,7 +576,7 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
         idempotencyKey: `ing-9:${EPIC_SKILL}:propose`,
         role: 'plan',
         skillName: 'factory-beads-epic',
-        arguments: 'Mode: propose. The epic bead w-e in repository acme/widgets',
+        arguments: `Mode: propose. The epic bead w-e in repository acme/widgets${hint('w-e')}`,
       });
       expect(() => validateFactoryRuleDecision(decision, 0)).not.toThrow();
     });
@@ -581,7 +588,7 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
         idempotencyKey: `ing-9:${EPIC_SKILL}:file`,
         role: 'work',
         skillName: 'factory-beads-epic',
-        arguments: 'Mode: file. The epic bead w-e in repository acme/widgets',
+        arguments: `Mode: file. The epic bead w-e in repository acme/widgets${hint('w-e')}`,
       });
       expect(() => validateFactoryRuleDecision(decision, 0)).not.toThrow();
     });
@@ -595,7 +602,7 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
           ['execute', execute, workExecute],
         ] as const) {
           const context = entry(stage, 'planning', metadata, 'A request');
-          expect((ours.manual as Rule)(context), `${stage} ${JSON.stringify(metadata)}`).toEqual((theirs.manual as Rule)(context));
+          expect((ours.manual as Rule)(context), `${stage} ${JSON.stringify(metadata)}`).toEqual(withBeadsKickoffHint(theirs.manual as never)(context as never));
         }
       }
       expect((execute.manual as Rule)(entry('execute', 'planning', null, 'A request'))).toMatchObject({ role: 'work', idempotencyKey: 'ing-9:build' });
