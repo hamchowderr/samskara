@@ -1090,8 +1090,7 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     };
     // A legacy card: made before overview cards, it carries only the bead type.
     await doneContainerCard(h, { [BEADS_META.type]: 'epic' });
-    // bd refuses the epic's close (here: while its children are open).
-    h.setState(s => (s.closeFail = ['w-e']));
+    // bd refuses the epic's close while its children are open (fake bd, like bd 1.3.1).
     await sweep(integration);
     await sweep(integration);
     await sweep(integration);
@@ -1103,7 +1102,6 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     h.setState(s => {
       s.beads[1]!.status = 'closed';
       s.beads[2]!.status = 'closed';
-      s.closeFail = [];
     });
     await sweep(integration);
     expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: null, [BEADS_META.closeAttempts]: 0 });
@@ -1120,17 +1118,20 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
   it('re-arms a container card only once: a close that fails again stays parked', async () => {
     h = createHarness([
       { id: 'w-e', title: 'Epic', issue_type: 'epic' },
-      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e', status: 'closed' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
     ]);
     const integration = h.integration({ maxCloseAttempts: 1 });
     await doneContainerCard(h, { [BEADS_META.type]: 'epic', [BEADS_META.cardKind]: OVERVIEW_CARD_KIND });
-    h.setState(s => (s.closeFail = ['w-e']));
-    // Fails and is parked; the next sweep re-arms it, as its only child is closed.
+    // Refused for its open child and parked; once the child closes it is re-armed.
     await sweep(integration);
     expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
+    h.setState(s => {
+      s.beads[1]!.status = 'closed';
+      s.closeFail = ['w-e'];
+    });
     await sweep(integration);
     expect(card(h, 'w-e').metadata?.[BEADS_META.closeRearmedAt]).toEqual(expect.any(String));
-    // Fails again and stays parked.
+    // Fails again for another reason and stays parked.
     await sweep(integration);
     await sweep(integration);
     expect(commands(h).filter(c => c === 'close w-e')).toHaveLength(2);

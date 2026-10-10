@@ -223,9 +223,12 @@ matter here; all were checked in `mastra` 1.33.0
   therefore cannot refuse the session or run the card's own skill in it.
   What an overview card's chat session can do is what any chat session can;
   the `factory-beads` skill tells agents not to build on one. This is
-  recorded as a Mastra gap below; Samskara does not override the route.
+  recorded as a Mastra gap below. A middleware on `runs/start` could refuse
+  overview cards, but it would override a Factory route, which the
+  native-only rule rules out; the session it opens is empty and harmless.
 - **"Resume".** A card in Intake that has had a triage, plan, work or review
-  session shows "Resume" (`Rdt`: the latest such seat's phase, via
+  session shows "Resume" (`Rdt`: the furthest such seat's phase in pipeline
+  order triage < plan < work < review, via
   `K4 = {triage, plan → planning, work → execute, review}`). It calls the
   card's move (`onMove`), which is `POST .../work-items/:id/transition` as a
   person (`dist/routes/work-items.js:472-507`), so the board policy decides.
@@ -467,8 +470,9 @@ marks it synced without closing the bead again.
   ([Subtasks](#subtasks)). A card whose bead has no children is never
   re-armed. It happens once per card (`beadsCloseRearmedAt`). If the close
   fails again for another reason, the card stays parked for an operator
-  (`POST /web/beads/reset`). Each tick reads the children of every such
-  card still parked, one `bd list --parent` per card.
+  (`POST /web/beads/reset`). Only a card whose diagnostic is bd's "open
+  child" refusal is considered; each tick reads its children with one
+  `bd list --parent`. A card parked for any other reason costs no bd call.
 
 ### Subtasks
 

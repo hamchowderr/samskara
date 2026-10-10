@@ -1031,6 +1031,9 @@ export class BeadsIntegration implements FactoryIntegration {
       if (typeof beadId !== 'string' || card.board !== this.board) continue;
       if (card.stages.length !== 1 || card.stages[0] !== this.donePhase) continue;
       if (card.metadata?.[BEADS_META.writeback] !== 'close-failed' || card.metadata?.[BEADS_META.closeRearmedAt]) continue;
+      // Only a close bd refused for an open child can clear on its own; any
+      // other parked card would cost a bd read every tick for nothing.
+      if (!String(card.metadata?.[BEADS_META.diagnostic] ?? '').includes('open child')) continue;
       try {
         const children = await repo.children(beadId);
         if (children.length === 0 || children.some(child => child.status !== 'closed')) continue;

@@ -115,7 +115,7 @@ The board refuses a move a card's kind does not allow, and `factory_transition_w
 The card's "Start session" button opens a chat session bound to the card. It runs no skill, starts no phase run and moves nothing: the card stays where it is, and the board asks no question until a move is requested. So in such a session:
 
 - On an overview card, do not build anything. Its work is its children's cards. Answer questions; a move into a working phase is refused.
-- On a research or planning card, its skill does not run here. It runs when a person moves the card into Planning (and, for a planning card, Building). Do not write the decision or file the children from a chat session unless the person asks you to, and even then never move the card to Done or Building yourself: those moves are the person's approval.
+- On a research or planning card, its skill does not run here. It runs when the card enters Planning (and, for a planning card, Building); a person makes those moves, or you request Planning when the person asks you to resume it. Do not write the decision or file the children from a chat session unless the person asks you to, and even then never move the card to Done or Building yourself: those moves are the person's approval.
 - A card that rests in Intake with an earlier run's session shows "Resume" instead. That is a move into the earlier run's phase, and the board refuses it for an overview card like any other.
 
 While a card's session is open, the Factory card menu greys out every move into a working phase. That is the Factory UI, not the board: close the session view, or wait for the run to finish, to make such a move.
@@ -124,7 +124,7 @@ While a card's session is open, the Factory card menu greys out every move into 
 
 A `decision` bead records a choice and why it was made. File one when the project has to settle a question before the work that depends on it can start; link that work to it with `blocks`.
 
-- An **open** decision is a question still to answer. Its card is a research card: when a person moves it into Planning, the `factory-beads-decision` skill researches the options and writes `## Decision`, `## Rationale` and `## Alternatives Considered` into the bead, after the original question. The agent writes no code and opens no pull request.
+- An **open** decision is a question still to answer. Its card is a research card: when it enters Planning, the `factory-beads-decision` skill researches the options and writes `## Decision`, `## Rationale` and `## Alternatives Considered` into the bead, after the original question. The agent writes no code and opens no pull request.
 - A person approves the decision by moving its card to Done, which closes the bead. An agent can never move a decision card to Done, and auto-approved plans do not change that. A decision card never enters Triage, Building or Review.
 - A **closed** decision is a record. It never gets a card. Do not edit it; to reverse it, file a new decision and link it with `supersedes`.
 - Filing an open question: `beads_create` requires the three sections, so put the question first and leave each section empty or write `Open.` under it. The decision skill fills them in. Filing a decision already settled: write the sections in full and say in the notes who decided. Either way it waits in Intake for a person.

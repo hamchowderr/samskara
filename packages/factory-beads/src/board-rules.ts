@@ -74,7 +74,7 @@ export interface BeadsTransitionPolicyOptions {
  * names the moves still open to it.
  */
 export const OVERVIEW_WORKING_REASON =
-  'An overview card holds no work and closes when its last child closes; move it to Intake and work on its children instead';
+  'An overview card holds no work and closes when its last child closes; it belongs in Intake, so work on its children instead';
 export const OVERVIEW_OPEN_CHILDREN_REASON = 'This overview card still has open children; it closes when its last child closes';
 export const RESEARCH_WORKING_REASON =
   'A decision card is researched in Planning and approved by a person moving it to Done; it is never triaged, built or reviewed';
