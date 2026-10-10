@@ -191,10 +191,11 @@ export class MemoryWorkItems {
     return { item: structuredClone(item), created: true, previous: { stages: [], sessionRoles: [] } };
   }
 
-  async update({ orgId, id, patch }: { orgId: string; id: string; userId: string; patch: { stages?: string[]; metadata?: Record<string, unknown> | null } }) {
+  async update({ orgId, id, patch }: { orgId: string; id: string; userId: string; patch: { stages?: string[]; title?: string; metadata?: Record<string, unknown> | null } }) {
     const item = this.items.find(i => i.orgId === orgId && i.id === id);
     if (!item) return null;
     // Same merge as WorkItemsStorage.applyUpdate (work-items/base.js:379-382).
+    if (patch.title !== undefined) item.title = patch.title;
     if (patch.metadata !== undefined) item.metadata = patch.metadata === null ? null : { ...(item.metadata ?? {}), ...patch.metadata };
     if (patch.stages) {
       item.stageHistory = applyStageTransition(item.stageHistory, item.stages, patch.stages, 'test', new Date());

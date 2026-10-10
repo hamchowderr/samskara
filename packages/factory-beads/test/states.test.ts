@@ -165,10 +165,9 @@ describe('no-beads-data', () => {
     expect(bdCommands(h).filter(c => c === 'bootstrap')).toHaveLength(1);
     expect(lines.info.some(l => l.includes('refs/dolt/data found on origin'))).toBe(true);
     expect(lines.warn).toEqual([]);
-    // Intake and the description comment work as usual afterwards.
+    // Intake works as usual afterwards.
     const card = h.workItems.beadCards()[0]!;
     expect(card.metadata?.[BEADS_META.id]).toBe('w-1');
-    expect(h.feed.on(card.id).map(c => c.body)).toEqual(['Described.']);
   });
 
   it('a copy bootstrapped earlier is dropped when origin has no beads data', async () => {

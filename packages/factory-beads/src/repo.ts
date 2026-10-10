@@ -6,7 +6,7 @@
  * write. Everything goes through the `bd` CLI, never Dolt internals.
  *
  *   first use : git clone --depth 1  ->  bd --sandbox bootstrap --yes
- *   each poll : bd dolt pull         ->  bd --readonly ready --json (with descriptions)
+ *   each poll : bd dolt pull         ->  bd --readonly ready --brief --json
  *                                    ->  bd --readonly list --all --brief --json (the refresh)
  *   write-back: bd --sandbox close   ->  bd sync (exit 2 conflict, 3 retry)
  *
@@ -26,8 +26,6 @@ export interface ReadyBead {
   status?: string;
   priority?: number;
   issue_type?: string;
-  /** Absent when the bead has none: bd omits empty text fields from JSON. */
-  description?: string;
   /** The parent bead's id, from its parent-child edge; absent for a top-level bead. */
   parent?: string;
 }
@@ -231,12 +229,13 @@ export class BdRepo {
    * neither; an epic with open children is listed too, checked on bd 1.3.1). Epics are read so that a
    * childless one can be carded for planning; the caller tells the two kinds of epic apart. Pinned beads,
    * gates and molecule roots bd already leaves out (`:117`, `:16-38`).
-   * No `--brief`: in bd 1.3.0 it omits description, design, acceptance and notes (`bd ready --help`),
-   * and the description is posted to the card's feed.
+   * `--brief`: it drops the free-form text (description, design, acceptance, notes; `bd ready --help`),
+   * which intake does not need since the kickoff hint sends the agent to beads_show (samskara-l2t.8). It
+   * keeps id, title, status, priority, issue_type and parent (checked on bd 1.3.1).
    */
   async ready(): Promise<ReadyBead[]> {
     const res = await this.runner.bd(
-      ['--readonly', 'ready', '--json', `--exclude-type=${NEVER_READY_TYPES.join(',')}`, '-n', '0'],
+      ['--readonly', 'ready', '--brief', '--json', `--exclude-type=${NEVER_READY_TYPES.join(',')}`, '-n', '0'],
       { cwd: this.dir },
     );
     if (res.code !== 0) throw new Error(`bd ready failed (exit ${res.code}): ${tail(res)}`);
@@ -290,8 +289,8 @@ export class BdRepo {
    * not carded: a closed child never is), and puts every id on the command
    * line, which Windows caps at 32,767 characters (CreateProcess).
    *
-   * `--brief` drops the free-form text, which only the description comment
-   * needs (read with `bd show`, once per card), and keeps the output well
+   * `--brief` drops the free-form text, which the sweep never needs (an
+   * agent reads it with beads_show, samskara-l2t.8), and keeps the output well
    * under the runner's 32 MB buffer on a large repository. `--flat` is not
    * passed: with `--json` the tree is never built (bd v1.3.1
    * cmd/bd/list.go:265-285 returns before it), and both forms print the same

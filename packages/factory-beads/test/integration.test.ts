@@ -8,9 +8,7 @@ import {
   BeadSnapshot,
   cacheDirFor,
   createBeadsDoneRule,
-  descriptionBody,
   FACTORY_REPOSITORY_META,
-  MAX_COMMENT_BODY,
   OVERVIEW_CARD_KIND,
   OVERVIEW_WORKING_REASON,
   parentsFirst,
@@ -116,108 +114,11 @@ describe('intake', () => {
     const ready = calls.find(c => c.argv.includes('ready'))!;
     expect(calls.indexOf(pull)).toBeLessThan(calls.indexOf(ready));
     expect(pull.env.token).toBe(TOKEN);
-    // No --brief: it would drop the description (bd ready --help, bd 1.3.0).
-    // Epics are read (samskara-l2t.2.4); milestones never are.
-    expect(ready.argv).toEqual(['--readonly', 'ready', '--json', '--exclude-type=milestone', '-n', '0']);
+    // --brief: no free-form text is needed (samskara-l2t.8). Epics are read
+    // (samskara-l2t.2.4); milestones never are.
+    expect(ready.argv).toEqual(['--readonly', 'ready', '--brief', '--json', '--exclude-type=milestone', '-n', '0']);
     // Reads get no credential at all.
     expect(ready.env.token).toBeNull();
-  });
-});
-
-describe('description on the card feed', () => {
-  it('posts one integration-authored comment per card across repeated sweeps and a restart', async () => {
-    h = createHarness([
-      { id: 'w-1', title: 'One', description: 'Do the first thing.\nCarefully.' },
-      { id: 'w-2', title: 'Two', description: 'Second.' },
-    ]);
-    const first = h.integration();
-    await sweep(first);
-    await sweep(first);
-    await sweep(first);
-    const callsBeforeRestart = h.feed.calls;
-    // Confirmed cards are not re-posted within one process.
-    expect(callsBeforeRestart).toBe(2);
-    await sweep(h.integration());
-
-    expect(h.feed.comments).toHaveLength(2);
-    // A restart replays each card once; the store returns the existing row.
-    expect(h.feed.calls).toBe(callsBeforeRestart + 2);
-    const card = cardFor(h, 'w-1');
-    const [comment] = h.feed.on(card.id);
-    expect(comment).toMatchObject({
-      body: 'Do the first thing.\nCarefully.',
-      author: { kind: 'integration', id: 'integration:beads', displayName: 'beads' },
-      externalSource: { integrationId: 'beads', type: 'description', externalId: 'w-1' },
-    });
-    expect(comment!.occurredAt.getTime()).toBe(new Date(card.createdAt).getTime());
-  });
-
-  it('back-fills a card that predates the feature', async () => {
-    h = createHarness([{ id: 'w-1', title: 'One' }]);
-    await sweep(h.integration());
-    expect(h.feed.comments).toHaveLength(0);
-    // The bead gains a description (or the card came from an older build).
-    h.setState(s => (s.beads[0]!.description = 'Now described.'));
-    const summary = await sweep(h.integration());
-    expect(summary.repos[0]).toMatchObject({ created: 0, existing: 1 });
-    expect(h.feed.on(cardFor(h, 'w-1').id).map(c => c.body)).toEqual(['Now described.']);
-  });
-
-  it('keeps the first description when the bead is edited later', async () => {
-    h = createHarness([{ id: 'w-1', title: 'One', description: 'Original.' }]);
-    await sweep(h.integration());
-    h.setState(s => (s.beads[0]!.description = 'Edited.'));
-    await sweep(h.integration());
-    expect(h.feed.comments.map(c => c.body)).toEqual(['Original.']);
-  });
-
-  it('posts nothing for an empty or whitespace description', async () => {
-    h = createHarness([
-      { id: 'w-1', title: 'One' },
-      { id: 'w-2', title: 'Two', description: '   \n' },
-    ]);
-    await sweep(h.integration());
-    expect(ids(h).sort()).toEqual(['w-1', 'w-2']);
-    expect(h.feed.calls).toBe(0);
-  });
-
-  it('cards still land when the feed is unavailable, and it warns once', async () => {
-    h = createHarness([
-      { id: 'w-1', title: 'One', description: 'Described.' },
-      { id: 'w-2', title: 'Two', description: 'Also described.' },
-    ]);
-    delete (h.ctx as { feed?: unknown }).feed;
-    const warnings: string[] = [];
-    const integration = h.integration({
-      logger: { info: () => undefined, warn: (...args: unknown[]) => void warnings.push(args.join(' ')), error: () => undefined },
-    });
-    const summary = await sweep(integration);
-    await sweep(integration);
-    expect(summary.repos[0]).toMatchObject({ created: 2, state: 'ok' });
-    expect(warnings.filter(w => w.includes('feed is not available'))).toHaveLength(1);
-    expect(h.feed.calls).toBe(0);
-  });
-
-  it('a failing feed does not fail the sweep', async () => {
-    h = createHarness([{ id: 'w-1', title: 'One', description: 'Described.' }]);
-    h.feed.createComment = async () => {
-      throw new Error('database is locked');
-    };
-    const summary = await sweep(h.integration());
-    expect(summary.repos[0]).toMatchObject({ created: 1, state: 'ok' });
-  });
-
-  it('truncates a description over the body limit, with a note, and never splits a surrogate pair', async () => {
-    const long = 'a'.repeat(MAX_COMMENT_BODY - 200) + '😀'.repeat(400);
-    h = createHarness([{ id: 'w-1', title: 'One', description: long }]);
-    await sweep(h.integration());
-    const [comment] = h.feed.comments;
-    expect(comment!.body.length).toBeLessThanOrEqual(MAX_COMMENT_BODY);
-    expect(comment!.body).toMatch(/\[Truncated: the bead's description is \d+ characters; the full text is in beads\.\]$/);
-    expect(comment!.body.startsWith(long.slice(0, MAX_COMMENT_BODY - 300))).toBe(true);
-    expect(comment!.body).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
-    // At or under the limit, the body is the description unchanged.
-    expect(descriptionBody('x'.repeat(MAX_COMMENT_BODY))).toBe('x'.repeat(MAX_COMMENT_BODY));
   });
 });
 
@@ -644,8 +545,6 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
       expect(card(h, id)!.parentWorkItemId).toBe(epic.id);
       expect(card(h, id)!.metadata?.[BEADS_META.cardKind]).toBeUndefined();
     }
-    // The container's description is on its card like any other.
-    expect(h.feed.on(epic.id).map(c => c.body)).toEqual(['The whole thing.']);
     // Milestones are never read as ready; an epic is, and is sorted by its children.
     const ready = h.state().calls.find(c => c.argv.includes('ready'))!;
     expect(ready.argv).toContain('--exclude-type=milestone');
@@ -674,8 +573,8 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     expect(card(h, 'w-e.1.1')!.parentWorkItemId).toBe(nested.id);
     expect(card(h, 'w-e.1.2')!.parentWorkItemId).toBe(nested.id);
     expect(card(h, 'w-e.2')!.parentWorkItemId).toBe(epic.id);
-    expect(commands(h).filter(c => c === 'show w-e')).toHaveLength(1);
-    expect(commands(h).filter(c => c === 'show w-e.1')).toHaveLength(1);
+    // Every container is in the refresh read: no bd show for any of them.
+    expect(commands(h).filter(c => c.startsWith('show'))).toEqual([]);
   });
 
   it('cards a molecule root and a milestone with children as overview cards', async () => {
@@ -862,8 +761,6 @@ describe('research cards for decision beads (samskara-l2t.2.3)', () => {
       [BEADS_META.type]: 'decision',
     });
     expect(card(h, 'w-1')!.metadata?.[BEADS_META.cardKind]).toBeUndefined();
-    // The question reaches the agent on the card's feed like any description.
-    expect(h.feed.on(card(h, 'w-d')!.id).map(c => c.body)).toEqual(['Which queue should jobs use?']);
   });
 
   it("links a decision under its epic's overview card and counts it as an open child", async () => {
@@ -1272,7 +1169,6 @@ describe('planning cards for childless epics (samskara-l2t.2.4)', () => {
     // An epic with children stays an overview card.
     expect(card(h, 'w-f').metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
     expect(card(h, 'w-c')).toBeUndefined();
-    expect(h.feed.on(card(h, 'w-e').id).map(c => c.body)).toEqual(['Ship the thing.']);
 
     const revisions = h.workItems.beadCards().map(c => [c.id, c.revision]);
     await sweep(integration);
@@ -1640,8 +1536,8 @@ describe('per-sweep refresh read (samskara-l2t.15)', () => {
     const integration = h.integration();
     const first = await callsOf(h, integration);
     expect(first.filter(c => c === 'list')).toHaveLength(1);
-    // bd show only for a container's description comment, once per card; none of these has one.
-    expect(first.filter(c => c.startsWith('show'))).toHaveLength(5);
+    // No bd show at all: every container is in the refresh read.
+    expect(first.filter(c => c.startsWith('show'))).toHaveLength(0);
     for (let i = 0; i < 5; i++) {
       expect(card(h, `w-e${i}`).metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
     }
@@ -1705,30 +1601,6 @@ describe('per-sweep refresh read (samskara-l2t.15)', () => {
     await sweep(integration);
     await sweep(integration);
     expect(refreshWarnings()).toHaveLength(2);
-  });
-
-  it('shows a container for its description once per card, and again only after an empty one changes', async () => {
-    h = createHarness([
-      { id: 'w-e', title: 'Epic', issue_type: 'epic', description: 'The whole thing.' },
-      { id: 'w-f', title: 'Bare', issue_type: 'epic' },
-      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
-      { id: 'w-f.1', title: 'Two', issue_type: 'task', parent: 'w-f' },
-    ]);
-    const integration = h.integration();
-    const first = await callsOf(h, integration);
-    expect(first.filter(c => c.startsWith('show')).sort()).toEqual(['show w-e', 'show w-f']);
-    expect(h.feed.on(card(h, 'w-e').id).map(c => c.body)).toEqual(['The whole thing.']);
-    expect((await callsOf(h, integration)).filter(c => c.startsWith('show'))).toEqual([]);
-
-    // The bare epic gets a description: its updated_at moves, so it is shown and posted once.
-    h.setState(s => {
-      const bead = s.beads.find(b => b.id === 'w-f')!;
-      bead.description = 'Now described.';
-      bead.updatedAt = '2026-02-01T00:00:00Z';
-    });
-    expect((await callsOf(h, integration)).filter(c => c.startsWith('show'))).toEqual(['show w-f']);
-    expect(h.feed.on(card(h, 'w-f').id).map(c => c.body)).toEqual(['Now described.']);
-    expect((await callsOf(h, integration)).filter(c => c.startsWith('show'))).toEqual([]);
   });
 
   it('reads a parent the list leaves out with bd show, as before', async () => {
