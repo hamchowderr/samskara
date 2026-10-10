@@ -17,6 +17,7 @@ export {
   parentsFirst,
   PLAN_CARD_KIND,
   RESEARCH_CARD_KIND,
+  WORKABLE_STATUSES,
 } from './integration';
 export type {
   BeadsIntegrationOptions,
@@ -34,6 +35,7 @@ export { createBeadsEpicBuildRule, createBeadsEpicPlanningRule, EPIC_SKILL } fro
 export type { EpicSkillMode } from './epic-rule';
 export {
   createBeadsTransitionPolicy,
+  heldReason,
   isClosedOutsideMove,
   isOverviewCard,
   isPlanCard,

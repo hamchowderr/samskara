@@ -406,6 +406,20 @@ export class MemoryWorkItems {
       .map(b => structuredClone(b));
   }
 
+  /**
+   * Deferred decisions the dispatcher holds, as listDeferredDecisionPage
+   * returns them (storage/domains/work-items/base.js:1581-1595): newest
+   * first, filtered by status, one page. A test adds rows.
+   */
+  deferredDecisions: Array<{ id: string; workItemId: string | null; status: string; decision: Record<string, unknown>; createdAt: Date }> = [];
+
+  async listDeferredDecisionPage(input: { orgId: string; factoryProjectId: string; statuses?: string[]; limit: number }) {
+    const rows = this.deferredDecisions
+      .filter(d => !input.statuses || input.statuses.includes(d.status))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return { decisions: rows.slice(0, input.limit).map(d => structuredClone(d)), hasMore: rows.length > input.limit };
+  }
+
   /** Simulates the board moving a card (the transition API's job, not ours). */
   move(id: string, phase: string) {
     const item = this.items.find(i => i.id === id)!;

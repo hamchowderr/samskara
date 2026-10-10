@@ -41,6 +41,13 @@
  * apart from a person's approval, and is refused too. Only a person moves a
  * plan card to Done, which would close the epic without children.
  *
+ * A held card (samskara-l2t.4) stands for a bead blocked, deferred, pinned,
+ * hooked or set to a custom status in bd: the sync worker marks it
+ * `beadsHeld`. No move from a resting or terminal phase into a working
+ * phase is allowed while the marker is set, whoever makes it, so no run
+ * starts on a bead nobody may work. Moves between working phases pass: the
+ * sync worker moves such a card to Intake once its run has finished.
+ *
  * One exception to both Done gates (samskara-l2t.3): when the bead was
  * already closed outside the Factory, the sync worker marks the card
  * `beadsClosedOutside: <phase>` and commits the move as a rule decision.
@@ -94,6 +101,10 @@ export const PLAN_APPROVAL_REASON =
   "A person approves an epic's proposed children by moving its card to Building; agents and automation never do, even when plans auto-approve";
 export const PLAN_DONE_REASON =
   "Only a person moves an epic's planning card to Done, which closes the epic with no children";
+/** Why work does not start on a card whose bead is held in bd (samskara-l2t.4). */
+export function heldReason(status: string): string {
+  return `This card's bead is ${status} in bd; work starts on it once the bead is open or in_progress again`;
+}
 
 /**
  * Whether this is a system move of a card whose bead was already closed
@@ -156,6 +167,13 @@ export function createBeadsTransitionPolicy(
   const buildPhase = options.buildPhase ?? 'execute';
   return context => {
     const metadata = context.item.metadata as Readonly<Record<string, unknown>> | null;
+    // A held bead (samskara-l2t.4): work does not start, whoever moves the
+    // card. Only a move from outside the working phases starts work; a run
+    // already going keeps its own moves, as the owner decided it finishes.
+    const held = metadata?.[BEADS_META.held];
+    if (typeof held === 'string' && held && working.has(context.toStage) && !working.has(context.fromStage)) {
+      return { type: 'reject', code: 'forbidden', reason: heldReason(held) };
+    }
     if (isOverviewCard(metadata)) {
       if (working.has(context.toStage)) {
         return { type: 'reject', code: 'forbidden', reason: OVERVIEW_WORKING_REASON };

@@ -346,6 +346,20 @@ export class BdRepo {
     return { ...closed, stderr: `${tail(closed)} (bead ${note})` };
   }
 
+  /**
+   * Set the bead's status as the integration's actor, only if it is still
+   * `expected`: bd's compare-and-swap (`--if-status`) writes nothing and exits
+   * 13 when the status changed since the caller read it (bd update --help,
+   * v1.3.1). A plain status update, never `--claim`: the assignee is left as
+   * it is (samskara-l2t.4).
+   */
+  setStatus(id: string, status: string, expected: string): Promise<BdResult> {
+    const actor = this.runner.actor;
+    return this.runner.bd(['--sandbox', '--actor', actor, 'update', id, `--status=${status}`, `--if-status=${expected}`], {
+      cwd: this.dir,
+    });
+  }
+
   sync(credentials: RepoCredentials | undefined): Promise<BdResult> {
     return this.runner.bd(['sync'], { cwd: this.dir, credentials, timeoutMs: 300_000 });
   }
