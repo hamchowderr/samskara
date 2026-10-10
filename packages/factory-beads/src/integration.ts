@@ -38,6 +38,7 @@ import type { MastraWorker } from '@mastra/core/worker';
 import type { VersionControl } from '@mastra/factory/capabilities/version-control';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
+import { LiveSessions } from '@mastra/factory/session/live-sessions';
 import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
@@ -440,6 +441,13 @@ export class BeadsIntegration implements FactoryIntegration {
   /** Linked repositories per project for agentTools, which Factory resolves on every request. */
   readonly #scopeCache = new Map<string, { at: number; repos: ToolScope['repos'] }>();
   #toolsFailureLogged = false;
+  /**
+   * Which sessions run or are parked on a tool: Factory's own registry, the
+   * one its work-item list route reads for the board's running and parked
+   * sessions (@mastra/factory 0.20.0 dist/routes/work-items.js:249-250,
+   * dist/session/live-sessions.js). Undefined without an agent controller.
+   */
+  #liveSessions: LiveSessions | undefined;
   /** Repositories parked by an agent-write conflict whose reset was requested (POST /web/beads/reset). */
   readonly #resetRepos = new Set<string>();
   /** Repositories (slug) whose refresh read is failing: warned once per failure streak. */
@@ -510,6 +518,10 @@ export class BeadsIntegration implements FactoryIntegration {
   workers(ctx: IntegrationContext): MastraWorker[] {
     this.#ctx = ctx;
     if (!ctx.runtime) return [];
+    // The sessions this process runs, as Factory's own board reads them
+    // (status sync, samskara-l2t.4). Built now, at boot, so it hears every
+    // session the controller creates from here on.
+    if (ctx.controller && !this.#liveSessions) this.#liveSessions = new LiveSessions(ctx.controller);
     this.#worker = new BeadsSyncWorker<SweepSummary>({
       name: `${BEADS_INTEGRATION_ID}-sync`,
       leaseKey: `${BEADS_INTEGRATION_ID}:writer`,
@@ -1160,9 +1172,23 @@ export class BeadsIntegration implements FactoryIntegration {
       const beadId = card.metadata?.[BEADS_META.id];
       if (typeof beadId !== 'string' || card.board !== this.board || card.stages.length !== 1) continue;
       const meta = card.metadata ?? {};
-      if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND || isReopenPending(card)) continue;
+      if (isReopenPending(card)) continue;
       const bead = snapshot.get(beadId);
-      if (!bead?.status || bead.status === 'closed') continue;
+      if (!bead?.status) continue;
+      // A closed bead's card is left until it reaches Done or Canceled, and an
+      // overview card until it leaves its working phase: step 7 or step 5 may
+      // have just committed its move, and a marker write here would bump the
+      // revision that move names and have it committed again next sweep.
+      if (bead.status === 'closed' && board.phaseKind(card.stages[0]!) !== 'terminal') continue;
+      if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND && board.phaseKind(card.stages[0]!) === 'working') continue;
+      if (bead.status === 'closed' || meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND) {
+        try {
+          if (await this.#leaveStatusSync(scope, card, bead, actor)) wrote = true;
+        } catch (error) {
+          this.#log.warn(`[factory-beads] ${slug}: status markers of ${beadId} not cleared: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        continue;
+      }
       const stage = card.stages[0]!;
       const kind = board.phaseKind(stage);
       let status = bead.status;
@@ -1192,7 +1218,7 @@ export class BeadsIntegration implements FactoryIntegration {
         if (Object.keys(patch).length > 0) card = await this.#mark(orgId, card, patch);
         if (!held || kind !== 'working') continue;
         inFlight ??= await this.#inFlightRuns(orgId, projectId);
-        if (inFlight.has(card.id)) continue;
+        if (inFlight.has(card.id) || this.#sessionLive(card)) continue;
         const result = await this.#commitTransition(orgId, card, initialPhase, 'held');
         if (result === 'committed') {
           this.#log.info(`[factory-beads] ${slug}: ${beadId} is ${held} in bd and no run on its card is in flight; the card moves from ${stage} to ${initialPhase}`);
@@ -1204,6 +1230,53 @@ export class BeadsIntegration implements FactoryIntegration {
       }
     }
     if (wrote) await this.#publish(repo, credentials, report, 'publishing a status change');
+  }
+
+  /**
+   * A card status sync stops following: its bead is closed (write-back and
+   * step 7 own it from here), or it became an overview card (its bead closes
+   * with its children). The hold and the recorded pair are cleared, so a
+   * person who later moves the card out of Done is not refused for a hold
+   * the closed bead no longer has. An overview card whose epic this sync set
+   * `in_progress` while it was a planning card in Planning or Building has
+   * its epic set back to `open` first, unless someone else holds it: an
+   * overview card rests in Intake (samskara-l2t.2.2). Returns whether it
+   * wrote to the bead; the caller publishes.
+   */
+  async #leaveStatusSync(scope: IntakeScope, card: WorkItemRow, bead: BeadRow, actor: string): Promise<boolean> {
+    const meta = card.metadata ?? {};
+    if (meta[BEADS_META.statusStage] == null && meta[BEADS_META.held] == null) return false;
+    const beadId = String(meta[BEADS_META.id]);
+    const theirs = Boolean(bead.assignee) && bead.assignee !== actor;
+    let wrote = false;
+    if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND && bead.status === 'in_progress' && !theirs) {
+      const res = await scope.repo.setStatus(beadId, 'open', 'in_progress');
+      // 13: changed in bd since the read; theirs to keep, and nothing is left to undo.
+      if (res.code !== 0 && res.code !== 13) throw new Error(`bd update exit ${res.code}: ${resultTail(res, 300)}`);
+      wrote = res.code === 0;
+      if (wrote) this.#log.info(`[factory-beads] ${scope.slug}: ${beadId} became an overview card; its bead goes from in_progress to open`);
+    }
+    await this.#mark(scope.orgId, card, { [BEADS_META.statusStage]: null, [BEADS_META.status]: null, [BEADS_META.held]: null });
+    return wrote;
+  }
+
+  /**
+   * Whether a session bound to the card runs a turn or is parked on a tool
+   * (an `ask_user` question, a `submit_plan` awaiting approval), as Factory's
+   * own board reads it. Such a run has not finished: a parked run's decision
+   * has already completed (its turn ended with `agent_end` reason
+   * `suspended`, which `watchRun.settle` does not fail, rules/dispatcher.js:
+   * 105-123), and a run a stage message started (Review, which has no
+   * `onEnter` rule, rules/transition-service.js:299-309) never had an
+   * `invokeSkill` decision. Only sessions this process has materialized are
+   * known: after a restart, a session is known again once it is used.
+   */
+  #sessionLive(card: WorkItemRow): boolean {
+    const live = this.#liveSessions;
+    if (!live) return false;
+    return Object.values(card.sessions ?? {}).some(
+      entry => typeof entry?.sessionId === 'string' && (live.isRunning(entry.sessionId) || live.parked(entry.sessionId) !== undefined),
+    );
   }
 
   /**

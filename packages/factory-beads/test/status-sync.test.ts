@@ -226,6 +226,76 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     expect(moves(h)).toHaveLength(1);
   });
 
+  it('waits for a session that runs a turn or is parked on a tool, though no decision of it is in flight', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    const id = card(h, 'w-1').id;
+    // A run a stage message started (Review has no onEnter rule): no invokeSkill decision.
+    h.workItems.move(id, 'review');
+    h.workItems.items.find(i => i.id === id)!.sessions = { work: { sessionId: 'sess_1' } } as never;
+    const session = h.controller.session('sess_1');
+    session.state.running = true;
+    await sweep(integration);
+    h.bd('update', 'w-1', '--status=deferred');
+
+    await sweep(integration);
+    expect(moves(h)).toEqual([]);
+    // Its turn ends parked on a question for a person: still not finished.
+    session.state.running = false;
+    session.state.parkedOn = 'ask_user';
+    await sweep(integration);
+    expect(moves(h)).toEqual([]);
+    // Answered and finished.
+    session.state.parkedOn = undefined;
+    await sweep(integration);
+    expect(moves(h)).toEqual([[id, 'beads.held', 'intake']]);
+  });
+
+  it('clears the hold when the held bead is closed, so a person can move its card out of Done', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.bd('update', 'w-1', '--status=blocked');
+    await sweep(integration);
+    expect(card(h, 'w-1').metadata?.[BEADS_META.held]).toBe('blocked');
+    h.bd('close', 'w-1');
+    await sweep(integration);
+    await h.workItems.applyDecisions();
+    await sweep(integration);
+    expect(card(h, 'w-1').stages).toEqual(['done']);
+    expect(marker(h, 'w-1', BEADS_META.held)).toBeNull();
+    expect(personMove(h, 'w-1', 'planning')?.type).not.toBe('reject');
+  });
+
+  it("sets a planning card's epic back to open once it becomes an overview card", async () => {
+    h = createHarness([{ id: 'w-e', title: 'Epic', issue_type: 'epic' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.workItems.move(card(h, 'w-e').id, 'execute');
+    await sweep(integration);
+    expect(bead(h, 'w-e').status).toBe('in_progress');
+    // The file run files a child; the next sweep makes the card an overview card.
+    h.setState(s => {
+      s.beads.push({ id: 'w-e.1', title: 'Child', parent: 'w-e' });
+    });
+    let from = h.state().calls.length;
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(OVERVIEW_CARD_KIND);
+    // Left while step 5 moves it out of Building, so that move is not committed twice.
+    expect(writes(h, from)).toEqual([]);
+    expect(moves(h)).toEqual([[card(h, 'w-e').id, 'beads.overview-intake', 'intake']]);
+    await h.workItems.applyDecisions();
+    from = h.state().calls.length;
+    await sweep(integration);
+    expect(writes(h, from)).toEqual(['update w-e --status=open', 'sync']);
+    expect(moves(h)).toHaveLength(1);
+    expect(marker(h, 'w-e', BEADS_META.statusStage)).toBeNull();
+    const after = h.state().calls.length;
+    await sweep(integration);
+    expect(writes(h, after)).toEqual([]);
+  });
+
   it('holds a card for deferred, pinned, hooked and custom statuses, and moves one with no run straight away', async () => {
     h = createHarness([
       { id: 'w-d', title: 'Deferred' },

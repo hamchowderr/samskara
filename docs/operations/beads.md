@@ -1098,14 +1098,34 @@ on the next tick.
 `beadsHeld: <status>`. A held card in a working phase is moved to Intake
 with a committed transition (ingress `beads:held:<card id>@<revision>`),
 but only once no run on it is in flight: the owner decided that a bead
-blocked or deferred mid-run moves its card after the run finishes. Factory
-keeps a run's `invokeSkill` decision leased, renewing the lease every 10 s,
-until the run settles (`@mastra/factory` 0.20.0
-`dist/rules/dispatcher.js:420-422`, `:687`, `:1023-1028`), so a card with a
-`pending`, `leased` or `retry` `invokeSkill` decision
-(`listDeferredDecisionPage`) waits for a later tick. A person's chat session
-on the card ("Start session") makes no such decision and does not hold it.
-The move to Intake is not written back: the bead stays held.
+blocked or deferred mid-run moves its card after the run finishes. A run is
+in flight while either of these holds:
+
+- **Its decision is not settled.** Factory keeps a run's `invokeSkill`
+  decision leased, renewing the lease every 10 s, until the run settles
+  (`@mastra/factory` 0.20.0 `dist/rules/dispatcher.js:420-422`, `:687`,
+  `:1023-1028`), so a card with a `pending`, `leased` or `retry`
+  `invokeSkill` decision (`listDeferredDecisionPage`) waits. This covers a
+  run that is queued but not yet started.
+- **A session of the card runs a turn or is parked on a tool.** Read from
+  Factory's own `LiveSessions` registry (`dist/session/live-sessions.js`),
+  built on the agent controller Factory hands integration workers
+  (`IntegrationContext.controller`): the same registry the board's
+  work-item list reads for its running and parked sessions
+  (`dist/routes/work-items.js:249-250`). It catches the runs a decision
+  does not: one a stage message started (Review has no `onEnter` rule, so
+  a move there starts the run with a `sendMessage`,
+  `dist/rules/transition-service.js:299-309`), and one parked on
+  `ask_user` or on a `submit_plan` awaiting approval, whose decision has
+  already completed (its turn ends with `agent_end` reason `suspended`,
+  which `watchRun.settle` does not fail, `dispatcher.js:105-123`). Every
+  session on the card counts, a person's chat session ("Start session")
+  included.
+
+The registry knows only the sessions this process has materialized: after a
+restart, a session is known again once it is used, so a run parked across a
+restart does not hold its card. The move to Intake is not written back: the
+bead stays held.
 
 **The board policy.** While `beadsHeld` is set, no move from Intake, Done
 or Canceled into a working phase is allowed, whoever makes it, with the
@@ -1116,7 +1136,25 @@ of its own moves.
 
 **Left out.** Overview cards (their bead closes with its children), a card
 whose bead is closed (write-back and step 7 own it), and a card whose
-reopen move waits for the dispatcher.
+reopen move waits for the dispatcher. When a card leaves the sync because
+its bead closed or it became an overview card, its `beadsStatus`,
+`beadsStatusStage` and `beadsHeld` are cleared, so a person who moves it
+out of Done later is not refused for a hold the closed bead no longer has.
+A planning card in Planning or Building had its epic set `in_progress`;
+when the epic gets children and the card becomes an overview card, the
+epic is set back to `open` (unless someone else holds it), since an
+overview card rests in Intake.
+
+**First tick after this shipped.** Cards made before have no
+`beadsStatusStage`, so the first tick treats each as moved: a card in a
+working phase sets its bead `in_progress`, and one in Intake or Canceled
+sets an unassigned `in_progress` bead back to `open`. After that only
+moves are written.
+
+**Not followed yet.** `bd ready` lists only `open` beads, so intake's
+updates of an existing card (its kind, its parent link, the description
+back-fill) skip a card whose bead is `in_progress` until it is `open`
+again. Reading those from the refresh read instead is samskara-l2t.8.
 
 **A closed epic over a reopened child.** When a child is reopened under an
 epic that is already closed, the epic's overview card stays in Done with
@@ -1670,8 +1708,12 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   writing nothing and retried next tick; a blocked bead's card held while
   its run's decision is leased, moved to Intake once it settles, the move
   not written back, work refused until the bead is open; deferred, pinned,
-  hooked and custom statuses held; overview cards left out; and a claimed
-  bead with an open child never handed over. The harness keeps each card's
+  hooked and custom statuses held; a session running a turn, then parked
+  on `ask_user`, holding the card with no decision in flight; the hold
+  cleared when the held bead closes; a planning card's epic set back to
+  `open` when it becomes an overview card; overview cards left out; and a
+  claimed bead with an open child never handed over. The harness's
+  `FakeController` feeds Factory's real `LiveSessions`. The harness keeps each card's
   stage history as Factory does (`applyStageTransition`). The fake bd
   runs `supersede`, `duplicate` and `reopen` in bd 1.3.1's shapes (the edge
   on the closed bead, no close reason; reopen clears the reason and keeps the
