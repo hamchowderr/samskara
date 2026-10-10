@@ -257,6 +257,62 @@ function readyCardKind(bead: Pick<BeadDetails, 'issue_type'>): string | undefine
  */
 export const FACTORY_REPOSITORY_META = 'repository';
 
+/**
+ * The card metadata keys Factory's board draws label chips from, for a card
+ * of any source, manual included: `labels`, a list of strings, and
+ * `labelColors`, label to a hex or named color for the chip's dot
+ * (the board UI `mastra` 1.33.0 ships, dist/factory/assets/index-*.js: `q2`
+ * reads `metadata.labels` and `metadata.labelColors`; GitHub cards carry
+ * `labels`, @mastra/factory 0.20.0 integrations/github/rules.js:723, and
+ * GitLab cards both, integrations/gitlab/rules.js:366-367). Factory's own
+ * keys, not ours.
+ */
+export const CARD_LABELS_META = 'labels';
+export const CARD_LABEL_COLORS_META = 'labelColors';
+
+/**
+ * Factory's approval label (@mastra/factory 0.20.0 dist/rules/types.js:12-18).
+ * A card carrying it in Intake or Triage, not yet accepted, gets Work's
+ * prepare-approval run in Triage instead of an investigation
+ * (boards/work.js:51-60). The board hides the chip itself.
+ */
+export const NEEDS_APPROVAL_LABEL = 'status: needs approval';
+
+/** The bd label for a bead that needs a person's decision (`bd human`, bd v1.3.1 cmd/bd/human.go). */
+export const HUMAN_LABEL = 'human';
+
+/** Chip dot colors for the two highest priorities; the rest take the board's default. */
+const PRIORITY_COLORS: Readonly<Record<number, string>> = { 0: '#dc2626', 1: '#ea580c' };
+
+/**
+ * A card's chips (samskara-l2t.5): the bead's own bd labels, its priority as
+ * `P0`-`P4`, its issue type, and Factory's approval label for a bead labelled
+ * `human` (matched exactly, as `bd human list` does) whose card a person
+ * has not accepted yet. Once accepted, the label would no longer gate
+ * anything (`needsApproval` ignores an accepted card, @mastra/factory 0.20.0
+ * dist/rules/types.js:14-18), and Factory's supervisor would report it as
+ * label drift on a card in a working phase (dist/supervisor/health.js:177-187).
+ * Factory has no sort field for cards, so priority is a chip only (Mastra
+ * feature request 31596da1).
+ */
+export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_type'>, accepted = false): {
+  labels: string[];
+  labelColors: Record<string, string>;
+} {
+  const own = (bead.labels ?? []).filter(label => typeof label === 'string' && label);
+  const labels = [...own];
+  const labelColors: Record<string, string> = {};
+  if (typeof bead.priority === 'number') {
+    const chip = `P${bead.priority}`;
+    labels.push(chip);
+    const color = PRIORITY_COLORS[bead.priority];
+    if (color) labelColors[chip] = color;
+  }
+  if (bead.issue_type) labels.push(bead.issue_type);
+  if (!accepted && own.includes(HUMAN_LABEL)) labels.push(NEEDS_APPROVAL_LABEL);
+  return { labels: [...new Set(labels)], labelColors };
+}
+
 export type WritebackState ='synced' | 'conflict' | 'close-failed' | 'reset-requested';
 
 /** The source-control integration whose App tokens read and write each repo. */
@@ -1873,6 +1929,22 @@ export class BeadsIntegration implements FactoryIntegration {
       const bead = snapshot.get(beadId);
       if (!bead) continue;
       try {
+        // Chips (samskara-l2t.5): only on change, as every write bumps the revision.
+        const chips = cardChips(bead, Boolean(card.acceptedAt));
+        const meta = card.metadata ?? {};
+        if (
+          JSON.stringify(meta[CARD_LABELS_META] ?? null) !== JSON.stringify(chips.labels) ||
+          JSON.stringify(meta[CARD_LABEL_COLORS_META] ?? null) !== JSON.stringify(chips.labelColors) ||
+          (meta[BEADS_META.priority] ?? null) !== (bead.priority ?? null) ||
+          (meta[BEADS_META.type] ?? null) !== (bead.issue_type ?? null)
+        ) {
+          card = await this.#mark(orgId, card, {
+            [CARD_LABELS_META]: chips.labels,
+            [CARD_LABEL_COLORS_META]: chips.labelColors,
+            [BEADS_META.priority]: bead.priority ?? null,
+            [BEADS_META.type]: bead.issue_type ?? null,
+          });
+        }
         if (typeof bead.title === 'string' && card.metadata?.[BEADS_META.title] !== bead.title) {
           const title = `${beadId}: ${bead.title}`;
           const recorded = card.metadata?.[BEADS_META.title];

@@ -197,6 +197,21 @@ describe('writes', () => {
     expect(calls.some(c => c.argv.some(a => a.includes(TOKEN)))).toBe(false);
   });
 
+  it('create and update take labels; a label with a comma is refused before bd runs (samskara-l2t.5)', async () => {
+    h = withGetById(createHarness([{ id: 'w-1', title: 'One', labels: ['old'] }]));
+    const tools = await toolsFor(h.integration());
+    expect(await tools.beads_create!.execute({ ...GOOD, labels: ['frontend', 'human'] })).toMatchObject({ published: true });
+    expect(callsOf(h, 'create')[0]).toContain('--labels=frontend,human');
+    expect(await tools.beads_update!.execute({ id: 'w-1', add_labels: ['api'], remove_labels: ['old'] })).toMatchObject({ published: true });
+    expect(callsOf(h, 'update')[0]).toEqual(expect.arrayContaining(['--add-label=api', '--remove-label=old']));
+    expect(h.state().beads.find(b => b.id === 'w-1')!.labels).toEqual(['api']);
+    const parsed = (tools.beads_create as unknown as { inputSchema: { safeParse(v: unknown): { success: boolean } } }).inputSchema.safeParse({
+      ...GOOD,
+      labels: ['a,b'],
+    });
+    expect(parsed.success).toBe(false);
+  });
+
   it('create reports bd validation failures and writes nothing', async () => {
     h = withGetById(createHarness([]));
     const tools = await toolsFor(h.integration());
