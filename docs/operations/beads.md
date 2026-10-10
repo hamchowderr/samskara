@@ -49,7 +49,7 @@ App:
    [Repository states](#repository-states)). This runs every tick for a
    repository that has the ref, so a ref deleted on origin, or a copy
    bootstrapped before this check existed, is caught too
-   (`packages/factory-beads/src/integration.ts:660-678`).
+   (`packages/factory-beads/src/integration.ts:674-692`).
 1. **Bootstrap, first time only.** `git clone --depth 1`, then
    `bd --sandbox bootstrap --yes`, in `<BEADS_CACHE_DIR>/<owner>__<name>`. A
    marker file in `.git/` records that the copy is ready. The copy is kept
@@ -57,11 +57,16 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:684-751`). bd refuses to close
+   (`packages/factory-beads/src/integration.ts:698-777`). Each bead's status
+   and holder come from one [refresh read](#refresh-read) of the copy, taken
+   before the close, not from a `bd show` per card; a bead already closed is
+   only synced and marked. bd refuses to close
    a bead assigned to anyone but the closing actor, so a bead someone holds is
    first handed over with `bd update <id> --assignee=factory-beads
    --if-assignee=<holder>` (`repo.ts`, `BdRepo.close`). That swap fails with
-   exit 13 if the holder changed in between.
+   exit 13 if the holder changed in between. If the refresh read fails,
+   write-back is skipped for the tick: the cards stay pending, with no
+   attempt counted, and the tick pulls instead.
    - **A live claim does not stop it.** The swap also takes over a bead
      someone claimed (`in_progress`), which a plain reassign refuses without
      `--force`. This is the owner's decision (2026-10-09): a card reaching
@@ -73,6 +78,12 @@ App:
      its lease: a live holder restores it on its next `bd heartbeat`, but an
      abandoned claim then has no stale lease for `bd reclaim` to find.
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
+   **Refresh read.** `bd --readonly list --all --brief --json -n 0`: every
+   bead of the copy, with each one's children, in one call
+   (`repo.ts`, `BdRepo.refresh`; samskara-l2t.15). Steps 4 to 6 read bead
+   state from it. It is taken after the copy's last change in the tick, so
+   after write-back's close and sync the copy is read again. See
+   [Refresh read](#refresh-read).
 4. **Intake.** `bd --readonly ready --json --exclude-type=milestone -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed.
    See [What the agent sees](#what-the-agent-sees).
@@ -85,8 +96,8 @@ App:
    [Subtasks](#subtasks).
 5. **Open-children counts.** Each overview card that intake did not reach
    in this tick, and that is not in a terminal phase, gets its open-children
-   count read again. A planning card that intake did not reach is checked for
-   children too.
+   count from the refresh read. A planning card that intake did not reach is
+   checked for children too. Neither costs a bd call.
 6. **Overview moves and re-arms.** Overview cards whose last child closed
    are committed to Done; overview cards stranded in a working phase whose
    phase seat is not bound are committed to Intake; `close-failed` cards in
@@ -110,11 +121,84 @@ out (bd v1.3.1 `internal/storage/sqlbuild/ready.go`: types at `:16-38`, the
 status filter at `:113`, the pinned flag at `:117`). A milestone or molecule
 root is carded only as the parent of a ready child, as an overview card.
 
+### Refresh read
+
+One bd call per repository per tick reads every bead the tick needs
+(samskara-l2t.15): `bd --readonly list --all --brief --json -n 0`
+(`repo.ts`, `BdRepo.refresh`), held as a `BeadSnapshot`: each bead by id,
+and each bead's direct children. Write-back's status and holder checks, the
+overview and planning classification, the open-children counts, the
+overview move's closed check and the re-arm check all read it. Before, each
+container cost a `bd show` and a `bd list --parent`, each other overview
+card one more `bd list --parent`, and each pending write-back a `bd show`.
+
+**Why this call.** Measured on bd 1.3.1 on Windows 11 (embedded Dolt, a copy
+holding 1,180 beads with 400-character descriptions, median of 5 runs):
+
+| Call | Time | Output |
+|------|------|--------|
+| `bd --version` | 146 ms | |
+| `bd --readonly show <id> --json` | 609 ms | |
+| `bd --readonly list --parent=<id> --all --flat --json -n 0` | 660 ms | |
+| `bd --readonly ready --json --exclude-type=milestone -n 0` | 394 ms | 0.71 MB |
+| `bd --readonly list --all --json -n 0` | 685 ms | 1.04 MB |
+| `bd --readonly list --all --brief --json -n 0` | 686 ms | 0.67 MB |
+| `bd --readonly list --id=<50 ids> --all --brief --json -n 0` | 655 ms | |
+| `bd --readonly list --id=<1000 ids> --all --brief --json -n 0` | 767 ms | 0.56 MB |
+
+Starting bd and opening the database dominate, so reading every bead costs
+about one `bd show`. `--id <carded ids>` is not cheaper, cannot name the
+children an open-children count needs (a closed child is never carded), and
+puts every id on the command line, which Windows caps at 32,767 characters.
+`--brief` drops the free-form text and keeps the output well under the
+runner's 32 MB buffer. With `--json`, `--flat` changes nothing: the tree is
+never built (bd v1.3.1 `cmd/bd/list.go:265-285`).
+
+**Children, exactly as `bd list --parent`.** Both calls go through the same
+list filter; `--parent` only adds a parent clause (bd v1.3.1
+`internal/workapi/list.go:375-378`, `internal/storage/sqlbuild/filter.go:174-178`).
+That clause matches every bead with a parent-child edge to the parent, and
+every bead whose id starts with `<parent>.` and has no parent-child edge at
+all. A row's `parent` field names only the lowest parent-child target
+(`sqlbuild/counts.go:239`), so `BeadSnapshot` reads the edges from the row's
+`dependencies`, and files an edge-less dotted bead under every dotted prefix
+of its id (checked on bd 1.3.1: an imported `x.1.9.1` with no edge is listed
+under both `x` and `x.1`).
+
+**What a row carries.** Checked on bd 1.3.1: every row has `id`, `title`,
+`status`, `priority`, `issue_type`, `created_at`, `updated_at` and
+`comment_count`; `assignee`, `labels`, `parent`, `dependencies`,
+`closed_at` and `close_reason` appear when set. That is the input of the
+inbound sync children: `status` and `close_reason` for the inbound close
+(samskara-l2t.3; a superseded or duplicate bead has no `close_reason`) and
+the two-way status sync (l2t.4), `labels` and `assignee` for label chips
+(l2t.5), `comment_count` for bd comments on the feed (l2t.6), `title` for
+the card title (l2t.8), and `updated_at` to tell a changed bead. No row
+carries a description, so an overview card's description comment is read
+with `bd show` while the card has none: once per card per process, and for
+an empty description again only after the bead's `updated_at` changes.
+
+**When it fails.** The repository's report carries
+`refresh read failed, so <write-back | the overview steps> skipped this sweep`
+as its `reason`, and the tick skips write-back, open-children counts,
+overview and planning cards, parent links, overview moves and re-arms for the
+repository. Ready beads are still carded, without a parent; stranded overview
+cards are still moved to Intake. The failure is logged once per failure
+streak, not once per tick, and the first read that works again logs one
+line.
+
+**Cost per tick.** For a repository with nothing to write back: the
+`git ls-remote`, `bd dolt pull`, the refresh read and `bd ready`, whatever
+the number of containers. A tick that writes back reads twice (before the
+close and after the sync) instead of one `bd show` per card. A `bd show` is
+left only for a bead the list leaves out and for an overview card's first
+description comment.
+
 ### Startup preconditions
 
 Two things cannot change while the server runs. Each is checked once, at the
 first tick, and a failure logs **one** line and leaves the integration idle
-(`#checkPreconditions`, `integration.ts:351-368`). Nothing is synced until the
+(`#checkPreconditions`, `integration.ts:365-382`). Nothing is synced until the
 server restarts; `GET /web/beads/status` shows `state: 'idle'` and the reason.
 
 | Precondition | Log line |
@@ -256,11 +340,13 @@ milestone or molecule root whose children are all in progress or blocked has
 no card until one of them is ready. The ready row's `parent`
 field names the container
 (bd 1.3.1 sets it from the parent-child edge). The integration reads the
-container with `bd --readonly show <id> --json` and its children with
-`bd --readonly list --parent=<id> --all --flat --json -n 0`
-(`repo.ts`, `BdRepo.children`). Checked on bd 1.3.1: `--parent` lists direct
-children only, so a grandchild is counted under its own parent; `--all` adds
-closed children; `-n 0` lifts the default limit of 50. A poured molecule's
+container and its children from the tick's [refresh read](#refresh-read);
+`BeadSnapshot.children` answers what
+`bd --readonly list --parent=<id> --all --json -n 0` would. Checked on bd
+1.3.1: `--parent` lists direct children only, so a grandchild is counted
+under its own parent; `--all` adds closed children. A container the list
+leaves out (bd hides gates, templates and wisps by default) is read with
+`bd show`. A poured molecule's
 steps have parent-child edges to the root (bd v1.3.1 `cmd/bd/cook.go:643-649`),
 so a molecule root is handled like an epic.
 
@@ -292,7 +378,7 @@ bumps the card's revision. Overview cards rest in the board's initial phase
 | The child is already carded in another project of the organization | No overview card in this project, and one warning per process. The child's claim (`getByClaimKey`, `base.js:1220-1226`) says where its family lives. |
 | The container itself is carded in another project | The children are carded here without a parent, with one warning. |
 | The parent is not an epic, milestone or molecule, or it is closed | No overview card. The child is linked under the parent's own card when the parent has one ([Subtasks](#subtasks)), else carded without a parent. |
-| `bd show` or `bd list --parent` fails | The child is carded without a parent; the next tick tries again. |
+| The refresh read fails, or the container is neither in it nor readable with `bd show` | The child is carded without a parent; the next tick tries again. |
 
 **The board policy.** An overview card must never run. A phase handler that
 returns no decision does not stop a run: a person's move into a working
@@ -322,7 +408,7 @@ handler runs it and the policy refuses its moves into other working phases.
 Each tick commits a move of such a card to Intake unless **the phase's own
 seat is bound to it**: an active run binding whose role is the seat the
 phase seats (`roleForPhase`, so `work` in Building)
-(`integration.ts:987-1010`, `#resetStrandedOverviews`; bindings from
+(`integration.ts:1047-1070`, `#resetStrandedOverviews`; bindings from
 `WorkItemsStorage.listRunBindings`, `dist/storage/domains/work-items/base.d.ts:730`).
 A binding for another seat does not hold the card: the `chat` seat a
 person's "Start session" takes neither runs the phase nor moves the card.
@@ -425,7 +511,7 @@ reason key.
 | Case | Result |
 |------|--------|
 | A child is still open | No move. The board policy would refuse it. |
-| The container's children could not be read this tick | No move. The count on the card may be out of date. The next tick tries again. |
+| The refresh read failed this tick | No move. The count on the card may be out of date. The next tick tries again. |
 | The open container has no children left (they were moved elsewhere) | No move. A childless epic is not finished work (samskara-l2t.2.4). If the container is closed, the card moves. |
 | The card is already in Done or Canceled | Nothing to do. |
 
@@ -462,7 +548,7 @@ marks it synced without closing the bead again.
   write-back re-armed once every child of its bead is closed:
   `beadsCloseAttempts` is set back to 0 and `beadsWriteback` is cleared.
   The card stays in Done, and the next tick tries the close again
-  (`integration.ts:1026-1050`, `#rearmParentCloses`). bd refuses to close
+  (`integration.ts:1086-1113`, `#rearmParentCloses`). bd refuses to close
   any bead while a child is open ("cannot close <id>: 1 open child
   issue(s)"; checked on bd 1.3.1 for an epic and for a task with a subtask),
   so this covers overview cards, cards made before overview cards existed,
@@ -471,8 +557,8 @@ marks it synced without closing the bead again.
   re-armed. It happens once per card (`beadsCloseRearmedAt`). If the close
   fails again for another reason, the card stays parked for an operator
   (`POST /web/beads/reset`). Only a card whose diagnostic is bd's "open
-  child" refusal is considered; each tick reads its children with one
-  `bd list --parent`. A card parked for any other reason costs no bd call.
+  child" refusal is considered. Its children come from the refresh read,
+  so a re-arm costs no bd call of its own.
 
 ### Subtasks
 
@@ -486,7 +572,7 @@ treats it as Work does.
 - **Linking.** For each ready bead with a `parent`, intake first resolves
   the parent as a container (`#overview`); when that gives no overview card,
   it looks up the card the parent bead already has in this project
-  (`getByProjectSource`; `integration.ts:1136-1145`, `#parentCard`). No card
+  (`getByProjectSource`; `integration.ts:1197-1206`, `#parentCard`). No card
   is made for the parent here: it is carded only when it is ready itself.
   bd 1.3.1 lists a task with an open subtask as ready (checked by hand), so
   both are usually carded together. Intake orders the ready list so that a
@@ -599,10 +685,10 @@ writes no code and opens no pull request.
 
 **Intake.** bd ready lists open epics (`repo.ts`, `ready`, now excludes only
 milestones). For each ready epic intake reads its children
-(`bd list --parent`, as for any container). With children, the epic is an
+(from the [refresh read](#refresh-read), as for any container). With children, the epic is an
 overview card. With none, it is carded like any bead plus
 `beadsCardKind: 'plan'`. Only a children read that succeeded and found none
-makes a planning card: when the epic or its children cannot be read, or the
+makes a planning card: when the refresh read failed or the epic cannot be read, or the
 epic is carded in another project, nothing is carded or changed for it in
 that tick. A planning card under a milestone or a parent epic is linked under
 that container's overview card and counts as one of its open children. The
@@ -1037,10 +1123,10 @@ gets them too: the same provider serves it, and its tools sit beside the
 `factoryProjectId`, else its resource id, which for a supervisor is
 `factory-supervisor:<projectId>` (`dist/supervisor/session.js:4-16`). A caller
 from another org gets no tools. A project with no linked repository gets none.
-Code: `packages/factory-beads/src/integration.ts:410-439` (`agentTools`),
+Code: `packages/factory-beads/src/integration.ts:424-453` (`agentTools`),
 `src/agent-tools.ts` (the tools), `src/tool-ops.ts` (host-side runs).
 
-`agentTools` never throws (`integration.ts:410-439`). The SDK awaits the
+`agentTools` never throws (`integration.ts:424-453`). The SDK awaits the
 merged provider without a catch (`@mastra/code-sdk`
 `dist/agents/tools.js:120-122`), so a storage error in one integration would
 otherwise remove every tool from every session. A failure is logged once and
@@ -1066,13 +1152,13 @@ time, the tool is absent.
   (no auto-push), then `bd sync` (`tool-ops.ts:177`). When the sync fails:
   - exit 1, or 3 after retries: the write stays on the host copy, the agent is
     told, and the next sweep publishes it with `bd sync` instead of a pull
-    (`integration.ts:752-768`).
+    (`integration.ts:778-794`).
   - exit 2 or 4: the repository is **parked**, exactly as for a write-back
     conflict: state `parked`, no pull, no intake and no tool writes until an
     operator resolves it and calls `POST /web/beads/reset` (`tool-ops.ts:200`).
     The park is a marker in the copy's own `.git`, so it lasts exactly as long
     as the conflicted copy; the reset drops the copy and the marker together
-    (`integration.ts:619-633`, `:652-658`, `:1343-1364`). Reads still work while parked.
+    (`integration.ts:633-647`, `:666-672`, `:1441-1462`). Reads still work while parked.
 - Writes are signed `--actor factory-beads/agent`, so the bead history shows
   which writes came from an agent.
 - No tool closes or deletes. `beads_update` refuses `closed` before bd runs
@@ -1215,7 +1301,7 @@ metrics written.
 ## Write-back failures
 
 `bd sync` exit codes (from `bd sync --help`), and what the integration does with
-each (`integration.ts:684-751`, retries in `#syncWithRetry` at `:1265-1274`):
+each (`integration.ts:698-777`, retries in `#syncWithRetry` at `:1366-1375`):
 
 | Exit | Meaning | Action |
 |------|---------|--------|

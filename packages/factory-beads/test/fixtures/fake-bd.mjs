@@ -182,6 +182,7 @@ switch (words[0]) {
     } else {
       bead.status = 'closed';
       bead.closeReason = reasonIndex >= 0 ? argv[reasonIndex + 1] : null;
+      bead.updatedAt = new Date().toISOString();
       // Like bd 1.3.1 (checked by hand): closing a molecule's last open step
       // auto-closes the root ("Auto-closed completed molecule"). An epic is not.
       const root = state.beads.find(b => b.id === bead.parent);
@@ -225,19 +226,53 @@ switch (words[0]) {
     // Like bd 1.3.1: --parent lists direct children only, --all adds closed ones.
     const parent = flagValue('parent');
     const all = flags.includes('--all');
-    if (parent !== undefined && (state.listParentFail ?? []).includes(parent)) {
+    // listFail: every list without --parent fails (the refresh read), as many times as given (true: until cleared).
+    if (parent === undefined && state.listFail) {
+      if (typeof state.listFail === 'number') state.listFail--;
       code = 1;
-      err = `list --parent=${parent} failed`;
+      err = 'Error: database is locked';
       break;
     }
     const rows = state.beads.filter(
       b =>
         (statuses ? statuses.includes(b.status ?? 'open') : all || (b.status ?? 'open') !== 'closed') &&
-        (parent === undefined || b.parent === parent) &&
+        // Like bd 1.3.1 (sqlbuild/filter.go:174-178): a dotted id with no parent-child edge is a child of each dotted prefix.
+        (parent === undefined || b.parent === parent || (!b.parent && b.id.startsWith(`${parent}.`))) &&
         (!title || b.title.toLowerCase().includes(title)),
     );
+    // As bd 1.3.1 prints a list row (checked on a real copy): empty fields
+    // omitted, labels sorted, every edge in `dependencies`, `parent` from the
+    // parent-child edge, and --brief dropping the description.
+    const brief = flags.includes('--brief');
     out = JSON.stringify(
-      rows.map(({ id, title, status, priority, issue_type, parent }) => ({ id, title, status: status ?? 'open', priority, issue_type, ...(parent ? { parent } : {}) })),
+      rows.map(b => {
+        const deps = [
+          ...(b.parent ? [{ issue_id: b.id, depends_on_id: b.parent, type: 'parent-child' }] : []),
+          ...(b.blockedBy ?? []).map(id => ({ issue_id: b.id, depends_on_id: id, type: 'blocks' })),
+        ];
+        const closed = (b.status ?? 'open') === 'closed';
+        return Object.fromEntries(
+          Object.entries({
+            id: b.id,
+            title: b.title,
+            description: brief ? undefined : b.description,
+            status: b.status ?? 'open',
+            priority: b.priority ?? 2,
+            issue_type: b.issue_type ?? 'task',
+            assignee: b.assignee,
+            created_at: '2026-01-01T00:00:00Z',
+            updated_at: b.updatedAt ?? '2026-01-01T00:00:00Z',
+            closed_at: closed ? (b.updatedAt ?? '2026-01-01T00:00:00Z') : undefined,
+            close_reason: closed ? b.closeReason : undefined,
+            labels: b.labels?.length ? [...b.labels].sort() : undefined,
+            dependencies: deps.length ? deps : undefined,
+            dependency_count: 0,
+            dependent_count: 0,
+            comment_count: b.commentCount ?? 0,
+            parent: b.parent,
+          }).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+        );
+      }),
     );
     break;
   }
@@ -276,6 +311,7 @@ switch (words[0]) {
       break;
     }
     if (next !== undefined) bead.assignee = next;
+    bead.updatedAt = new Date().toISOString();
     const note = flagValue('append-notes');
     if (note !== undefined) bead.notes = bead.notes ? `${bead.notes}\n${note}` : note;
     out = JSON.stringify([bead]);

@@ -47,6 +47,11 @@ export interface FakeBead {
   repo?: string;
   /** The parent bead (a parent-child edge), as bd's `parent` field. */
   parent?: string;
+  labels?: string[];
+  /** bd list's `comment_count`. */
+  commentCount?: number;
+  /** bd's `updated_at`; the fake sets it on close and update. Default 2026-01-01. */
+  updatedAt?: string;
 }
 
 export interface FakeState {
@@ -56,8 +61,8 @@ export interface FakeState {
   closeFail: string[];
   /** Bead ids whose `--if-assignee` reassign fails as if the holder changed (exit 13). */
   casFail?: string[];
-  /** Parent ids whose `bd list --parent` fails. */
-  listParentFail?: string[];
+  /** The refresh read (`bd list` without --parent) fails: always (true), or this many more times. */
+  listFail?: boolean | number;
   calls: Array<{
     argv: string[];
     cwd: string;
