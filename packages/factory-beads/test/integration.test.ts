@@ -12,6 +12,7 @@ import {
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
   OVERVIEW_CARD_KIND,
+  PLAN_CARD_KIND,
   RESEARCH_CARD_KIND,
 } from '../src/index';
 import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
@@ -43,7 +44,7 @@ const commands = (harness: Harness) =>
   });
 
 describe('intake', () => {
-  it('cards ready beads only, never epics, milestones or pinned beads, with the claim key and external source', async () => {
+  it('cards ready beads only, never milestones or pinned beads, with the claim key and external source', async () => {
     h = createHarness([
       { id: 'w-1', title: 'Epic', issue_type: 'epic' },
       { id: 'w-4', title: 'Milestone', issue_type: 'milestone' },
@@ -53,8 +54,10 @@ describe('intake', () => {
     ]);
     const summary = await sweep(h.integration());
 
-    expect(summary.repos).toEqual([expect.objectContaining({ repo: SLUG, created: 1, state: 'ok' })]);
-    expect(ids(h)).toEqual(['w-2']);
+    // The childless epic is a planning card (samskara-l2t.2.4), not work.
+    expect(summary.repos).toEqual([expect.objectContaining({ repo: SLUG, created: 2, state: 'ok' })]);
+    expect(ids(h)).toEqual(['w-1', 'w-2']);
+    expect(cardFor(h, 'w-1').metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
     const card = cardFor(h, 'w-2');
     expect(card.externalSource).toEqual({ integrationId: 'beads', type: 'issue', externalId: 'w-2' });
     expect(card.claimKey).toBe(beadsClaimKey(SLUG, 'w-2'));
@@ -106,7 +109,8 @@ describe('intake', () => {
     expect(calls.indexOf(pull)).toBeLessThan(calls.indexOf(ready));
     expect(pull.env.token).toBe(TOKEN);
     // No --brief: it would drop the description (bd ready --help, bd 1.3.0).
-    expect(ready.argv).toEqual(['--readonly', 'ready', '--json', '--exclude-type=epic,milestone', '-n', '0']);
+    // Epics are read (samskara-l2t.2.4); milestones never are.
+    expect(ready.argv).toEqual(['--readonly', 'ready', '--json', '--exclude-type=milestone', '-n', '0']);
     // Reads get no credential at all.
     expect(ready.env.token).toBeNull();
   });
@@ -574,9 +578,9 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     }
     // The container's description is on its card like any other.
     expect(h.feed.on(epic.id).map(c => c.body)).toEqual(['The whole thing.']);
-    // Containers are still never read as ready work.
+    // Milestones are never read as ready; an epic is, and is sorted by its children.
     const ready = h.state().calls.find(c => c.argv.includes('ready'))!;
-    expect(ready.argv).toContain('--exclude-type=epic,milestone');
+    expect(ready.argv).toContain('--exclude-type=milestone');
     const list = h.state().calls.find(c => c.argv.includes('list'))!;
     expect(list.argv).toEqual(['--readonly', 'list', '--parent=w-e', '--all', '--flat', '--json', '-n', '0']);
   });
@@ -626,7 +630,7 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     expect(card(h, 'w-m.1')!.parentWorkItemId).toBe(card(h, 'w-m')!.id);
   });
 
-  it('gives childless containers no card, and links nothing under a parent that is not a container', async () => {
+  it('gives childless containers no overview card, and links nothing under a parent that is not a container', async () => {
     h = createHarness([
       { id: 'w-e', title: 'Childless epic', issue_type: 'epic' },
       { id: 'w-m', title: 'Childless milestone', issue_type: 'milestone' },
@@ -634,8 +638,10 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
       { id: 'w-p.1', title: 'Subtask', issue_type: 'task', parent: 'w-p' },
     ]);
     const summary = await sweep(h.integration());
-    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 1 });
-    expect(order(h)).toEqual(['w-p.1']);
+    // The childless epic gets a planning card instead (samskara-l2t.2.4); the milestone nothing.
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 2 });
+    expect(order(h)).toEqual(['w-e', 'w-p.1']);
+    expect(card(h, 'w-e')!.metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
     expect(card(h, 'w-p.1')!.parentWorkItemId).toBeNull();
   });
 
@@ -646,12 +652,15 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     ]);
     const integration = h.integration();
     await sweep(integration);
-    expect(order(h)).toEqual(['w-e.1']);
+    // The epic is childless, so it is a planning card for now.
+    expect(order(h)).toEqual(['w-e', 'w-e.1']);
+    expect(card(h, 'w-e')!.metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
     // The bead is moved under the epic (or the card predates this feature).
     h.setState(s => (s.beads[1]!.parent = 'w-e'));
 
     const summary = await sweep(integration);
-    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 1 });
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 0 });
+    expect(card(h, 'w-e')!.metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
     expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
 
     const revisions = h.workItems.beadCards().map(c => c.revision);
@@ -706,7 +715,9 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
 
   it('makes no overview card for a container whose child is carded in another project, and says so once', async () => {
     h = createHarness([
-      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      // Blocked, so it is not ready itself and is reached only through its child.
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', blockedBy: ['w-x'] },
+      { id: 'w-x', title: 'Blocker', issue_type: 'task', status: 'in_progress' },
       { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
     ]);
     await h.workItems.upsert({
@@ -926,6 +937,33 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     expect(h.workItems.evaluations).toHaveLength(1);
   });
 
+  it('cards an open epic whose children are all closed as an overview card and closes it on the first sweep (owner decision)', async () => {
+    // Settled before Factory ever saw it: the epic is open, every child closed.
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e', status: 'closed' },
+      { id: 'w-e.2', title: 'Two', issue_type: 'task', parent: 'w-e', status: 'closed' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    // Carded once, as an overview card (not a planning card), with no open children.
+    expect(ids(h)).toEqual(['w-e']);
+    const epic = card(h, 'w-e');
+    expect(epic.metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 0 });
+    // The same first sweep commits its move to Done.
+    expect(h.workItems.evaluations).toHaveLength(1);
+    expect(h.workItems.evaluations[0]!.result).toMatchObject({
+      status: 'accepted',
+      decisions: [{ type: 'transition', board: 'work', stage: 'done' }],
+    });
+
+    expect(await h.workItems.applyDecisions(policy)).toEqual([{ workItemId: epic.id, stage: 'done', outcome: 'moved' }]);
+    const closed = await sweep(integration);
+    expect(closed.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads.find(b => b.id === 'w-e')).toMatchObject({ status: 'closed' });
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+  });
+
   it('keys each evaluation on the card revision, so a stale one is never replayed in place of a fresh one', async () => {
     h = epicAndTwo();
     const integration = h.integration();
@@ -1114,5 +1152,201 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
       expect(card(h, id).metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
       expect(card(h, id).metadata?.[BEADS_META.closeRearmedAt]).toBeUndefined();
     }
+  });
+});
+
+describe('planning cards for childless epics (samskara-l2t.2.4)', () => {
+  const card = (harness: Harness, beadId: string) => harness.workItems.items.find(i => i.metadata?.[BEADS_META.id] === beadId)!;
+  // The board policy the Requests board installs (board-rules.ts), with no Work policy behind it.
+  const policy = createBeadsTransitionPolicy(undefined);
+  const binding = (workItemId: string, status: 'active' | 'revoked' = 'active') => ({
+    id: `binding_${workItemId}_${status}`,
+    orgId: ORG,
+    factoryProjectId: PROJECT,
+    workItemId,
+    role: 'work',
+    threadId: 't',
+    resourceId: 'r',
+    sessionId: 's',
+    branch: 'b',
+    status,
+    createdAt: new Date(),
+    revokedAt: status === 'revoked' ? new Date() : null,
+  });
+
+  it('cards a childless open epic as a planning card, under its parent overview card, and keeps it stable across sweeps', async () => {
+    h = createHarness([
+      { id: 'w-m', title: 'Milestone', issue_type: 'milestone' },
+      { id: 'w-e', title: 'Empty epic', issue_type: 'epic', parent: 'w-m', description: 'Ship the thing.' },
+      { id: 'w-f', title: 'Full epic', issue_type: 'epic' },
+      { id: 'w-f.1', title: 'Child', issue_type: 'task', parent: 'w-f' },
+      { id: 'w-c', title: 'Closed epic', issue_type: 'epic', status: 'closed' },
+    ]);
+    const integration = h.integration();
+    const summary = await sweep(integration);
+
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 4 });
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.cardKind]: PLAN_CARD_KIND, [BEADS_META.type]: 'epic' });
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBeUndefined();
+    // A planning card is a child like any other: the milestone is an overview card above it.
+    expect(card(h, 'w-m').metadata?.[BEADS_META.cardKind]).toBe(OVERVIEW_CARD_KIND);
+    expect(card(h, 'w-e').parentWorkItemId).toBe(card(h, 'w-m').id);
+    // An epic with children stays an overview card.
+    expect(card(h, 'w-f').metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
+    expect(card(h, 'w-c')).toBeUndefined();
+    expect(h.feed.on(card(h, 'w-e').id).map(c => c.body)).toEqual(['Ship the thing.']);
+
+    const revisions = h.workItems.beadCards().map(c => [c.id, c.revision]);
+    await sweep(integration);
+    await sweep(h.integration());
+    expect(h.workItems.beadCards().map(c => [c.id, c.revision])).toEqual(revisions);
+    expect(h.workItems.evaluations).toHaveLength(0);
+  });
+
+  it('turns the planning card into an overview card once children appear, links them, and writes once', async () => {
+    h = createHarness([{ id: 'w-e', title: 'Epic', issue_type: 'epic' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
+
+    // The file run created two children, the second blocked by the first.
+    h.setState(s => {
+      s.beads.push({ id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' });
+      s.beads.push({ id: 'w-e.2', title: 'Two', issue_type: 'task', parent: 'w-e', blockedBy: ['w-e.1'] });
+    });
+    const flipped = await sweep(integration);
+    expect(flipped.repos[0]).toMatchObject({ state: 'ok', created: 1 });
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 2 });
+    expect(card(h, 'w-e.1').parentWorkItemId).toBe(card(h, 'w-e').id);
+    expect(card(h, 'w-e.2')).toBeUndefined();
+
+    const revision = card(h, 'w-e').revision;
+    await sweep(integration);
+    expect(card(h, 'w-e').revision).toBe(revision);
+    // An epic that later loses its children is not turned back into a planning card.
+    h.setState(s => s.beads.filter(b => b.parent === 'w-e').forEach(b => delete b.parent));
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(OVERVIEW_CARD_KIND);
+  });
+
+  it('turns a planning card whose epic is not ready into an overview card too', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-x', title: 'Blocker', issue_type: 'task', status: 'in_progress' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
+    // The epic is blocked now, and its only child is claimed: neither is ready.
+    h.setState(s => {
+      s.beads[0]!.blockedBy = ['w-x'];
+      s.beads.push({ id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e', status: 'in_progress' });
+    });
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
+  });
+
+  it('never makes a planning card from a failed children read, and leaves an existing one alone', async () => {
+    h = createHarness([{ id: 'w-e', title: 'Epic', issue_type: 'epic' }]);
+    h.setState(s => (s.listParentFail = ['w-e']));
+    const integration = h.integration();
+    const failed = await sweep(integration);
+    expect(failed.repos[0]).toMatchObject({ state: 'ok', created: 0 });
+    expect(h.workItems.beadCards()).toHaveLength(0);
+
+    h.setState(s => (s.listParentFail = []));
+    await sweep(integration);
+    const planned = card(h, 'w-e');
+    expect(planned.metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
+    h.setState(s => (s.listParentFail = ['w-e']));
+    await sweep(integration);
+    expect(card(h, 'w-e').revision).toBe(planned.revision);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
+  });
+
+  it('marks an epic card made before planning cards existed, and clears the kind when the bead is no longer an epic', async () => {
+    h = createHarness([{ id: 'w-e', title: 'Epic', issue_type: 'epic' }]);
+    await h.workItems.upsert({
+      orgId: ORG,
+      userId: 'u',
+      factoryProjectId: PROJECT,
+      input: {
+        board: 'work',
+        externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e' },
+        claimKey: beadsClaimKey(SLUG, 'w-e'),
+        title: 'w-e: Epic',
+        stages: ['intake'],
+        metadata: { [BEADS_META.id]: 'w-e', [BEADS_META.repo]: SLUG, [FACTORY_REPOSITORY_META]: SLUG, [BEADS_META.type]: 'epic' },
+      },
+    });
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
+    expect(h.workItems.beadCards()).toHaveLength(1);
+
+    h.setState(s => (s.beads[0]!.issue_type = 'task'));
+    await sweep(integration);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind] ?? null).toBeNull();
+  });
+
+  it('moves an overview card stranded in a working phase with no active binding to Intake, through the board policy', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    const epic = card(h, 'w-e');
+    // A planning card in Building whose children the file run just created.
+    h.workItems.move(epic.id, 'execute');
+    h.workItems.runBindings.push(binding(epic.id));
+    await sweep(integration);
+    // Its run is still bound: nothing moves it.
+    expect(h.workItems.evaluations).toHaveLength(0);
+
+    h.workItems.runBindings = [binding(epic.id, 'revoked')];
+    await sweep(integration);
+    const stranded = card(h, 'w-e');
+    expect(h.workItems.evaluations).toHaveLength(1);
+    const identity = `beads:overview-intake:${stranded.id}@${stranded.revision}`;
+    expect(h.workItems.evaluations[0]!.input).toMatchObject({
+      workItemId: stranded.id,
+      ingress: { identity, triggerType: 'beads.overview-intake' },
+      actor: { type: 'system', id: 'integration:beads' },
+    });
+    expect(h.workItems.evaluations[0]!.result.decisions).toEqual([
+      expect.objectContaining({ type: 'transition', board: 'work', stage: 'intake', idempotencyKey: `${identity}:transition` }),
+    ]);
+    // A repeat before the dispatcher runs is a replay.
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(1);
+    // The board policy allows it: Intake is not a working phase.
+    expect(await h.workItems.applyDecisions(policy)).toEqual([{ workItemId: stranded.id, stage: 'intake', outcome: 'moved' }]);
+    await sweep(integration);
+    expect(h.workItems.evaluations).toHaveLength(1);
+  });
+
+  it('moves no card that is resting, terminal, not an overview card, or about to move to Done', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+      { id: 'w-p', title: 'Plan me', issue_type: 'epic' },
+      { id: 'w-s', title: 'Settled', issue_type: 'epic' },
+      { id: 'w-s.1', title: 'Done child', issue_type: 'task', parent: 'w-s' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    // A planning card in Building is not stranded: it is the file run's card.
+    h.workItems.move(card(h, 'w-p').id, 'execute');
+    // A work card in Building is Work's business.
+    h.workItems.move(card(h, 'w-e.1').id, 'execute');
+    // The settled epic's last child closes while its card sits in Planning: it goes to Done, once.
+    h.workItems.move(card(h, 'w-s').id, 'planning');
+    h.setState(s => {
+      s.beads.find(b => b.id === 'w-s.1')!.status = 'closed';
+      s.beads.find(b => b.id === 'w-s')!.status = 'closed';
+    });
+    await sweep(integration);
+    expect(h.workItems.evaluations.map(e => [e.input.workItemId, e.input.ingress.triggerType])).toEqual([[card(h, 'w-s').id, 'beads.overview-done']]);
   });
 });

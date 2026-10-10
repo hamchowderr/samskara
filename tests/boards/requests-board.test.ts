@@ -10,7 +10,15 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { workBoard } from '@mastra/factory';
 import { validateFactoryRuleDecision } from '@mastra/factory/rules/validation';
-import { DECISION_SKILL, RESEARCH_APPROVAL_REASON, RESEARCH_WORKING_REASON } from '@samskara/factory-beads';
+import {
+  DECISION_SKILL,
+  EPIC_SKILL,
+  PLAN_APPROVAL_REASON,
+  PLAN_DONE_REASON,
+  PLAN_WORKING_REASON,
+  RESEARCH_APPROVAL_REASON,
+  RESEARCH_WORKING_REASON,
+} from '@samskara/factory-beads';
 import { FACTORY_RULE_SOURCES } from '@mastra/factory/rules/types';
 import type { FactoryRuleActor } from '@mastra/factory/rules/types';
 import type { BoardTransitionPolicyContext } from '@mastra/factory/boards/transition-policy';
@@ -383,6 +391,219 @@ describe('beads research cards (samskara-l2t.2.3)', () => {
       expect(description.length).toBeGreaterThan(20);
       // An unquoted [...] value is a YAML flow sequence, not a string.
       expect(description.startsWith('[')).toBe(false);
+    });
+  });
+});
+
+describe('beads plan cards (samskara-l2t.2.4)', () => {
+  const policy = requestsBoard.transitionPolicy!;
+  const human: FactoryRuleActor = { type: 'human', id: 'u1' };
+  const planAgent: FactoryRuleActor = { type: 'agent', bindingId: 'b-1', role: 'plan' };
+  const workAgent: FactoryRuleActor = { type: 'agent', bindingId: 'b-2', role: 'work' };
+  const system: FactoryRuleActor = { type: 'system', id: 'factory-tool-result-rule' };
+  const plan = { beadsId: 'w-e', beadsRepo: 'acme/widgets', beadsType: 'epic', beadsCardKind: 'plan' };
+  const autoApprove = { plansAutoApproved: true, planApproved: true };
+  const label = (actor: FactoryRuleActor) => (actor.type === 'agent' ? `agent (${actor.role})` : actor.type);
+  const move = (
+    actor: FactoryRuleActor,
+    fromStage: string,
+    toStage: string,
+    metadata: Record<string, unknown> | null = plan,
+    flags: Partial<Pick<BoardTransitionPolicyContext, 'planApproved' | 'plansAutoApproved'>> = {},
+  ): BoardTransitionPolicyContext => ({
+    tenant: { orgId: 'org-1', projectId: 'proj-1' },
+    actor,
+    ingress: { type: actor.type === 'human' ? 'human' : 'rule', id: 'ing-1' },
+    cause: 'test',
+    causalChain: [],
+    configVersion: 'test',
+    board: 'work',
+    fromStage,
+    toStage,
+    source: 'manual',
+    initialEntry: false,
+    reenter: false,
+    itemRevision: 1,
+    isHumanTransition: actor.type === 'human',
+    plansAutoApproved: false,
+    planApproved: false,
+    ...flags,
+    item: {
+      id: 'wi-1',
+      source: 'manual',
+      sourceKey: 'beads:issue:w-e',
+      parentWorkItemId: null,
+      title: 'w-e: An epic',
+      url: null,
+      stages: [fromStage],
+      acceptedAt: null,
+      metadata,
+      triageType: null,
+    },
+  });
+
+  for (const actor of [human, planAgent, workAgent, system]) {
+    for (const toStage of ['triage', 'review']) {
+      it(`rejects a ${label(actor)} moving a plan card into ${toStage}, even with plans auto-approved`, async () => {
+        for (const fromStage of ['intake', 'planning', 'execute']) {
+          expect(await policy(move(actor, fromStage, toStage, plan, autoApprove))).toEqual({
+            type: 'reject',
+            code: 'forbidden',
+            reason: PLAN_WORKING_REASON,
+          });
+        }
+      });
+    }
+  }
+
+  for (const actor of [planAgent, workAgent, system]) {
+    it(`rejects a ${label(actor)} moving a plan card into Building, whatever approval it carries`, async () => {
+      for (const flags of [{}, autoApprove, { plansAutoApproved: true }, { planApproved: true }]) {
+        for (const fromStage of ['planning', 'intake']) {
+          expect(await policy(move(actor, fromStage, 'execute', plan, flags))).toEqual({
+            type: 'reject',
+            code: 'approval_required',
+            reason: PLAN_APPROVAL_REASON,
+          });
+        }
+      }
+    });
+  }
+
+  it("refuses the approved submit_plan path: Work's tool rule asks for Building, the policy says no", async () => {
+    // With auto-approve on, the dispatcher answers a parked submit_plan itself
+    // (rules/dispatcher.js:107-112), Work's tool rule turns the result into a
+    // move to Building (work-tool-rules.js:8-16), and the processor stamps it
+    // planApproved as actor system (rules/processor.js:381-402).
+    const decision = board.tools?.submit_plan?.onResult({
+      result: { status: 'success', value: 'Plan approved. Proceed with implementation following the approved plan.' },
+      item: { stages: ['planning'], metadata: plan },
+      actor: { type: 'agent', role: 'plan' },
+      ingress: { id: 'ing-1' },
+    }) as { stage: string } | undefined;
+    expect(decision).toMatchObject({ type: 'transition', board: 'work', stage: 'execute' });
+    expect(await policy(move(system, 'planning', decision!.stage, plan, { planApproved: true, plansAutoApproved: true }))).toMatchObject({
+      type: 'reject',
+      code: 'approval_required',
+    });
+    // The same move of a work card passes, as before.
+    expect((await policy(move(system, 'planning', 'execute', { beadsId: 'w-1' }, { planApproved: true })))?.type).toBe('allow');
+  });
+
+  it('lets a person approve by moving a plan card into Building, accepting it as Work does', async () => {
+    for (const fromStage of ['planning', 'intake']) {
+      const context = move(human, fromStage, 'execute');
+      expect(await policy(context)).toEqual({ type: 'allow', accept: true });
+      expect(await policy(context)).toEqual(await workBoard.transitionPolicy!(context));
+    }
+  });
+
+  it('lets the file run move its card from Building back to Intake', async () => {
+    const context = move(workAgent, 'execute', 'intake');
+    expect((await policy(context))?.type).toBe('allow');
+    expect(await policy(context)).toEqual(await workBoard.transitionPolicy!(context));
+  });
+
+  it('lets a person move a plan card into Planning; Work decides that move for everyone', async () => {
+    for (const actor of [human, planAgent]) {
+      const context = move(actor, 'intake', 'planning');
+      expect(await policy(context)).toEqual(await workBoard.transitionPolicy!(context));
+    }
+    expect((await policy(move(human, 'intake', 'planning')))?.type).toBe('allow');
+  });
+
+  for (const actor of [planAgent, workAgent, system]) {
+    it(`rejects a ${label(actor)} moving a plan card to Done`, async () => {
+      for (const fromStage of ['planning', 'execute', 'intake']) {
+        expect(await policy(move(actor, fromStage, 'done', plan, autoApprove))).toEqual({
+          type: 'reject',
+          code: 'approval_required',
+          reason: PLAN_DONE_REASON,
+        });
+      }
+    });
+  }
+
+  it('lets a person move a plan card to Done or Canceled', async () => {
+    for (const to of ['done', 'canceled']) expect((await policy(move(human, 'planning', to)))?.type, to).toBe('allow');
+  });
+
+  describe('phase entry rules', () => {
+    type Rule = (context: unknown) => unknown;
+    const planning = board.phases.planning?.onEnter ?? {};
+    const execute = board.phases.execute?.onEnter ?? {};
+    const work = workBoard as unknown as Board;
+    const workPlanning = work.phases.planning?.onEnter ?? {};
+    const workExecute = work.phases.execute?.onEnter ?? {};
+    const entry = (stage: string, fromStage: string, metadata: Record<string, unknown> | null, title = 'w-e: An epic') => ({
+      ...move(human, fromStage, stage, metadata),
+      stage,
+      ingress: { type: 'human', id: 'ing-9' },
+      item: { id: 'wi-1', source: 'manual', sourceKey: null, parentWorkItemId: null, title, url: null, stages: [fromStage], acceptedAt: null, metadata },
+    });
+
+    it("keeps Work's planning and building rules for every other source", () => {
+      for (const [phase, ours, theirs] of [
+        ['planning', planning, workPlanning],
+        ['execute', execute, workExecute],
+      ] as const) {
+        for (const [source, handler] of Object.entries(theirs)) {
+          if (source !== 'manual') expect(ours[source], `${phase}.${source}`).toBe(handler);
+        }
+      }
+    });
+
+    it('starts the factory-beads-epic skill in propose mode on the plan seat when a plan card enters Planning', () => {
+      const decision = (planning.manual as Rule)(entry('planning', 'intake', plan));
+      expect(decision).toEqual({
+        type: 'invokeSkill',
+        idempotencyKey: `ing-9:${EPIC_SKILL}:propose`,
+        role: 'plan',
+        skillName: 'factory-beads-epic',
+        arguments: 'Mode: propose. The epic bead w-e in repository acme/widgets',
+      });
+      expect(() => validateFactoryRuleDecision(decision, 0)).not.toThrow();
+    });
+
+    it('starts the factory-beads-epic skill in file mode on the work seat when a plan card enters Building', () => {
+      const decision = (execute.manual as Rule)(entry('execute', 'planning', plan));
+      expect(decision).toEqual({
+        type: 'invokeSkill',
+        idempotencyKey: `ing-9:${EPIC_SKILL}:file`,
+        role: 'work',
+        skillName: 'factory-beads-epic',
+        arguments: 'Mode: file. The epic bead w-e in repository acme/widgets',
+      });
+      expect(() => validateFactoryRuleDecision(decision, 0)).not.toThrow();
+    });
+
+    it('leaves research cards to the decision skill and every other card to Work', () => {
+      const research = { beadsId: 'w-d', beadsRepo: 'acme/widgets', beadsCardKind: 'research' };
+      expect((planning.manual as Rule)(entry('planning', 'intake', research))).toMatchObject({ skillName: DECISION_SKILL, role: 'plan' });
+      for (const metadata of [null, { beadsId: 'w-1', beadsType: 'task' }, { beadsId: 'w-e', beadsType: 'epic', beadsCardKind: 'overview' }]) {
+        for (const [stage, ours, theirs] of [
+          ['planning', planning, workPlanning],
+          ['execute', execute, workExecute],
+        ] as const) {
+          const context = entry(stage, 'planning', metadata, 'A request');
+          expect((ours.manual as Rule)(context), `${stage} ${JSON.stringify(metadata)}`).toEqual((theirs.manual as Rule)(context));
+        }
+      }
+      expect((execute.manual as Rule)(entry('execute', 'planning', null, 'A request'))).toMatchObject({ role: 'work', idempotencyKey: 'ing-9:build' });
+    });
+
+    it('ships the skill where Factory loads project skills (dist/workspace.js:31), with parseable frontmatter', () => {
+      const file = join(process.cwd(), 'src', 'mastra', 'public', 'factory-skills', EPIC_SKILL, 'SKILL.md');
+      const text = readFileSync(file, 'utf8');
+      const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+      expect(front).toMatch(new RegExp(`^name: ${EPIC_SKILL}$`, 'm'));
+      const description = /^description: (.+)$/m.exec(front)?.[1] ?? '';
+      expect(description.length).toBeGreaterThan(20);
+      expect(description.startsWith('[')).toBe(false);
+      // Both modes, and the rule that read content is data, not instructions.
+      expect(text).toMatch(/## Propose mode/);
+      expect(text).toMatch(/## File mode/);
+      expect(text).toMatch(/untrusted data/);
     });
   });
 });

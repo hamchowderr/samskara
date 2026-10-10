@@ -7,9 +7,11 @@ export {
   beadsClaimKey,
   DECISION_TYPE,
   descriptionBody,
+  EPIC_TYPE,
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
   OVERVIEW_CARD_KIND,
+  PLAN_CARD_KIND,
   RESEARCH_CARD_KIND,
 } from './integration';
 export type {
@@ -23,12 +25,18 @@ export type {
 } from './integration';
 export { createBeadsDoneRule } from './done-rule';
 export { createBeadsPlanningRule, DECISION_SKILL } from './decision-rule';
+export { createBeadsEpicBuildRule, createBeadsEpicPlanningRule, EPIC_SKILL } from './epic-rule';
+export type { EpicSkillMode } from './epic-rule';
 export {
   createBeadsTransitionPolicy,
   isOverviewCard,
+  isPlanCard,
   isResearchCard,
   OVERVIEW_OPEN_CHILDREN_REASON,
   OVERVIEW_WORKING_REASON,
+  PLAN_APPROVAL_REASON,
+  PLAN_DONE_REASON,
+  PLAN_WORKING_REASON,
   RESEARCH_APPROVAL_REASON,
   RESEARCH_WORKING_REASON,
 } from './board-rules';
@@ -37,7 +45,7 @@ export { beadsSetting, beadsStartupLine } from './setting';
 export type { BeadsSetting } from './setting';
 export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runner';
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
-export { BdRepo, cacheDirFor, CONTAINER_TYPES, OVERVIEW_TYPES } from './repo';
+export { BdRepo, cacheDirFor, CONTAINER_TYPES, NEVER_READY_TYPES, OVERVIEW_TYPES } from './repo';
 export type { BeadDetails, ChildBead, ReadyBead } from './repo';
 export { BeadsSyncWorker, LeaseWaitTimeoutError } from './worker';
 export type { LeaseSource, TickOutcome, WithLeaseOptions } from './worker';

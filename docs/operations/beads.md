@@ -73,15 +73,22 @@ App:
      its lease: a live holder restores it on its next `bd heartbeat`, but an
      abandoned claim then has no stale lease for `bd reclaim` to find.
 3. **Pull.** If there was nothing to write back, `bd dolt pull`.
-4. **Intake.** `bd --readonly ready --json --exclude-type=epic,milestone -n 0`, then one
-   card per bead, and the bead's description as one comment on the card's feed
-   (`integration.ts:705-739`). See [What the agent sees](#what-the-agent-sees).
+4. **Intake.** `bd --readonly ready --json --exclude-type=milestone -n 0`, then one
+   card per bead, and the bead's description as one comment on the card's feed.
+   See [What the agent sees](#what-the-agent-sees).
    A bead whose parent is an epic, milestone or molecule root is put under
    that container's overview card, which is made first; see
-   [Overview cards](#overview-cards).
+   [Overview cards](#overview-cards). A ready epic with children is that
+   overview card; a ready epic with none is a planning card; see
+   [Planning cards](#planning-cards).
 5. **Open-children counts.** Each overview card that intake did not reach
    in this tick, and that is not in a terminal phase, gets its open-children
-   count read again (`integration.ts:741-756`).
+   count read again. A planning card that intake did not reach is checked for
+   children too.
+6. **Overview moves.** Overview cards whose last child closed are committed
+   to Done; overview cards stranded in a working phase with no active run
+   binding are committed to Intake; `close-failed` container cards whose
+   children have all closed are re-armed.
 
 A project connection whose GitHub installation no longer exists (an orphaned
 link, samskara-1ra) is skipped with one warning per connection, and the other
@@ -91,13 +98,15 @@ links still sweep. `connections.list` returns such a connection, but
 `:510-515`), so the integration first checks it with `connections.get`, which
 applies the same test and returns `null`.
 
-Epics and milestones are excluded from `bd ready` because they are
-containers, not work, and `bd ready` lists both (an unblocked epic appears
-beside its first child). Pinned beads, gates and workflow roots (`molecule`)
-bd ready already leaves out (bd v1.3.1 `internal/storage/sqlbuild/ready.go`:
-types at `:16-38`, the status filter at `:113`, the pinned flag at `:117`).
-A container is carded only as the parent of a ready child, as an overview
-card.
+Milestones are excluded from `bd ready` because they are containers, not
+work, and `bd ready` lists them. Epics are containers too, and `bd ready`
+lists an open epic whether or not it has open children (checked on bd
+1.3.1), but they are read: intake reads each epic's children and cards it as
+an overview card (children) or a planning card (none, samskara-l2t.2.4).
+Pinned beads, gates and workflow roots (`molecule`) bd ready already leaves
+out (bd v1.3.1 `internal/storage/sqlbuild/ready.go`: types at `:16-38`, the
+status filter at `:113`, the pinned flag at `:117`). A milestone or molecule
+root is carded only as the parent of a ready child, as an overview card.
 
 ### Startup preconditions
 
@@ -138,7 +147,7 @@ Restarting the server re-checks at once.
 | `claimKey` | `beads:<owner/name>:<bead id>` |
 | `title` | `<bead id>: <bead title>` |
 | `parentWorkItemId` | the overview card of the bead's parent container, if it has one |
-| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'` |
+| `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'`; on a childless open epic's card `beadsCardKind: 'plan'` |
 
 Intake is idempotent. Before creating a card the integration looks it up by
 external source (`WorkItemsStorage.getByProjectSource`,
@@ -164,8 +173,9 @@ children's cards are linked under it with Factory's own
 `parentWorkItemId`, so they show under its linked items.
 
 **When it is made.** Intake makes a container's card when it first meets a
-ready child of it, so a container whose children are all in progress or
-blocked has no card until one of them is ready. The ready row's `parent`
+ready child of it, or, for an epic, the epic itself in `bd ready`. A
+milestone or molecule root whose children are all in progress or blocked has
+no card until one of them is ready. The ready row's `parent`
 field names the container
 (bd 1.3.1 sets it from the parent-child edge). The integration reads the
 container with `bd --readonly show <id> --json` and its children with
@@ -200,7 +210,7 @@ bumps the card's revision. Overview cards rest in the board's initial phase
 
 | Case | Result |
 |------|--------|
-| The container has no children | No card (owner decision: a childless epic will become a planning card in samskara-l2t.2.4; a childless milestone or molecule root never gets one). |
+| The container has no children | No overview card (owner decision). A childless open epic gets a [planning card](#planning-cards); a childless milestone or molecule root gets no card. |
 | The child is already carded in another project of the organization | No overview card in this project, and one warning per process. The child's claim (`getByClaimKey`, `base.js:1220-1226`) says where its family lives. |
 | The container itself is carded in another project | The children are carded here without a parent, with one warning. |
 | The parent is not an epic, milestone or molecule, or it is closed | The child is carded without a parent. |
@@ -223,10 +233,30 @@ admin-only automation runs route dispatch a run without a transition, so the
 policy is never asked. Whether the Factory UI calls them on a card is not
 verified.
 
-An existing card for a container becomes an overview card wherever it sits.
-A card made before this change that is in a working phase with a live run is
-then stuck: its run's move to the next phase is refused. A person moves it
-to Intake or Canceled, which the policy allows (cleanup in samskara-l2t.2.5).
+An existing card for a container becomes an overview card wherever it sits:
+a planning card whose epic gets children, or a card made before overview
+cards existed. One left in a working phase is stranded, since no phase
+handler runs it and the policy refuses its moves into other working phases.
+Each tick commits a move of such a card to Intake when it has **no active
+run binding** (`integration.ts`, `#resetStrandedOverviews`; bindings from
+`WorkItemsStorage.listRunBindings`, `dist/storage/domains/work-items/base.d.ts:730`).
+The move is a committed transition, like the Done move below, with the
+ingress identity `beads:overview-intake:<card id>@<revision>`, and the
+policy allows it because Intake is not a working phase. A card that step
+also commits to Done is left to that move.
+
+A binding stays active after its run ends: Factory revokes it when the card
+reaches a terminal phase or when the session takes another role
+(`dist/storage/domains/work-items/base.js:2121-2190`), and the
+dispatcher's stale-binding sweep revokes it once it is old: every 10
+minutes the sweep revokes each active binding created more than 24 hours
+earlier (`dist/rules/dispatcher.js:34-35,373-385`,
+`dist/storage/domains/work-items/base.js:2159-2181`; samskara overrides
+neither value). So a card whose run ended without moving it keeps its
+active binding and is not moved until that sweep revokes it, about 24
+hours after the run started; the next tick then moves it to Intake. A
+person can move it to Intake or Canceled sooner, which the policy allows
+(cleanup of such cards is samskara-l2t.2.5).
 
 | Move of an overview card | Result |
 |--------------------------|--------|
@@ -262,6 +292,12 @@ container is closed (samskara-l2t.2.2). Nobody moves it, and nothing runs on it.
    its last step ("Auto-closed completed molecule", reason `all steps
    complete`; checked on bd 1.3.1), so write-back finds the bead closed, makes
    no close call, and only syncs and marks the card.
+
+An open epic whose children were all closed before Factory first saw it is
+handled the same way (owner decision, samskara-l2t.2.4: keep auto-closing
+settled epics). The first sweep cards it as an overview card with
+`beadsOpenChildren: 0`, not as a planning card, and commits its move to Done
+in that sweep; the next tick closes the epic bead.
 
 The move is not `bd epic close-eligible`. That command closes every eligible
 epic in the repository, as actor `system` (owner decision, samskara-l2t.2).
@@ -334,7 +370,8 @@ An open `decision` bead gets a **research card** (owner decision, 2026-10-09,
 samskara-l2t.2; built in samskara-l2t.2.3). An agent researches the options
 and writes the decision into the bead. A person approves it by moving the card
 to Done, which closes the bead through the normal write-back. A research card
-never reaches Building, and no code, branch or pull request comes from it.
+never reaches Building, and the agent writes no code and opens no pull
+request.
 The write-up lives in the bead only, not in a docs file or a pull request.
 
 **Intake.** A ready bead of type `decision` is carded like any other bead, plus
@@ -382,7 +419,7 @@ reads the bead with `beads_show`, researches the options in the codebase, the
 vendor documentation and the web when a tool for it is available, and writes
 the result with one `beads_update`: the original question first, unchanged,
 then the three sections in the description; `design` and `append_notes` where
-they help. It never writes code, opens a branch or pull request, closes the
+they help. It never writes code, opens a pull request, closes the
 bead, calls `submit_plan` or requests a transition. It ends by asking a person
 to review the bead and move the card to Done, or to send it back with
 feedback. Each entry into Planning runs the skill again, and the kickoff
@@ -412,6 +449,121 @@ plan gate uses.
 Planning is the board's phase with `role: 'plan'`, read from Work's
 definition. Moves into Planning or Canceled by an agent are left to Work's
 policy.
+
+### Planning cards
+
+An open epic with no children gets a **planning card** (owner decision,
+2026-10-09, samskara-l2t.2; built in samskara-l2t.2.4). An agent proposes the
+epic's child beads; a person approves the proposal; a second run files exactly
+those children; the card then becomes the epic's overview card. The agent
+writes no code and opens no pull request.
+
+**Intake.** bd ready lists open epics (`repo.ts`, `ready`, now excludes only
+milestones). For each ready epic intake reads its children
+(`bd list --parent`, as for any container). With children, the epic is an
+overview card. With none, it is carded like any bead plus
+`beadsCardKind: 'plan'`. Only a children read that succeeded and found none
+makes a planning card: when the epic or its children cannot be read, or the
+epic is carded in another project, nothing is carded or changed for it in
+that tick. A planning card under a milestone or a parent epic is linked under
+that container's overview card and counts as one of its open children. The
+kind is written only when it changes; an epic card made before planning cards
+existed gets it on the next tick, and a card whose bead stops being an epic
+has it cleared. An overview card is never turned back into a planning card,
+even when its epic loses every child.
+
+**Planning card to overview card.** Each tick, a planning card whose epic now
+has children is changed to `beadsCardKind: 'overview'` with
+`beadsOpenChildren`, and the children's cards are linked under it. This runs
+from intake when the epic is ready, and from the count pass when it is not
+(blocked, say). Metadata is written once.
+
+**The flow.**
+
+1. A person moves the planning card into Planning. The Requests board's
+   planning `manual` handler, `createBeadsEpicPlanningRule`
+   (`packages/factory-beads/src/epic-rule.ts`), starts the
+   `factory-beads-epic` skill in **propose** mode on the plan seat. It wraps the
+   research-card handler, which wraps Work's `planWorkItem`
+   (`dist/boards/work.js:101-109`), so every other card gets the same decision
+   as before.
+2. The skill reads the epic, researches the work, and appends a
+   `## Proposed children` block to the epic's notes with `beads_update`: per
+   child, the title, type, priority, description, design, acceptance and what
+   it is blocked by. It creates nothing, calls neither `submit_plan` nor
+   `factory_transition_work_item`, and asks the person to review the proposal
+   and move the card to Building.
+3. A person moves the card to Building. That move is the approval. The
+   Building `manual` handler, `createBeadsEpicBuildRule`, starts the skill in
+   **file** mode on the work seat; it wraps Work's `buildWorkItem`
+   (`dist/boards/work.js:110-121`, wired at `:190`), so every other card still
+   gets Work's build prompt.
+
+   Close the card's session view, or wait for the propose run to finish,
+   before approving. While the card's session is open, the Factory UI makes
+   the session the card's owner and disables every move into a working
+   phase, Building included, in the card menu. In `mastra` 1.33.0
+   (`node_modules/mastra/dist/factory/assets/index-BaghZlUk.js`), `jL` sets
+   the owner to `{kind: 'session'}` whenever the card has a session status,
+   and the menu items are enabled by `fM`, which allows a move into a
+   working phase (`ldt`: not `resting` and not `terminal`) only when the
+   owner is `free` (`_L`). A greyed-out "Move to Building" is that UI
+   rule, not the board policy.
+4. The skill files exactly the latest proposal: one `beads_create` per child
+   with `parent` set to the epic, then `beads_dep_add` for each dependency, and
+   a note on the epic listing the ids. It writes no code and opens no pull
+   request. It then moves the card to Intake with
+   `factory_transition_work_item`.
+5. The next tick finds the children and turns the card into the overview
+   card. From there it is an overview card like any other: it closes when its
+   last child closes.
+
+| Decision | Planning | Building |
+|----------|----------|----------|
+| `type` | `invokeSkill` | `invokeSkill` |
+| `role` | `plan` | `work` |
+| `skillName` | `factory-beads-epic` | `factory-beads-epic` |
+| `arguments` | `Mode: propose. The epic bead <id> in repository <owner/name>` | `Mode: file. The epic bead <id> in repository <owner/name>` |
+| `idempotencyKey` | `<ingress id>:factory-beads-epic:propose` | `<ingress id>:factory-beads-epic:file` |
+
+The decision shapes are checked with Factory's own
+`validateFactoryRuleDecision` in the tests.
+
+**The board policy** (`board-rules.ts`):
+
+| Move of a planning card | Result |
+|-------------------------|--------|
+| Into Triage or Review, by anyone | Rejected, `forbidden`. |
+| Into Building (`execute`) by an agent, the system, or any actor that is not a person, from any phase | Rejected, `approval_required`, whatever `plansAutoApproved` and `planApproved` say. |
+| Into Done by any actor that is not a person | Rejected, `approval_required`: Done would close the epic with no children. |
+| Into Building, Done or Canceled by a person | Allowed (then Work's own policy decides, and accepts the card as for any card a person starts). |
+| Into Planning, or from Building back to Intake (the file run's move) | Left to Work's policy, which allows them. |
+
+Auto-approve plans never approves an epic's plan (owner decision). Work's
+plan gate lets a non-human actor into Building in two cases
+(`dist/boards/work-transition-policy.js:15-19`): the project's auto-approve
+setting, and a move stamped `planApproved`. The second comes from an approved
+`submit_plan`: Work's tool rule asks for Building
+(`dist/boards/work-tool-rules.js:8-16`) and the processor sends that move as
+actor system with `planApproved: true` (`dist/rules/processor.js:381-402`).
+With auto-approve on, the dispatcher answers a parked `submit_plan` with
+"approved" itself (`dist/rules/dispatcher.js:107-112`), so a `planApproved`
+move cannot be told apart from a person's approval in the policy. The
+planning-card rule therefore refuses every non-human move into Building and
+never reads either flag. A person approves only by moving the card, which is
+`actor.type === 'human'`, the same test Work's gate uses. The skill does not
+call `submit_plan`.
+
+`submit_plan` cannot carry this approval anyway (live finding, 2026-10-09,
+dev Factory). The propose run is on the plan seat, which has no sandbox, so
+the card's Plan panel cannot load a plan file and its "Approve & build"
+control stays disabled. The flow above was checked end to end on the same
+day: propose mode appended the proposal and created nothing, a person moved
+the card to Building, file mode created exactly the approved child, and the
+card turned into the epic's overview card with the child linked under it.
+
+The build phase is Work's `execute`, passed as `buildPhase`: Review shares
+its `work` role, so the role alone does not name it.
 
 ### Multi-repository factories: the card names its repository
 
@@ -981,7 +1133,7 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   (`test/fixtures/fake-bd.mjs`) and an in-memory work-item store test the
   following: the token never appears in argv; the server environment does not
   reach bd; exit codes 2 and 3; idempotent intake across sweeps and restarts;
-  epic, milestone and pinned exclusion; claim conflicts; ordering (B is carded only after A's card
+  milestone and pinned exclusion; claim conflicts; ordering (B is carded only after A's card
   reaches Done and A is closed and synced); the lease; the description
   comment (one per card across sweeps and restarts, back-fill, no comment for
   an empty description, no feed, a failing feed, truncation); the card's
@@ -996,7 +1148,9 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   child or a container carded in another project; a failed children read.
   Closing overview cards (samskara-l2t.2.2): the epic card committed to Done
   when both children are done, and the next tick closing and syncing the
-  epic; a replay at the same revision and a new evaluation at a new one (the
+  epic; an open epic whose children were all closed before its first sweep,
+  carded as an overview card and committed to Done in that sweep, then
+  closed; a replay at the same revision and a new evaluation at a new one (the
   harness stores a stale evaluation as rejected, as Factory does); no move
   with a child open, with an unread count, or for an open childless
   container; the count of a container closed while a child is ready; a
@@ -1006,7 +1160,15 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   (samskara-l2t.2.3): an open decision carded as `research`, a task with no
   kind, a closed decision never carded; a decision linked under its epic; the
   kind back-filled once on an older card and cleared when the bead stops being
-  a decision, with no write on later sweeps; a person's Done closing the bead. The harness records each
+  a decision, with no write on later sweeps; a person's Done closing the bead.
+  Planning cards (samskara-l2t.2.4): a childless open epic carded as `plan`
+  under its milestone's overview card, an epic with children as an overview
+  card, a closed epic never carded, stable across sweeps; the flip to
+  `overview` when children appear (one write, children linked, never flipped
+  back), also for an epic that is not ready; no planning card from a failed
+  children read; the kind back-filled and cleared; a stranded overview card
+  committed to Intake only once its run binding is gone, and no move for a
+  resting, terminal, non-overview or Done-bound card. The harness records each
   `commitRuleEvaluation`, and its `applyDecisions()` stands in for the
   dispatcher: it asks the real beads board policy before it moves a card. The
   harness store checks `parentWorkItemId` with Factory's own
@@ -1021,7 +1183,10 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   the molecule root by bd with its last step, and both closes reach the
   remote. It also cards an open decision (filed with empty required sections,
   through `--validate`) as a research card, never cards a closed one, and
-  closes the open one when its card reaches Done. It is
+  closes the open one when its card reaches Done. It cards a childless epic
+  as a planning card, files two children under it through the real
+  `beads_create` and `beads_dep_add` tools, and the next sweep turns the card
+  into an overview card with the ready child linked under it. It is
   **local-only**: it is skipped when `bd` is not on PATH, and the CI workflow
   does not install bd. Set `FACTORY_BEADS_REAL_BD=0` to skip it on a machine
   that has bd.
@@ -1034,7 +1199,14 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   system, with and without auto-approved plans; Done, Canceled and Planning
   allowed for a person; the decision skill started for a research card and
   Work's `factory-plan` decision for every other card; the skill file's
-  location and frontmatter) are covered by
+  location and frontmatter), and the planning card policy and rules (Triage
+  and Review refused for every actor; Building refused for a plan agent, a
+  work agent and the system with every combination of `plansAutoApproved` and
+  `planApproved`, including the approved `submit_plan` path through Work's own
+  tool rule; Done refused for the same actors; Building, Done and Canceled
+  allowed for a person; the file run's move back to Intake allowed; the epic
+  skill started in propose and file mode, the decision skill and Work's
+  decisions unchanged for every other card) are covered by
   `tests/boards/requests-board.test.ts`.
 
 ## Build note
