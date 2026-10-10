@@ -511,6 +511,63 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown(fixed).status).toBe('closed');
   }, 300_000);
 
+  it('syncs status both ways: a card move sets in_progress or open, a bead blocked in bd sends its card to Intake (samskara-l2t.4)', async () => {
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const bead = run('bd', ['create', 'Status sync', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    run('bd', ['dolt', 'push']);
+    await sweep(integration);
+    const card = () => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === bead)!;
+    const shown = () => {
+      run('bd', ['dolt', 'pull']);
+      return (JSON.parse(run('bd', ['--readonly', 'show', bead, '--json'])) as Array<{ status: string; assignee?: string }>)[0]!;
+    };
+
+    h.workItems.move(card().id, 'execute');
+    const started = await sweep(integration);
+    expect(started.repos[0], JSON.stringify(started)).toMatchObject({ state: 'ok' });
+    expect(shown()).toMatchObject({ status: 'in_progress' });
+    expect(shown().assignee ?? '').toBe('');
+
+    h.workItems.move(card().id, 'intake');
+    await sweep(integration);
+    expect(shown().status).toBe('open');
+
+    // Blocked in bd while the card is in Building with no run: it moves to Intake, and the bead stays blocked.
+    h.workItems.move(card().id, 'execute');
+    await sweep(integration);
+    run('bd', ['dolt', 'pull']);
+    run('bd', ['update', bead, '--status', 'blocked']);
+    run('bd', ['dolt', 'push']);
+    await sweep(integration);
+    expect(card().metadata?.[BEADS_META.held]).toBe('blocked');
+    const applied = (await h.workItems.applyDecisions()).filter(a => a.workItemId === card().id);
+    expect(applied).toEqual([{ workItemId: card().id, stage: 'intake', outcome: 'moved' }]);
+    await sweep(integration);
+    expect(shown().status).toBe('blocked');
+  }, 300_000);
+
+  it('BdRepo.setStatus: writes only over the status read, exit 13 otherwise (samskara-l2t.4)', async () => {
+    const dir = join(root, 'st');
+    run('git', ['init', '-q', dir], root);
+    run('bd', ['init', '-p', 'st', '--skip-agents', '-q'], dir);
+    const id = run('bd', ['create', 'One', '-t', 'task', '--silent'], dir).split(/\r?\n/)[0]!;
+    const repo = new BdRepo('local/status', dir, '', new BdRunner());
+    const show = () => (JSON.parse(run('bd', ['--readonly', 'show', id, '--json'], dir)) as Array<{ status: string; assignee?: string }>)[0]!;
+    expect((await repo.setStatus(id, 'in_progress', 'open')).code).toBe(0);
+    expect(show()).toMatchObject({ status: 'in_progress' });
+    expect(show().assignee ?? '').toBe('');
+    const stale = await repo.setStatus(id, 'open', 'blocked');
+    expect(stale.code, stale.stderr).toBe(13);
+    expect(show().status).toBe('in_progress');
+  }, 300_000);
+
   it('BdRepo.refresh: one bd list answers every bead and its children as bd list --parent does (samskara-l2t.15)', async () => {
     const dir = join(root, 'r');
     run('git', ['init', '-q', dir], root);

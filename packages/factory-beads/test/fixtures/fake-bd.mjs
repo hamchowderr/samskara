@@ -320,6 +320,21 @@ switch (words[0]) {
       err = `issue ${words[1]} not found`;
       break;
     }
+    // Like bd 1.3.1's compare-and-swap guards: checked before anything is
+    // written, and a mismatch writes nothing and exits 13 (bd update --help).
+    const expected = flagValue('if-assignee');
+    // casFail: the holder (or status) changed after the caller read it.
+    if (expected !== undefined && ((bead.assignee ?? '') !== expected || (state.casFail ?? []).includes(bead.id))) {
+      code = 13;
+      err = `assignee mismatch: ${bead.id} is held by "${bead.assignee ?? ''}", expected "${expected}"`;
+      break;
+    }
+    const expectedStatus = flagValue('if-status');
+    if (expectedStatus !== undefined && ((bead.status ?? 'open') !== expectedStatus || (state.casFail ?? []).includes(bead.id))) {
+      code = 13;
+      err = `status mismatch: ${bead.id} is ${bead.status ?? 'open'}, expected ${expectedStatus}`;
+      break;
+    }
     for (const [flag, field] of [
       ['title', 'title'],
       ['description', 'description'],
@@ -331,14 +346,6 @@ switch (words[0]) {
       if (value !== undefined) bead[field] = value;
     }
     if (flagValue('priority') !== undefined) bead.priority = Number(flagValue('priority'));
-    // Like bd 1.3.1's compare-and-swap reassign: exit 13 when the holder changed.
-    const expected = flagValue('if-assignee');
-    // casFail: the holder changed after the caller read it.
-    if (expected !== undefined && ((bead.assignee ?? '') !== expected || (state.casFail ?? []).includes(bead.id))) {
-      code = 13;
-      err = `assignee mismatch: ${bead.id} is held by "${bead.assignee ?? ''}", expected "${expected}"`;
-      break;
-    }
     // Like bd 1.3.1: a plain reassign of someone's live in_progress claim needs
     // --force; the compare-and-swap form (--if-assignee) takes it over.
     const next = flagValue('assignee');

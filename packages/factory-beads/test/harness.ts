@@ -406,6 +406,20 @@ export class MemoryWorkItems {
       .map(b => structuredClone(b));
   }
 
+  /**
+   * Deferred decisions the dispatcher holds, as listDeferredDecisionPage
+   * returns them (storage/domains/work-items/base.js:1581-1595): newest
+   * first, filtered by status, one page. A test adds rows.
+   */
+  deferredDecisions: Array<{ id: string; workItemId: string | null; status: string; decision: Record<string, unknown>; createdAt: Date }> = [];
+
+  async listDeferredDecisionPage(input: { orgId: string; factoryProjectId: string; statuses?: string[]; limit: number }) {
+    const rows = this.deferredDecisions
+      .filter(d => !input.statuses || input.statuses.includes(d.status))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return { decisions: rows.slice(0, input.limit).map(d => structuredClone(d)), hasMore: rows.length > input.limit };
+  }
+
   /** Simulates the board moving a card (the transition API's job, not ours). */
   move(id: string, phase: string) {
     const item = this.items.find(i => i.id === id)!;
@@ -495,6 +509,45 @@ export interface FakeSourceControl {
   repositories: Map<string, string>;
 }
 
+/**
+ * The slice of Factory's agent controller that LiveSessions listens to
+ * (@mastra/factory 0.20.0 dist/session/live-sessions.js): session created and
+ * deleted notifications. A test materializes a session and sets whether it
+ * runs a turn or is parked on a tool.
+ */
+export class FakeController {
+  #created = new Set<(session: unknown) => void>();
+  #deleted = new Set<(session: unknown) => void>();
+  onSessionCreated(listener: (session: unknown) => void) {
+    this.#created.add(listener);
+    return () => this.#created.delete(listener);
+  }
+  onSessionDeleted(listener: (session: unknown) => void) {
+    this.#deleted.add(listener);
+    return () => this.#deleted.delete(listener);
+  }
+  /** Materialize a session; the returned handle sets its state. */
+  session(id: string) {
+    const state = { running: false, parkedOn: undefined as string | undefined };
+    const session = {
+      identity: { getId: () => id },
+      run: { isRunning: () => state.running },
+      state: { get: () => ({ factoryOrgId: ORG, factoryProjectId: PROJECT }) },
+      displayState: {
+        get: () => ({ pendingSuspensions: new Map(state.parkedOn ? [['call_1', { toolName: state.parkedOn }]] : []) }),
+      },
+      subscribe: () => () => undefined,
+    };
+    for (const listener of this.#created) listener(session);
+    return {
+      state,
+      delete: () => {
+        for (const listener of this.#deleted) listener(session);
+      },
+    };
+  }
+}
+
 export interface Harness {
   dir: string;
   remote: string;
@@ -503,6 +556,7 @@ export interface Harness {
   workItems: MemoryWorkItems;
   feed: MemoryFeed;
   sourceControl: FakeSourceControl;
+  controller: FakeController;
   ctx: IntegrationContext;
   state(): FakeState;
   setState(update: (s: FakeState) => void): void;
@@ -577,7 +631,9 @@ export function createHarness(beads: FakeBead[]): Harness {
       },
     },
   };
+  const controller = new FakeController();
   const ctx = {
+    controller,
     auth: { enabled: () => true, ensureUser: async () => undefined, tenant: () => ({ orgId: ORG, userId: 'u1' }), isOrganizationAdmin: async () => true },
     storage: {
       sourceControls: [sourceControlHandle],
@@ -596,6 +652,7 @@ export function createHarness(beads: FakeBead[]): Harness {
     workItems,
     feed,
     sourceControl,
+    controller,
     ctx,
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as FakeState,
     setState(update) {

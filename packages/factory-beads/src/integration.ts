@@ -38,6 +38,7 @@ import type { MastraWorker } from '@mastra/core/worker';
 import type { VersionControl } from '@mastra/factory/capabilities/version-control';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
+import { LiveSessions } from '@mastra/factory/session/live-sessions';
 import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
@@ -119,7 +120,39 @@ export const BEADS_META = {
    * takes it for a bead closed in bd. Cleared when it is marked synced.
    */
   localClose: 'beadsLocalClose',
+  /**
+   * Status sync (samskara-l2t.4): the bead's status as the sweep last wrote
+   * or read it. A bead whose status differs from this was changed in bd.
+   */
+  status: 'beadsStatus',
+  /**
+   * Status sync: the card's phase when `status` was recorded. A card in
+   * another phase was moved since, and its move is written to the bead.
+   */
+  statusStage: 'beadsStatusStage',
+  /**
+   * Status sync: the bead's status while it is one no work starts on
+   * (blocked, deferred, pinned, hooked or a custom status); unset otherwise.
+   * The board policy reads it to refuse starting work on the card
+   * (board-rules.ts), and the sweep moves such a card out of a working phase
+   * to Intake once no run on it is in flight.
+   */
+  held: 'beadsHeld',
 } as const;
+
+/**
+ * The bead statuses status sync writes and work starts on (samskara-l2t.4).
+ * Every other status that is not `closed` holds the card: blocked, deferred,
+ * pinned and hooked (bd statuses, v1.3.1) and any custom status.
+ */
+export const WORKABLE_STATUSES = ['open', 'in_progress'] as const;
+
+/** The bead status a card in a phase of this kind asks for; undefined: none (the done phase is write-back's). */
+function statusForPhase(kind: string | undefined, stage: string, donePhase: string): 'open' | 'in_progress' | undefined {
+  if (kind === 'working') return 'in_progress';
+  if (stage === donePhase) return undefined;
+  return 'open';
+}
 
 /** How many phases the card has entered: Factory appends one stage-history entry per phase entered (work-items/base.js:338-356). */
 function stageMoves(card: WorkItemRow): number {
@@ -408,6 +441,13 @@ export class BeadsIntegration implements FactoryIntegration {
   /** Linked repositories per project for agentTools, which Factory resolves on every request. */
   readonly #scopeCache = new Map<string, { at: number; repos: ToolScope['repos'] }>();
   #toolsFailureLogged = false;
+  /**
+   * Which sessions run or are parked on a tool: Factory's own registry, the
+   * one its work-item list route reads for the board's running and parked
+   * sessions (@mastra/factory 0.20.0 dist/routes/work-items.js:249-250,
+   * dist/session/live-sessions.js). Undefined without an agent controller.
+   */
+  #liveSessions: LiveSessions | undefined;
   /** Repositories parked by an agent-write conflict whose reset was requested (POST /web/beads/reset). */
   readonly #resetRepos = new Set<string>();
   /** Repositories (slug) whose refresh read is failing: warned once per failure streak. */
@@ -478,6 +518,10 @@ export class BeadsIntegration implements FactoryIntegration {
   workers(ctx: IntegrationContext): MastraWorker[] {
     this.#ctx = ctx;
     if (!ctx.runtime) return [];
+    // The sessions this process runs, as Factory's own board reads them
+    // (status sync, samskara-l2t.4). Built now, at boot, so it hears every
+    // session the controller creates from here on.
+    if (ctx.controller && !this.#liveSessions) this.#liveSessions = new LiveSessions(ctx.controller);
     this.#worker = new BeadsSyncWorker<SweepSummary>({
       name: `${BEADS_INTEGRATION_ID}-sync`,
       leaseKey: `${BEADS_INTEGRATION_ID}:writer`,
@@ -859,7 +903,16 @@ export class BeadsIntegration implements FactoryIntegration {
           closed.push(item);
           continue;
         }
-        const res = await repo.close(beadId, this.#closeReason(item), bead?.assignee);
+        // bd refuses to close a bead with an open child. Known from the
+        // refresh read, the close is not tried at all: a refused close of a
+        // claimed bead would hand it over and back, and the swap back leaves
+        // the holder's claim without its lease (samskara-l2t.4). After the
+        // first close there is no read to go by, and bd's own refusal decides.
+        const openChildren = before?.children(beadId).filter(child => child.status !== 'closed').length ?? 0;
+        const res =
+          openChildren > 0
+            ? { code: 1, stdout: '', stderr: `cannot close ${beadId}: ${openChildren} open child issue(s) (not tried)`, ms: 0, timedOut: false }
+            : await repo.close(beadId, this.#closeReason(item), bead?.assignee);
         if (res.code === 0) {
           closed.push(item);
           before = undefined;
@@ -917,22 +970,10 @@ export class BeadsIntegration implements FactoryIntegration {
       }
     }
     if (!wroteBack && this.#unpublished.has(slug)) {
-      // An agent-tool write is committed here but its own `bd sync` failed:
-      // publish it now. A pull alone would never push it.
-      const sync = await this.#syncWithRetry(repo, credentials);
-      if (sync.code === 0) this.#unpublished.delete(slug);
-      else if (sync.code === 2 || sync.code === 4) {
-        // Never retried, as for write-back: park until an operator resets.
-        const diagnostic = `bd sync exit ${sync.code} publishing an agent write: ${resultTail(sync, 600)}`;
-        await repo.park(diagnostic);
-        this.#unpublished.delete(slug);
-        report.state = 'parked';
-        report.diagnostic = `${diagnostic}; resolve it, then POST /web/beads/reset`;
-        return;
-      } else {
-        report.state = 'error';
-        report.diagnostic = `bd sync exit ${sync.code} (publishing an agent write): ${resultTail(sync, 300)}`;
-      }
+      // A write is committed here (an agent tool's, or a status change) but
+      // its own `bd sync` failed: publish it now. A pull alone would never push it.
+      await this.#publish(repo, credentials, report, 'publishing an earlier write');
+      if (report.state === 'parked') return;
     } else if (!wroteBack) {
       const pull = await repo.pull(credentials);
       if (pull.code !== 0) {
@@ -1075,6 +1116,224 @@ export class BeadsIntegration implements FactoryIntegration {
     //    the bead was superseded, marked a duplicate or dismissed; a card in
     //    Done whose bead was reopened moves back to Intake.
     await this.#followOutsideState(scope, board);
+
+    // 8. Status sync (samskara-l2t.4): a card's move sets its bead open or
+    //    in_progress; a bead blocked, deferred or otherwise held in bd moves
+    //    its card out of a working phase once no run on it is in flight.
+    await this.#syncStatus(scope, board, credentials);
+  }
+
+  /**
+   * Step 8 of a sweep (samskara-l2t.4). Reads bead state from the refresh
+   * read only; without it nothing is written or moved this sweep. Each side
+   * owns its own changes, so neither undoes the other:
+   *
+   * **Card to bead.** When the card's phase is not the one recorded with the
+   * last sync (`beadsStatusStage`), the card moved, and its phase is written
+   * to the bead: a working phase sets `in_progress`, Intake or Canceled sets
+   * `open` (a canceled card leaves its bead open, owner decision). Done is
+   * write-back's (step 1). The write is bd's compare-and-swap on the status
+   * just read (BdRepo.setStatus), so a bead changed in bd meanwhile is left
+   * alone and read again next sweep. Only `open` and `in_progress` are ever
+   * replaced: a bead held in bd is never made workable by a card move. A bead
+   * someone else holds `in_progress` (its assignee is not this integration's
+   * actor) is never set back to `open`: the claim is theirs. Only the phase
+   * change is written, never the phase itself on every sweep, so a person who
+   * sets the bead `open` in bd while its card is in Building keeps that.
+   *
+   * **Bead to card.** A change in bd moves a card only when it holds the
+   * bead (`beadsHeld`: blocked, deferred, pinned, hooked, or a custom
+   * status). A held card in a working phase moves to Intake, but not while
+   * a run on it is in flight (owner decision: it moves after the run
+   * finishes): Factory keeps the run's `invokeSkill` decision leased until
+   * the run settles (@mastra/factory 0.20.0 rules/dispatcher.js:420-422,
+   * 687), so a card with a pending, leased or retrying `invokeSkill`
+   * decision waits for a later sweep. The board policy refuses to start work
+   * on a held card (board-rules.ts), so the card stays in Intake until the
+   * bead is open or in_progress again; moves between working phases are
+   * left alone, so a run that is still going is never refused. The move to
+   * Intake is not written back: the bead is held.
+   *
+   * Overview cards are left out (their bead closes with its children), as
+   * are a card whose bead is closed (write-back and step 7 own it) and one
+   * whose reopen move waits for the dispatcher.
+   */
+  async #syncStatus(scope: IntakeScope, board: BoardPhases, credentials: RepoCredentials | undefined): Promise<void> {
+    const { orgId, projectId, slug, repo, snapshot, initialPhase, report } = scope;
+    if (!snapshot) return;
+    const runtime = this.#ctx!.runtime!;
+    const actor = this.#runner.actor;
+    // Re-read: earlier steps moved revisions.
+    const cards = await runtime.workItems.list({ orgId, factoryProjectId: projectId });
+    let inFlight: Set<string> | undefined;
+    let wrote = false;
+    for (let card of cards) {
+      if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID || card.metadata?.[BEADS_META.repo] !== slug) continue;
+      const beadId = card.metadata?.[BEADS_META.id];
+      if (typeof beadId !== 'string' || card.board !== this.board || card.stages.length !== 1) continue;
+      const meta = card.metadata ?? {};
+      if (isReopenPending(card)) continue;
+      const bead = snapshot.get(beadId);
+      if (!bead?.status) continue;
+      // A closed bead's card is left until it reaches Done or Canceled, and an
+      // overview card until it leaves its working phase: step 7 or step 5 may
+      // have just committed its move, and a marker write here would bump the
+      // revision that move names and have it committed again next sweep.
+      if (bead.status === 'closed' && board.phaseKind(card.stages[0]!) !== 'terminal') continue;
+      if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND && board.phaseKind(card.stages[0]!) === 'working') continue;
+      if (bead.status === 'closed' || meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND) {
+        try {
+          if (await this.#leaveStatusSync(scope, board, card, bead, actor)) wrote = true;
+        } catch (error) {
+          this.#log.warn(`[factory-beads] ${slug}: status markers of ${beadId} not cleared: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        continue;
+      }
+      const stage = card.stages[0]!;
+      const kind = board.phaseKind(stage);
+      let status = bead.status;
+      try {
+        const patch: Record<string, unknown> = {};
+        if (meta[BEADS_META.statusStage] !== stage) {
+          const wanted = statusForPhase(kind, stage, this.donePhase);
+          const theirs = Boolean(bead.assignee) && bead.assignee !== actor;
+          const workable = (WORKABLE_STATUSES as readonly string[]).includes(status);
+          if (wanted && wanted !== status && workable && !(wanted === 'open' && theirs)) {
+            const res = await repo.setStatus(beadId, wanted, status);
+            // 13: the status changed since the refresh read; read again next sweep.
+            if (res.code === 13) continue;
+            if (res.code !== 0) {
+              this.#log.warn(`[factory-beads] ${slug}: status of ${beadId} not set to ${wanted}: exit ${res.code}: ${resultTail(res, 300)}`);
+              continue;
+            }
+            this.#log.info(`[factory-beads] ${slug}: card of ${beadId} moved to ${stage}; its bead goes from ${status} to ${wanted}`);
+            status = wanted;
+            wrote = true;
+          }
+          patch[BEADS_META.statusStage] = stage;
+        }
+        if (meta[BEADS_META.status] !== status) patch[BEADS_META.status] = status;
+        const held = (WORKABLE_STATUSES as readonly string[]).includes(status) ? null : status;
+        if ((meta[BEADS_META.held] ?? null) !== held) patch[BEADS_META.held] = held;
+        if (Object.keys(patch).length > 0) card = await this.#mark(orgId, card, patch);
+        if (!held || kind !== 'working') continue;
+        inFlight ??= await this.#inFlightRuns(orgId, projectId);
+        if (inFlight.has(card.id) || this.#sessionLive(card)) continue;
+        const result = await this.#commitTransition(orgId, card, initialPhase, 'held');
+        if (result === 'committed') {
+          this.#log.info(`[factory-beads] ${slug}: ${beadId} is ${held} in bd and no run on its card is in flight; the card moves from ${stage} to ${initialPhase}`);
+        }
+      } catch (error) {
+        this.#log.warn(
+          `[factory-beads] ${slug}: status of ${beadId} not synced: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (wrote) await this.#publish(repo, credentials, report, 'publishing a status change');
+  }
+
+  /**
+   * A card status sync stops following: its bead is closed (write-back and
+   * step 7 own it from here), or it became an overview card (its bead closes
+   * with its children). The hold and the recorded pair are cleared, so a
+   * person who later moves the card out of Done is not refused for a hold
+   * the closed bead no longer has. An overview card whose epic this sync set
+   * `in_progress` while it was a planning card in Planning or Building (the
+   * pair recorded on the card says so) has its epic set back to `open`
+   * first, unless someone else holds it: an
+   * overview card rests in Intake (samskara-l2t.2.2). Returns whether it
+   * wrote to the bead; the caller publishes.
+   */
+  async #leaveStatusSync(scope: IntakeScope, board: BoardPhases, card: WorkItemRow, bead: BeadRow, actor: string): Promise<boolean> {
+    const meta = card.metadata ?? {};
+    if (meta[BEADS_META.statusStage] == null && meta[BEADS_META.held] == null) return false;
+    const beadId = String(meta[BEADS_META.id]);
+    const theirs = Boolean(bead.assignee) && bead.assignee !== actor;
+    let wrote = false;
+    // Only an in_progress this sync wrote: the one recorded with a working phase.
+    const ours = meta[BEADS_META.status] === 'in_progress' && board.phaseKind(String(meta[BEADS_META.statusStage])) === 'working';
+    if (meta[BEADS_META.cardKind] === OVERVIEW_CARD_KIND && bead.status === 'in_progress' && ours && !theirs) {
+      const res = await scope.repo.setStatus(beadId, 'open', 'in_progress');
+      // 13: changed in bd since the read; theirs to keep, and nothing is left to undo.
+      if (res.code !== 0 && res.code !== 13) throw new Error(`bd update exit ${res.code}: ${resultTail(res, 300)}`);
+      wrote = res.code === 0;
+      if (wrote) this.#log.info(`[factory-beads] ${scope.slug}: ${beadId} became an overview card; its bead goes from in_progress to open`);
+    }
+    await this.#mark(scope.orgId, card, { [BEADS_META.statusStage]: null, [BEADS_META.status]: null, [BEADS_META.held]: null });
+    return wrote;
+  }
+
+  /**
+   * Whether a session bound to the card runs a turn or is parked on a tool
+   * (an `ask_user` question, a `submit_plan` awaiting approval), as Factory's
+   * own board reads it. Such a run has not finished: a parked run's decision
+   * has already completed (its turn ended with `agent_end` reason
+   * `suspended`, which `watchRun.settle` does not fail, rules/dispatcher.js:
+   * 105-123), and a run a stage message started (Review, which has no
+   * `onEnter` rule, rules/transition-service.js:299-309) never had an
+   * `invokeSkill` decision. Only sessions this process has materialized are
+   * known: after a restart, a session is known again once it is used.
+   */
+  #sessionLive(card: WorkItemRow): boolean {
+    const live = this.#liveSessions;
+    if (!live) return false;
+    return Object.values(card.sessions ?? {}).some(
+      entry => typeof entry?.sessionId === 'string' && (live.isRunning(entry.sessionId) || live.parked(entry.sessionId) !== undefined),
+    );
+  }
+
+  /**
+   * The cards of the project with a run in flight: a pending, leased or
+   * retrying `invokeSkill` decision. The dispatcher holds such a decision
+   * leased, renewing it, until the run it started settles
+   * (@mastra/factory 0.20.0 rules/dispatcher.js:420-422, 687, 1023-1028).
+   */
+  async #inFlightRuns(orgId: string, projectId: string): Promise<Set<string>> {
+    const runtime = this.#ctx!.runtime!;
+    const out = new Set<string>();
+    let before: { createdAt: Date; id: string } | undefined;
+    for (;;) {
+      const page = await runtime.workItems.listDeferredDecisionPage({
+        orgId,
+        factoryProjectId: projectId,
+        statuses: ['pending', 'leased', 'retry'],
+        limit: 200,
+        ...(before ? { before } : {}),
+      });
+      for (const record of page.decisions) {
+        if (record.workItemId && record.decision?.type === 'invokeSkill') out.add(record.workItemId);
+      }
+      const last = page.decisions.at(-1);
+      if (!page.hasMore || !last) return out;
+      before = { createdAt: last.createdAt, id: last.id };
+    }
+  }
+
+  /**
+   * Publish writes committed in the copy (`bd sync`). Returns whether it
+   * published. A conflict (2) or stuck working set (4) parks the repository
+   * until an operator resets it, as for an agent-tool write; any other
+   * failure leaves the write for the next tick to publish.
+   */
+  async #publish(repo: BdRepo, credentials: RepoCredentials | undefined, report: RepoSyncReport, what: string): Promise<boolean> {
+    const sync = await this.#syncWithRetry(repo, credentials);
+    if (sync.code === 0) {
+      this.#unpublished.delete(repo.slug);
+      return true;
+    }
+    if (sync.code === 2 || sync.code === 4) {
+      // Never retried: park until an operator resets.
+      const diagnostic = `bd sync exit ${sync.code} ${what}: ${resultTail(sync, 600)}`;
+      await repo.park(diagnostic);
+      this.#unpublished.delete(repo.slug);
+      report.state = 'parked';
+      report.diagnostic = `${diagnostic}; resolve it, then POST /web/beads/reset`;
+      return false;
+    }
+    this.#unpublished.add(repo.slug);
+    report.state = 'error';
+    report.diagnostic = `bd sync exit ${sync.code} (${what}): ${resultTail(sync, 300)}`;
+    return false;
   }
 
   /**

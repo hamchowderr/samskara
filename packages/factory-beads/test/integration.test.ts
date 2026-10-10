@@ -1199,9 +1199,12 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     ]);
     const integration = h.integration({ maxCloseAttempts: 1 });
     await doneContainerCard(h, { [BEADS_META.type]: 'epic', [BEADS_META.cardKind]: OVERVIEW_CARD_KIND });
-    // Refused for its open child and parked; once the child closes it is re-armed.
+    // Not tried for its open child (known from the refresh read) and parked;
+    // once the child closes it is re-armed.
     await sweep(integration);
     expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
+    expect(String(card(h, 'w-e').metadata?.[BEADS_META.diagnostic])).toContain('open child');
+    expect(commands(h).filter(c => c === 'close w-e')).toHaveLength(0);
     h.setState(s => {
       s.beads[1]!.status = 'closed';
       s.closeFail = ['w-e'];
@@ -1211,7 +1214,7 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     // Fails again for another reason and stays parked.
     await sweep(integration);
     await sweep(integration);
-    expect(commands(h).filter(c => c === 'close w-e')).toHaveLength(2);
+    expect(commands(h).filter(c => c === 'close w-e')).toHaveLength(1);
     expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
   });
 

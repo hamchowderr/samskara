@@ -89,6 +89,12 @@ App:
      holder, and the card's diagnostic says so. A claim comes back without
      its lease: a live holder restores it on its next `bd heartbeat`, but an
      abandoned claim then has no stale lease for `bd reclaim` to find.
+   - **Open children are checked first.** When the refresh read shows the
+     bead with an open child, the close is not tried at all, so no claim is
+     handed over and back for it; the card's diagnostic says `open child
+     issue(s) (not tried)` and the close is re-armed once the children close,
+     as for one bd refused (samskara-l2t.4). After the first close of a tick
+     there is no read to go by, and bd's own refusal decides.
 3. **Pull.** If there was nothing to write back (no close made or tried;
    cards closed outside only marked synced count as nothing), `bd dolt pull`.
    **Refresh read.** `bd --readonly list --all --brief --json -n 0`: every
@@ -120,6 +126,10 @@ App:
    superseded, marked a duplicate or dismissed; a card in Done whose bead
    was reopened is committed to Intake. See
    [Beads closed outside the Factory](#beads-closed-outside-the-factory).
+8. **Status sync.** A card's move sets its bead `in_progress` (a working
+   phase) or `open` (Intake, Canceled); a bead blocked, deferred or
+   otherwise held in bd moves its card from a working phase to Intake once
+   no run on it is in flight. See [Status sync](#status-sync).
 
 A project connection whose GitHub installation no longer exists (an orphaned
 link, samskara-1ra) is skipped with one warning per connection, and the other
@@ -1007,9 +1017,8 @@ is never cleared.
   superseded container's card goes to Done, not Canceled, the same way.
 - *A card write-back closed.* A card with `beadsSyncedAt` outside Done is one
   a person moved out of Done after write-back closed its bead. Moving it back
-  would undo that person's move, and the next tick would repeat it. Keeping
-  card and bead in step in that case is the two-way status sync
-  (samskara-l2t.4). The same holds for a card with `beadsLocalClose`: its
+  would undo that person's move, and the next tick would repeat it. The
+  [status sync](#status-sync) leaves it too: its bead is closed. The same holds for a card with `beadsLocalClose`: its
   bead was closed by write-back, not in bd, and write-back publishes it.
 - *A card a person moved out after it got there.* See
   [Once it got there](#beads-closed-outside-the-factory).
@@ -1050,6 +1059,111 @@ holds it by then, that is logged once. A reopened epic whose children are all
 closed is moved to Done again by step 4 and closed again: the owner decided
 settled epics close themselves (samskara-l2t.2.4). Reopen it with a new open
 child, or it closes again.
+
+### Status sync
+
+Card phase and bead status follow each other (samskara-l2t.4; step 8,
+`integration.ts`, `#syncStatus`). Bead state comes from the
+[refresh read](#refresh-read) only, so a tick whose refresh read failed
+writes and moves nothing. Each side owns its own changes, so neither undoes
+the other and the two never ping-pong:
+
+| Change | What follows |
+|--------|--------------|
+| A card enters Triage, Planning, Building or Review | its bead is set `in_progress` |
+| A card enters Intake or Canceled | its bead is set `open` (a canceled card leaves its bead open, owner decision) |
+| A card enters Done | write-back closes the bead (step 2) |
+| A bead is set `open` or `in_progress` in bd | nothing moves; the card's next move is written |
+| A bead is set `blocked`, `deferred`, `pinned`, `hooked` or a custom status in bd | the card is held: from a working phase it moves to Intake once no run on it is in flight, and no work starts on it |
+| A held bead is set `open` or `in_progress` again | the hold is lifted; the card waits in Intake for a person to start it |
+
+**Card to bead.** The sweep records the bead's status and the card's phase
+on the card (`beadsStatus`, `beadsStatusStage`). A card in another phase than
+the one recorded has moved, and the move is written once:
+`bd --sandbox --actor factory-beads update <id> --status=<s>
+--if-status=<status read>` (`repo.ts`, `BdRepo.setStatus`). It is a plain
+status update, never `--claim`: the assignee is left as it is. The
+`--if-status` guard is bd's compare-and-swap (`bd update --help`, v1.3.1:
+"a mismatch writes nothing and exits 13"), so a bead changed in bd after
+the read is left alone and read again next tick. Only `open` and
+`in_progress` are replaced, so a card move never makes a held bead
+workable. A bead someone else holds `in_progress` (an assignee other than
+`factory-beads`) is never set back to `open`: the claim is theirs. The
+writes of a tick are published with one `bd sync`; a conflict parks the
+repository as for an agent-tool write, and any other failure is published
+on the next tick.
+
+**Bead to card.** Only a held bead moves a card. A bead whose status is not
+`open`, `in_progress` or `closed` holds its card: the card is marked
+`beadsHeld: <status>`. A held card in a working phase is moved to Intake
+with a committed transition (ingress `beads:held:<card id>@<revision>`),
+but only once no run on it is in flight: the owner decided that a bead
+blocked or deferred mid-run moves its card after the run finishes. A run is
+in flight while either of these holds:
+
+- **Its decision is not settled.** Factory keeps a run's `invokeSkill`
+  decision leased, renewing the lease every 10 s, until the run settles
+  (`@mastra/factory` 0.20.0 `dist/rules/dispatcher.js:420-422`, `:687`,
+  `:1023-1028`), so a card with a `pending`, `leased` or `retry`
+  `invokeSkill` decision (`listDeferredDecisionPage`) waits. This covers a
+  run that is queued but not yet started.
+- **A session of the card runs a turn or is parked on a tool.** Read from
+  Factory's own `LiveSessions` registry (`dist/session/live-sessions.js`),
+  built on the agent controller Factory hands integration workers
+  (`IntegrationContext.controller`): the same registry the board's
+  work-item list reads for its running and parked sessions
+  (`dist/routes/work-items.js:249-250`). It catches the runs a decision
+  does not: one a stage message started (Review has no `onEnter` rule, so
+  a move there starts the run with a `sendMessage`,
+  `dist/rules/transition-service.js:299-309`), and one parked on
+  `ask_user` or on a `submit_plan` awaiting approval, whose decision has
+  already completed (its turn ends with `agent_end` reason `suspended`,
+  which `watchRun.settle` does not fail, `dispatcher.js:105-123`). Every
+  session on the card counts, a person's chat session ("Start session")
+  included.
+
+The registry knows only the sessions this process has materialized: after a
+restart, a session is known again once it is used, so a run parked across a
+restart does not hold its card. The move to Intake is not written back: the
+bead stays held.
+
+**The board policy.** While `beadsHeld` is set, no move from Intake, Done
+or Canceled into a working phase is allowed, whoever makes it, with the
+reason "This card's bead is <status> in bd; work starts on it once the bead
+is open or in_progress again" (`board-rules.ts`, `heldReason`). Moves
+between working phases pass, so a run already going is never refused one
+of its own moves.
+
+**Left out.** Overview cards (their bead closes with its children), a card
+whose bead is closed (write-back and step 7 own it), and a card whose
+reopen move waits for the dispatcher. When a card the sync has marked
+leaves it because its bead closed or it became an overview card, its `beadsStatus`,
+`beadsStatusStage` and `beadsHeld` are cleared, so a person who moves it
+out of Done later is not refused for a hold the closed bead no longer has.
+A planning card in Planning or Building had its epic set `in_progress`;
+when the epic gets children while that is still the status the sync wrote and the card becomes an overview card, the
+epic is set back to `open` (unless someone else holds it, or the status
+was set in bd since), since an
+overview card rests in Intake.
+
+**First tick after this shipped.** Cards made before have no
+`beadsStatusStage`, so the first tick treats each as moved: a card in a
+working phase sets its bead `in_progress`, and one in Intake or Canceled
+sets an unassigned `in_progress` bead back to `open`. After that only
+moves are written.
+
+**Not followed yet.** `bd ready` lists open beads with no active blocker,
+never an `in_progress` one (`bd ready --help`, v1.3.1), so intake's
+updates of an existing card (its kind, its parent link, the description
+back-fill) skip a card whose bead is `in_progress` until it is `open`
+again. Reading those from the refresh read instead is samskara-l2t.8.
+
+**A closed epic over a reopened child.** When a child is reopened under an
+epic that is already closed, the epic's overview card stays in Done with
+its open-children count at 0: its bead is closed, and the card follows the
+bead. bd itself does not reopen a parent when a child reopens. Reopen the
+epic in bd (`bd reopen <epic>`) and its card comes back to Intake as any
+reopened bead's does.
 
 ### The Done rule
 
@@ -1588,7 +1702,20 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   person's Done on a canceled card whose bead was reopened closing the bead,
   with the canceled marker cleared or still on the card; and the reopen's
   markers cleared in the tick that commits it, so a person's Done before the
-  next tick closes the bead and is not undone. The harness keeps each card's
+  next tick closes the bead and is not undone. Status sync (samskara-l2t.4,
+  `test/status-sync.test.ts`): each card move written once (working phase
+  `in_progress`; Intake and Canceled `open`), never as a claim; changes
+  made in bd kept with no write back and no move over three ticks; someone
+  else's claim never set back to `open`; a compare-and-swap mismatch
+  writing nothing and retried next tick; a blocked bead's card held while
+  its run's decision is leased, moved to Intake once it settles, the move
+  not written back, work refused until the bead is open; deferred, pinned,
+  hooked and custom statuses held; a session running a turn, then parked
+  on `ask_user`, holding the card with no decision in flight; the hold
+  cleared when the held bead closes; a planning card's epic set back to
+  `open` when it becomes an overview card; overview cards left out; and a
+  claimed bead with an open child never handed over. The harness's
+  `FakeController` feeds Factory's real `LiveSessions`. The harness keeps each card's
   stage history as Factory does (`applyStageTransition`). The fake bd
   runs `supersede`, `duplicate` and `reopen` in bd 1.3.1's shapes (the edge
   on the closed bead, no close reason; reopen clears the reason and keeps the
@@ -1610,13 +1737,17 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   `beads_create` and `beads_dep_add` tools, and the next sweep turns the card
   into an overview card with the ready child linked under it. It links a
   subtask's card under its parent task's card without making the task an
-  overview card, shows bd refusing the task's close while the subtask is
-  open, and closes it after the re-arm once the subtask is done. It
+  overview card, holds the task's close while the subtask is open, and
+  closes it after the re-arm once the subtask is done. It
   closes, supersedes and marks a duplicate in a person's own copy and pushes:
   the dispatcher stand-in moves the cards to Done and Canceled, write-back
   keeps the person's close reason, a reopened bead's card comes back to
   Intake while a canceled one stays, and its next Done closes the bead again
-  as `factory-beads` (samskara-l2t.3). It is
+  as `factory-beads` (samskara-l2t.3). It moves a card into Building and
+  back and reads `in_progress` and then `open` on the remote, with no
+  assignee; blocks the bead in a person's copy and sees the card held and
+  moved to Intake with the bead still blocked; and shows `--if-status`
+  writing nothing with exit 13 on a status mismatch (samskara-l2t.4). It is
   **local-only**: it is skipped when `bd` is not on PATH, and the CI workflow
   does not install bd. Set `FACTORY_BEADS_REAL_BD=0` to skip it on a machine
   that has bd.
