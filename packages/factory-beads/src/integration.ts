@@ -100,12 +100,11 @@ export const DECISION_TYPE = 'decision';
  * `BEADS_META.cardKind` of an open epic's card while the epic has no
  * children: a planning card (owner decision, samskara-l2t.2; built in
  * samskara-l2t.2.4). In Planning an agent proposes child beads into the
- * epic's notes, creates nothing, and submits the proposal with `submit_plan`.
- * A person approves with the card's Approve control, which moves the card to
+ * epic's notes and creates nothing. A person approves by moving the card to
  * Building, where a run files exactly the approved children and moves the
  * card back to Intake. The next sweep finds the children and makes it an
- * overview card. Only a person's approval ever moves it to Building; an
- * auto-approved plan does not (board-rules.ts).
+ * overview card. Only a person ever moves it to Building, whatever the
+ * project's auto-approve-plans setting (board-rules.ts).
  */
 export const PLAN_CARD_KIND = 'plan';
 
@@ -948,10 +947,14 @@ export class BeadsIntegration implements FactoryIntegration {
    * (`WorkItemsStorage.listRunBindings`, @mastra/factory 0.20.0
    * storage/domains/work-items/base.d.ts:730). A binding stays active after
    * its run ends, until the card reaches a terminal phase or the session
-   * takes another role (storage/domains/work-items/base.js:2121-2190), so a
-   * card whose run ended without moving it keeps its binding and is not moved
-   * here: a person moves it. `moved` holds the cards step 4 just committed to
-   * Done.
+   * takes another role (storage/domains/work-items/base.js:2121-2190), or
+   * until the dispatcher's stale-binding sweep revokes it: every 10 minutes
+   * it revokes each active binding created more than 24 hours earlier
+   * (rules/dispatcher.js:34-35,373-385, storage/domains/work-items/base.js:
+   * 2159-2181; samskara passes neither override). So a card whose run ended
+   * without moving it keeps its binding and is not moved here until that
+   * sweep runs, about 24 hours after the run started; a person can move it
+   * sooner. `moved` holds the cards step 4 just committed to Done.
    */
   async #resetStrandedOverviews(
     scope: IntakeScope,

@@ -29,25 +29,17 @@
  *
  * A plan card stands for a childless open epic (samskara-l2t.2.4). Planning
  * proposes its child beads; Building files them. It never enters Triage or
- * Review. A person approves the proposal (owner decision, samskara-l2t.2),
- * through Factory's native plan approval: the propose run ends with
- * `submit_plan`, the person presses Approve on the card, and Work's tool rule
- * turns the approved result into a system move from Planning to Building
- * (boards/work-tool-rules.js:8-16) that the processor stamps `planApproved`
- * (rules/processor.js:381-402). Dragging the card is not a route while the
- * propose run holds it: the Factory UI then enables only moves into resting
- * and terminal phases (mastra dist/factory/assets/index-BaghZlUk.js,
- * functions `fM`, `_L` and `ldt`).
- *
- * So a non-human move into Building is allowed only from Planning, only with
- * `planApproved`, and only while plans are not auto-approved. With
- * auto-approve on, the dispatcher answers a parked `submit_plan` itself
+ * Review. Approval is a person moving it into Building (owner decision,
+ * samskara-l2t.2), so every other actor's move into Building is refused with
+ * `approval_required`. That covers both routes Work's plan gate opens for a
+ * non-human actor: the project's auto-approve-plans setting
+ * (`plansAutoApproved`), and an approved `submit_plan` result, which Work's
+ * tool rule turns into a system move to Building stamped `planApproved`
+ * (boards/work-tool-rules.js:8-16, rules/processor.js:381-402). With
+ * auto-approve on, the dispatcher approves a parked `submit_plan` itself
  * (rules/dispatcher.js:107-112), so a `planApproved` move cannot be told
- * apart from a person's approval and is refused with `approval_required`.
- * `plansAutoApproved` alone, which Work's gate accepts
- * (work-transition-policy.js:15-19), is refused too. A person's move into
- * Building stays allowed. Only a person moves a plan card to Done, which
- * would close the epic without children.
+ * apart from a person's approval, and is refused too. Only a person moves a
+ * plan card to Done, which would close the epic without children.
  */
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
@@ -84,7 +76,7 @@ export const RESEARCH_APPROVAL_REASON =
 export const PLAN_WORKING_REASON =
   "An epic's planning card is planned in Planning and its children are filed in Building; it is never triaged or reviewed";
 export const PLAN_APPROVAL_REASON =
-  "A person approves an epic's proposed children with the card's Approve control or by moving it to Building; agents, automation and auto-approved plans never do";
+  "A person approves an epic's proposed children by moving its card to Building; agents and automation never do, even when plans auto-approve";
 export const PLAN_DONE_REASON =
   "Only a person moves an epic's planning card to Done, which closes the epic with no children";
 
@@ -108,9 +100,7 @@ export function isPlanCard(metadata: Readonly<Record<string, unknown>> | null | 
  * never reach Done with open children, whoever moves them. Research cards
  * enter no working phase but Planning, whoever moves them, and only a person
  * moves one to Done. Plan cards enter no working phase but Planning and
- * Building; another actor moves one into Building only with a person's plan
- * approval (`planApproved` from Planning, plans not auto-approved), and only
- * a person moves one to Done. Every other
+ * Building, and only a person moves one into Building or Done. Every other
  * card, and every other move of these cards, gets `workPolicy`'s answer
  * unchanged.
  */
@@ -147,14 +137,9 @@ export function createBeadsTransitionPolicy(
         return { type: 'reject', code: 'forbidden', reason: PLAN_WORKING_REASON };
       }
       // From any phase, not only Planning: Work's gate covers Planning ->
-      // Building alone. The one non-human route is a person's Approve on the
-      // propose run's submit_plan, which arrives stamped planApproved; with
-      // plans auto-approved that stamp proves nothing, so it is refused too.
+      // Building alone. plansAutoApproved and planApproved are deliberately unread.
       if (context.toStage === buildPhase && context.actor.type !== 'human') {
-        const personApproved = context.fromStage === planningPhase && context.planApproved && !context.plansAutoApproved;
-        if (!personApproved) {
-          return { type: 'reject', code: 'approval_required', reason: PLAN_APPROVAL_REASON };
-        }
+        return { type: 'reject', code: 'approval_required', reason: PLAN_APPROVAL_REASON };
       }
       if (context.toStage === donePhase && context.actor.type !== 'human') {
         return { type: 'reject', code: 'approval_required', reason: PLAN_DONE_REASON };

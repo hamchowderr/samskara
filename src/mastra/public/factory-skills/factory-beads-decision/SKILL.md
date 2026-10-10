@@ -11,7 +11,7 @@ You are working in a bound Factory session. Do the whole pass in one run. The `f
 
 ## What you do not do
 
-- Do not write, change or commit code. Do not open a branch or a pull request.
+- Do not write, change or commit code. Do not open a pull request.
 - Do not close the bead and do not set its status. Moving its card to Done is the approval, and only a person makes that move.
 - Do not call `factory_transition_work_item` and do not call `submit_plan`. The board refuses to move a decision card to Building, Review or Done for an agent, and auto-approved plans do not change that.
 - Do not file a docs file or a plan file. The write-up lives in the bead only.

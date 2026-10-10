@@ -6,13 +6,16 @@
  *
  *   - Planning (`role: 'plan'`), propose mode: the agent reads the epic and
  *     writes the child beads it proposes into the epic's notes with
- *     `beads_update`. It creates nothing and stops for a person.
+ *     `beads_update`. It creates nothing, never calls `submit_plan` (the
+ *     plan seat has no sandbox, so Factory's Plan panel cannot load a plan
+ *     file and its Approve control stays disabled), and asks a person to
+ *     approve by moving the card to Building.
  *   - Building (`role: 'work'`), file mode: entered only by a person's move
  *     (the board policy refuses every other actor, board-rules.ts), which is
  *     the approval. The agent files exactly the approved children with
  *     `beads_create` (`parent` = the epic) and `beads_dep_add`, writes no
- *     code, opens no branch or pull request, and moves the card to Intake.
- *     The next sweep sees the children and makes the card an overview card.
+ *     code, opens no pull request, and moves the card to Intake. The next
+ *     sweep sees the children and makes the card an overview card.
  *
  * Beads cards classify as `manual` (integration.ts, header), so these are the
  * phases' `manual` handlers, each wrapping the handler it replaces: every card

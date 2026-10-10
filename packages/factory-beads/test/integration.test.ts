@@ -937,6 +937,33 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     expect(h.workItems.evaluations).toHaveLength(1);
   });
 
+  it('cards an open epic whose children are all closed as an overview card and closes it on the first sweep (owner decision)', async () => {
+    // Settled before Factory ever saw it: the epic is open, every child closed.
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e', status: 'closed' },
+      { id: 'w-e.2', title: 'Two', issue_type: 'task', parent: 'w-e', status: 'closed' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    // Carded once, as an overview card (not a planning card), with no open children.
+    expect(ids(h)).toEqual(['w-e']);
+    const epic = card(h, 'w-e');
+    expect(epic.metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 0 });
+    // The same first sweep commits its move to Done.
+    expect(h.workItems.evaluations).toHaveLength(1);
+    expect(h.workItems.evaluations[0]!.result).toMatchObject({
+      status: 'accepted',
+      decisions: [{ type: 'transition', board: 'work', stage: 'done' }],
+    });
+
+    expect(await h.workItems.applyDecisions(policy)).toEqual([{ workItemId: epic.id, stage: 'done', outcome: 'moved' }]);
+    const closed = await sweep(integration);
+    expect(closed.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+    expect(h.state().beads.find(b => b.id === 'w-e')).toMatchObject({ status: 'closed' });
+    expect(card(h, 'w-e').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
+  });
+
   it('keys each evaluation on the card revision, so a stale one is never replayed in place of a fresh one', async () => {
     h = epicAndTwo();
     const integration = h.integration();

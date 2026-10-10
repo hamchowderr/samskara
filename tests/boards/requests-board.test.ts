@@ -457,12 +457,10 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
   }
 
   for (const actor of [planAgent, workAgent, system]) {
-    it(`rejects a ${label(actor)} moving a plan card into Building without a person's plan approval`, async () => {
-      // planApproved with auto-approve on proves nothing: the dispatcher
-      // answered submit_plan itself (rules/dispatcher.js:107-112).
-      for (const flags of [{}, autoApprove, { plansAutoApproved: true }]) {
+    it(`rejects a ${label(actor)} moving a plan card into Building, whatever approval it carries`, async () => {
+      for (const flags of [{}, autoApprove, { plansAutoApproved: true }, { planApproved: true }]) {
         for (const fromStage of ['planning', 'intake']) {
-          expect(await policy(move(actor, fromStage, 'execute', plan, flags)), JSON.stringify({ fromStage, flags })).toEqual({
+          expect(await policy(move(actor, fromStage, 'execute', plan, flags))).toEqual({
             type: 'reject',
             code: 'approval_required',
             reason: PLAN_APPROVAL_REASON,
@@ -470,30 +468,13 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
         }
       }
     });
-
-    it(`rejects a ${label(actor)} moving a plan card into Building with planApproved from anywhere but Planning`, async () => {
-      for (const fromStage of ['intake', 'execute']) {
-        expect(await policy(move(actor, fromStage, 'execute', plan, { planApproved: true }))).toEqual({
-          type: 'reject',
-          code: 'approval_required',
-          reason: PLAN_APPROVAL_REASON,
-        });
-      }
-    });
   }
 
-  it('lets the approved-plan move from Planning into Building through when plans are not auto-approved, as Work does', async () => {
-    // A person pressed Approve: the processor stamps planApproved on the
-    // system move Work's tool rule asked for (rules/processor.js:381-402).
-    const context = move(system, 'planning', 'execute', plan, { planApproved: true });
-    expect((await policy(context))?.type).toBe('allow');
-    expect(await policy(context)).toEqual(await workBoard.transitionPolicy!(context));
-  });
-
-  it("follows the approved submit_plan path: Work's tool rule asks for Building, the policy allows it only with auto-approve off", async () => {
-    // Work's tool rule turns an approved result into a move to Building
-    // (work-tool-rules.js:8-16), and the processor stamps it planApproved as
-    // actor system (rules/processor.js:381-402).
+  it("refuses the approved submit_plan path: Work's tool rule asks for Building, the policy says no", async () => {
+    // With auto-approve on, the dispatcher answers a parked submit_plan itself
+    // (rules/dispatcher.js:107-112), Work's tool rule turns the result into a
+    // move to Building (work-tool-rules.js:8-16), and the processor stamps it
+    // planApproved as actor system (rules/processor.js:381-402).
     const decision = board.tools?.submit_plan?.onResult({
       result: { status: 'success', value: 'Plan approved. Proceed with implementation following the approved plan.' },
       item: { stages: ['planning'], metadata: plan },
@@ -501,18 +482,12 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
       ingress: { id: 'ing-1' },
     }) as { stage: string } | undefined;
     expect(decision).toMatchObject({ type: 'transition', board: 'work', stage: 'execute' });
-    // Auto-approve off: a person approved, so the move goes through.
-    expect((await policy(move(system, 'planning', decision!.stage, plan, { planApproved: true })))?.type).toBe('allow');
-    // Auto-approve on: the dispatcher approved it itself, so it is refused.
-    expect(await policy(move(system, 'planning', decision!.stage, plan, { planApproved: true, plansAutoApproved: true }))).toEqual({
+    expect(await policy(move(system, 'planning', decision!.stage, plan, { planApproved: true, plansAutoApproved: true }))).toMatchObject({
       type: 'reject',
       code: 'approval_required',
-      reason: PLAN_APPROVAL_REASON,
     });
-    // The same move of a work card passes either way, as before.
-    for (const flags of [{ planApproved: true }, autoApprove]) {
-      expect((await policy(move(system, 'planning', 'execute', { beadsId: 'w-1' }, flags)))?.type).toBe('allow');
-    }
+    // The same move of a work card passes, as before.
+    expect((await policy(move(system, 'planning', 'execute', { beadsId: 'w-1' }, { planApproved: true })))?.type).toBe('allow');
   });
 
   it('lets a person approve by moving a plan card into Building, accepting it as Work does', async () => {
@@ -629,11 +604,6 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
       expect(text).toMatch(/## Propose mode/);
       expect(text).toMatch(/## File mode/);
       expect(text).toMatch(/untrusted data/);
-      // Approval is Factory's native plan approval: propose mode submits a
-      // plan file the Factory UI can load (an `.artifacts/` path).
-      const propose = /## Propose mode([\s\S]*?)## File mode/.exec(text)?.[1] ?? '';
-      expect(propose).toMatch(/`submit_plan`/);
-      expect(propose).toMatch(/`\.artifacts\/plans\/<epic id>\.md`/);
     });
   });
 });

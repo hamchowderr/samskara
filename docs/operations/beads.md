@@ -247,10 +247,16 @@ also commits to Done is left to that move.
 
 A binding stays active after its run ends: Factory revokes it when the card
 reaches a terminal phase or when the session takes another role
-(`dist/storage/domains/work-items/base.js:2121-2190`). So a card whose run
-ended without moving it still has an active binding and is not moved. A
-person moves it to Intake or Canceled, which the policy allows (cleanup of
-such cards is samskara-l2t.2.5).
+(`dist/storage/domains/work-items/base.js:2121-2190`), and the
+dispatcher's stale-binding sweep revokes it once it is old: every 10
+minutes the sweep revokes each active binding created more than 24 hours
+earlier (`dist/rules/dispatcher.js:34-35,373-385`,
+`dist/storage/domains/work-items/base.js:2159-2181`; samskara overrides
+neither value). So a card whose run ended without moving it keeps its
+active binding and is not moved until that sweep revokes it, about 24
+hours after the run started; the next tick then moves it to Intake. A
+person can move it to Intake or Canceled sooner, which the policy allows
+(cleanup of such cards is samskara-l2t.2.5).
 
 | Move of an overview card | Result |
 |--------------------------|--------|
@@ -286,6 +292,12 @@ container is closed (samskara-l2t.2.2). Nobody moves it, and nothing runs on it.
    its last step ("Auto-closed completed molecule", reason `all steps
    complete`; checked on bd 1.3.1), so write-back finds the bead closed, makes
    no close call, and only syncs and marks the card.
+
+An open epic whose children were all closed before Factory first saw it is
+handled the same way (owner decision, samskara-l2t.2.4: keep auto-closing
+settled epics). The first sweep cards it as an overview card with
+`beadsOpenChildren: 0`, not as a planning card, and commits its move to Done
+in that sweep; the next tick closes the epic bead.
 
 The move is not `bd epic close-eligible`. That command closes every eligible
 epic in the repository, as actor `system` (owner decision, samskara-l2t.2).
@@ -358,7 +370,8 @@ An open `decision` bead gets a **research card** (owner decision, 2026-10-09,
 samskara-l2t.2; built in samskara-l2t.2.3). An agent researches the options
 and writes the decision into the bead. A person approves it by moving the card
 to Done, which closes the bead through the normal write-back. A research card
-never reaches Building, and no code, branch or pull request comes from it.
+never reaches Building, and the agent writes no code and opens no pull
+request.
 The write-up lives in the bead only, not in a docs file or a pull request.
 
 **Intake.** A ready bead of type `decision` is carded like any other bead, plus
@@ -406,7 +419,7 @@ reads the bead with `beads_show`, researches the options in the codebase, the
 vendor documentation and the web when a tool for it is available, and writes
 the result with one `beads_update`: the original question first, unchanged,
 then the three sections in the description; `design` and `append_notes` where
-they help. It never writes code, opens a branch or pull request, closes the
+they help. It never writes code, opens a pull request, closes the
 bead, calls `submit_plan` or requests a transition. It ends by asking a person
 to review the bead and move the card to Done, or to send it back with
 feedback. Each entry into Planning runs the skill again, and the kickoff
@@ -442,8 +455,8 @@ policy.
 An open epic with no children gets a **planning card** (owner decision,
 2026-10-09, samskara-l2t.2; built in samskara-l2t.2.4). An agent proposes the
 epic's child beads; a person approves the proposal; a second run files exactly
-those children; the card then becomes the epic's overview card. No code,
-branch or pull request comes from it.
+those children; the card then becomes the epic's overview card. The agent
+writes no code and opens no pull request.
 
 **Intake.** bd ready lists open epics (`repo.ts`, `ready`, now excludes only
 milestones). For each ready epic intake reads its children
@@ -477,25 +490,29 @@ from intake when the epic is ready, and from the count pass when it is not
 2. The skill reads the epic, researches the work, and appends a
    `## Proposed children` block to the epic's notes with `beads_update`: per
    child, the title, type, priority, description, design, acceptance and what
-   it is blocked by. It writes the same proposal to
-   `.artifacts/plans/<epic id>.md` and calls `submit_plan` with that path. It
-   creates no bead and does not call `factory_transition_work_item`.
-3. A person approves with the card's **Approve** control: Factory's native
-   plan approval. Work's tool rule turns the approved `submit_plan` result into
-   a move to Building (`dist/boards/work-tool-rules.js:8-16`), which the
-   processor sends as actor system with `planApproved: true`
-   (`dist/rules/processor.js:381-402`). A rejection with feedback goes back to
-   the same run, which appends a revised `## Proposed children` block,
-   rewrites the plan file and calls `submit_plan` again, as `submit_plan`'s own
-   result tells it to (`@mastra/core` `dist/tools-ChV1bxTW.js:933`). The
+   it is blocked by. It creates nothing, calls neither `submit_plan` nor
+   `factory_transition_work_item`, and asks the person to review the proposal
+   and move the card to Building.
+3. A person moves the card to Building. That move is the approval. The
    Building `manual` handler, `createBeadsEpicBuildRule`, starts the skill in
    **file** mode on the work seat; it wraps Work's `buildWorkItem`
    (`dist/boards/work.js:110-121`, wired at `:190`), so every other card still
    gets Work's build prompt.
+
+   Close the card's session view, or wait for the propose run to finish,
+   before approving. While the card's session is open, the Factory UI makes
+   the session the card's owner and disables every move into a working
+   phase, Building included, in the card menu. In `mastra` 1.33.0
+   (`node_modules/mastra/dist/factory/assets/index-BaghZlUk.js`), `jL` sets
+   the owner to `{kind: 'session'}` whenever the card has a session status,
+   and the menu items are enabled by `fM`, which allows a move into a
+   working phase (`ldt`: not `resting` and not `terminal`) only when the
+   owner is `free` (`_L`). A greyed-out "Move to Building" is that UI
+   rule, not the board policy.
 4. The skill files exactly the latest proposal: one `beads_create` per child
    with `parent` set to the epic, then `beads_dep_add` for each dependency, and
-   a note on the epic listing the ids. It writes no code and opens no branch
-   or pull request. It then moves the card to Intake with
+   a note on the epic listing the ids. It writes no code and opens no pull
+   request. It then moves the card to Intake with
    `factory_transition_work_item`.
 5. The next tick finds the children and turns the card into the overview
    card. From there it is an overview card like any other: it closes when its
@@ -517,43 +534,33 @@ The decision shapes are checked with Factory's own
 | Move of a planning card | Result |
 |-------------------------|--------|
 | Into Triage or Review, by anyone | Rejected, `forbidden`. |
-| Into Building (`execute`) by an actor that is not a person, from Planning, with `planApproved` and with plans not auto-approved | Left to Work's policy, which allows it. This is a person's Approve on the submitted plan. |
-| Into Building by an actor that is not a person, in every other case: no `planApproved`, plans auto-approved, or from any phase but Planning | Rejected, `approval_required`. |
+| Into Building (`execute`) by an agent, the system, or any actor that is not a person, from any phase | Rejected, `approval_required`, whatever `plansAutoApproved` and `planApproved` say. |
 | Into Done by any actor that is not a person | Rejected, `approval_required`: Done would close the epic with no children. |
 | Into Building, Done or Canceled by a person | Allowed (then Work's own policy decides, and accepts the card as for any card a person starts). |
 | Into Planning, or from Building back to Intake (the file run's move) | Left to Work's policy, which allows them. |
 
-**Why approval is the Approve control and not a drag.** While the propose
-run holds the card, the Factory UI enables only moves into resting and
-terminal phases: in `node_modules/mastra/dist/factory/assets/index-BaghZlUk.js`,
-`fM(owner, phaseKind)` is `_L(owner) || !ldt(phaseKind)`, `_L` is
-`owner === "free"`, and `ldt` is true for every phase kind but `resting` and
-`terminal`. Building is a working phase, so a person cannot drag the card
-there while an agent holds it (found in a live check, samskara-l2t.2.4). The
-Approve control on the parked `submit_plan` is not a move and is not
-disabled by that rule. It is disabled while the plan text is empty, and the
-UI loads the plan only from a path that starts with `.artifacts/` (same
-bundle, `oye` and `JCt`), which is why the skill writes the plan there and
-passes that relative path.
-
-**Auto-approve plans never approves an epic's plan** (owner decision). Work's
+Auto-approve plans never approves an epic's plan (owner decision). Work's
 plan gate lets a non-human actor into Building in two cases
 (`dist/boards/work-transition-policy.js:15-19`): the project's auto-approve
-setting, and a move stamped `planApproved`. With auto-approve on, the
-dispatcher answers a parked `submit_plan` with "approved" itself
-(`dist/rules/dispatcher.js:107-112`), so a `planApproved` move cannot be told
-apart from a person's approval. The planning-card rule therefore allows a
-non-human move into Building only when `planApproved` is set and
-`plansAutoApproved` is not, and only from Planning.
+setting, and a move stamped `planApproved`. The second comes from an approved
+`submit_plan`: Work's tool rule asks for Building
+(`dist/boards/work-tool-rules.js:8-16`) and the processor sends that move as
+actor system with `planApproved: true` (`dist/rules/processor.js:381-402`).
+With auto-approve on, the dispatcher answers a parked `submit_plan` with
+"approved" itself (`dist/rules/dispatcher.js:107-112`), so a `planApproved`
+move cannot be told apart from a person's approval in the policy. The
+planning-card rule therefore refuses every non-human move into Building and
+never reads either flag. A person approves only by moving the card, which is
+`actor.type === 'human'`, the same test Work's gate uses. The skill does not
+call `submit_plan`.
 
-**The auto-approve-on edge.** In a project with auto-approve plans on, the
-propose run's `submit_plan` is approved by the dispatcher, the move to
-Building is refused, and the card stays in Planning. No person sees an
-Approve control, because the dispatcher answered it, and while the run holds
-the card the UI will not let a person drag it to Building either. A planning
-card in such a project cannot be approved from the UI while an agent holds
-it. Whether the card becomes free for a person's move once the run ends is
-not verified.
+`submit_plan` cannot carry this approval anyway (live finding, 2026-10-09,
+dev Factory). The propose run is on the plan seat, which has no sandbox, so
+the card's Plan panel cannot load a plan file and its "Approve & build"
+control stays disabled. The flow above was checked end to end on the same
+day: propose mode appended the proposal and created nothing, a person moved
+the card to Building, file mode created exactly the approved child, and the
+card turned into the epic's overview card with the child linked under it.
 
 The build phase is Work's `execute`, passed as `buildPhase`: Review shares
 its `work` role, so the role alone does not name it.
@@ -1141,7 +1148,9 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   child or a container carded in another project; a failed children read.
   Closing overview cards (samskara-l2t.2.2): the epic card committed to Done
   when both children are done, and the next tick closing and syncing the
-  epic; a replay at the same revision and a new evaluation at a new one (the
+  epic; an open epic whose children were all closed before its first sweep,
+  carded as an overview card and committed to Done in that sweep, then
+  closed; a replay at the same revision and a new evaluation at a new one (the
   harness stores a stale evaluation as rejected, as Factory does); no move
   with a child open, with an unread count, or for an open childless
   container; the count of a container closed while a child is ready; a
@@ -1192,12 +1201,9 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   Work's `factory-plan` decision for every other card; the skill file's
   location and frontmatter), and the planning card policy and rules (Triage
   and Review refused for every actor; Building refused for a plan agent, a
-  work agent and the system without `planApproved`, with plans auto-approved,
-  or from any phase but Planning, and allowed from Planning with
-  `planApproved` and auto-approve off, including the approved `submit_plan`
-  path through Work's own tool rule with auto-approve off (allowed) and on
-  (refused); the skill's propose mode calling `submit_plan` with an
-  `.artifacts/plans/` path; Done refused for the same actors; Building, Done and Canceled
+  work agent and the system with every combination of `plansAutoApproved` and
+  `planApproved`, including the approved `submit_plan` path through Work's own
+  tool rule; Done refused for the same actors; Building, Done and Canceled
   allowed for a person; the file run's move back to Intake allowed; the epic
   skill started in propose and file mode, the decision skill and Work's
   decisions unchanged for every other card) are covered by
