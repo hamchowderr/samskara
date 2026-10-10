@@ -71,7 +71,31 @@ describe('card title follows the bead (samskara-l2t.8)', () => {
 });
 
 describe('cards whose bead is not ready (samskara-l2t.8)', () => {
-  it('gets the research kind and its parent link from the refresh read while the bead is in progress', async () => {
+  it('gets the research kind and its parent link from the refresh read while the bead waits on a dependency', async () => {
+    h = createHarness([
+      { id: 'w-1', title: 'One' },
+      { id: 'w-b', title: 'Blocker' },
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'Child', parent: 'w-e' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    // In bd, the bead gains a blocker (so bd ready no longer lists it),
+    // becomes a decision and moves under the epic.
+    h.setState(s => {
+      const bead = s.beads.find(b => b.id === 'w-1')!;
+      bead.blockedBy = ['w-b'];
+      bead.issue_type = 'decision';
+      bead.parent = 'w-e';
+    });
+    await sweep(integration);
+
+    expect(card(h, 'w-1').metadata?.[BEADS_META.cardKind]).toBe(RESEARCH_CARD_KIND);
+    expect(card(h, 'w-1').parentWorkItemId).toBe(card(h, 'w-e').id);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(OVERVIEW_CARD_KIND);
+  });
+
+  it('links an in-progress bead under its parent, and leaves its kind while its card is in a working phase', async () => {
     h = createHarness([
       { id: 'w-1', title: 'One' },
       { id: 'w-e', title: 'Epic', issue_type: 'epic' },
@@ -79,19 +103,18 @@ describe('cards whose bead is not ready (samskara-l2t.8)', () => {
     ]);
     const integration = h.integration();
     await sweep(integration);
-    h.workItems.move(card(h, 'w-1').id, 'planning');
+    h.workItems.move(card(h, 'w-1').id, 'execute');
     await sweep(integration);
     expect(h.state().beads.find(b => b.id === 'w-1')!.status).toBe('in_progress');
-    // In bd, the in-progress bead becomes a decision and moves under the epic.
     h.setState(s => {
       const bead = s.beads.find(b => b.id === 'w-1')!;
       bead.issue_type = 'decision';
       bead.parent = 'w-e';
     });
     await sweep(integration);
-    expect(card(h, 'w-1').metadata?.[BEADS_META.cardKind]).toBe(RESEARCH_CARD_KIND);
     expect(card(h, 'w-1').parentWorkItemId).toBe(card(h, 'w-e').id);
-    expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(OVERVIEW_CARD_KIND);
+    // A research kind mid-run would refuse the run's own move to Review.
+    expect(card(h, 'w-1').metadata?.[BEADS_META.cardKind] ?? null).toBeNull();
   });
 });
 
@@ -142,7 +165,8 @@ describe('kickoff hint (samskara-l2t.8)', () => {
     expect(research).toMatchObject({ skillName: 'factory-beads-decision' });
     expect(String(research?.arguments).endsWith(hint)).toBe(true);
     const triage = await run('triage', beadsMeta);
-    if (triage?.type === 'invokeSkill') expect(String(triage.arguments ?? triage.prompt)).toContain(hint);
+    expect(triage?.type).toBe('invokeSkill');
+    expect(String(triage?.arguments ?? triage?.prompt)).toContain(hint);
   });
 
   it('passes every other decision through unchanged', async () => {

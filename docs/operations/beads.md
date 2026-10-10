@@ -903,17 +903,24 @@ refresh read shows a different title, the card is retitled and the new
 title recorded, in one update (`UpdateWorkItemInput.title`,
 `dist/storage/domains/work-items/base.d.ts:447-450`). Only a change in bd
 moves the title: a card a person renamed in the Factory keeps its name until
-the bead's title changes. A card made before this has no `beadsTitle` and is
-retitled once when its title is not the bead's. Every card follows, Done
-and Canceled included.
+the bead's title changes. Every card follows, Done and Canceled included.
+
+**First tick after this shipped.** Cards made before have no `beadsTitle`:
+the first tick records it on every beads card, and retitles a card whose
+title is not `<bead id>: <bead title>`, so a rename made in the Factory
+before then is replaced once. Each of those writes bumps the card's
+revision, so a run on such a card whose next move names the old revision
+has that move refused as stale once and retries it.
 
 **Cards whose bead is not ready.** `bd ready` lists open beads with no
 active blocker, never an `in_progress` one (`bd ready --help`, v1.3.1), so
 intake's updates of an existing card skip a card whose bead is not ready.
 For such a card, not in a terminal phase and whose bead is not closed, the
 same updates run from the refresh read: the research kind follows the bead's
-type (an epic's kind is left to the overview steps), and a bead with a
-parent is linked under the parent's card when it has one
+type (an epic's kind is left to the overview steps, and no kind changes
+while the card is in a working phase, where the board policy would refuse
+the run's own next move), and a bead with a parent is linked under the
+parent's card when it has one
 (`integration.ts`, `#followBeadEdits`).
 
 ### Beads closed outside the Factory
@@ -1712,8 +1719,9 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   Bead edits and the kickoff hint (samskara-l2t.8, `test/bead-edits.test.ts`):
   a bead retitled in bd retitles its card once; a person's rename kept until
   the bead's title changes; a card made before titles followed caught up,
-  in progress or in Done; an in-progress bead's card getting the research
-  kind and its parent link; no feed comment, and `bd ready --brief`; the
+  in progress or in Done; a card whose bead waits on a dependency getting
+  the research kind and its parent link; an in-progress bead's card in
+  Building linked under its parent with its kind left alone; no feed comment, and `bd ready --brief`; the
   hint text; the hint on the Requests board's Triage, Planning, Building and
   decision runs of a beads card and on no other card's; and every other
   decision passed through unchanged.

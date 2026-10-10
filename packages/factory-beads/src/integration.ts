@@ -9,8 +9,6 @@
  * Factory extension points used (@mastra/factory 0.20.0, dist/):
  *   - FactoryIntegration.workers / routes / diagnostics   integrations/base.d.ts:180-270
  *   - IntegrationContext.runtime.{workItems, boards}      integrations/base.d.ts:137-143
- *   - IntegrationContext.feed.createComment               integrations/base.d.ts:94-95
- *       (idempotent on externalSource, storage/domains/comments/base.js:180-191)
  *   - IntegrationContext.storage.{sourceControls, projects} integrations/base.d.ts:109-111
  *   - VersionControl.getRepositoryAccess                  capabilities/version-control.d.ts:231
  *       (GitHub: plain https cloneUrl + installation token, integrations/github/integration.js:199-213)
@@ -979,9 +977,8 @@ export class BeadsIntegration implements FactoryIntegration {
       }
     }
 
-    // 2. Intake: one card per ready bead, idempotently, and its description
-    //    on the card's feed (back-filled for cards that predate it). A bead
-    //    with a parent container is linked under the container's overview
+    // 2. Intake: one card per ready bead, idempotently. A bead with a
+    //    parent container is linked under the container's overview
     //    card, which is made first. A bead whose parent is not a container (a
     //    task's subtask) is linked under the parent's card when it has one;
     //    ready parents are carded before their ready children, so that link
@@ -1858,8 +1855,10 @@ export class BeadsIntegration implements FactoryIntegration {
    * of an existing card skip a card whose bead is not ready. For such a card
    * whose bead is not closed, the same updates run here from the refresh
    * read: the research kind follows the bead's type (an epic's kind is left
-   * to the overview steps), and a bead with a parent is linked under the
-   * parent's card when it has one. Cards in a terminal phase are left out.
+   * to the overview steps; no kind changes while the card is in a working
+   * phase, where the board policy would refuse the run's own next move), and
+   * a bead with a parent is linked under the parent's card when it has one.
+   * Cards in a terminal phase are left out.
    */
   async #followBeadEdits(scope: IntakeScope, readyIds: ReadonlySet<string>): Promise<void> {
     const { orgId, projectId, slug, snapshot } = scope;
@@ -1893,11 +1892,15 @@ export class BeadsIntegration implements FactoryIntegration {
         if (readyIds.has(beadId) || bead.status === 'closed') continue;
         if (card.stages.some(stage => board?.phaseKind(stage) === 'terminal')) continue;
         const current = card.metadata?.[BEADS_META.cardKind];
-        if (bead.issue_type !== EPIC_TYPE && current !== OVERVIEW_CARD_KIND && current !== PLAN_CARD_KIND) {
+        // Not while the card is in a working phase: a kind the board policy
+        // reads mid-run would refuse the run's own next move.
+        const working = card.stages.some(stage => board?.phaseKind(stage) === 'working');
+        if (!working && bead.issue_type !== EPIC_TYPE && current !== OVERVIEW_CARD_KIND && current !== PLAN_CARD_KIND) {
           const kind = readyCardKind(bead);
           if ((current ?? undefined) !== kind) card = await this.#mark(orgId, card, { [BEADS_META.cardKind]: kind ?? null });
         }
-        if (bead.parent) {
+        // #linkParent leaves a card that has a parent alone; skip the lookup for one.
+        if (bead.parent && !card.parentWorkItemId) {
           const parent = await this.#parentCard(scope, bead.parent);
           if (parent) await this.#linkParent(scope, card, parent);
         }
