@@ -37,6 +37,7 @@ import type { VersionControl } from '@mastra/factory/capabilities/version-contro
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
 import { LiveSessions } from '@mastra/factory/session/live-sessions';
+import { MAX_COMMENT_BODY_LENGTH } from '@mastra/factory/storage/domains/comments/base';
 import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
@@ -54,6 +55,8 @@ import { BeadsSyncWorker } from './worker';
 import type { TickOutcome, WithLeaseOptions } from './worker';
 
 export const BEADS_INTEGRATION_ID = 'beads';
+/** The `type` of a bd comment's source on the card feed (samskara-l2t.6). */
+export const BEADS_COMMENT_SOURCE = 'comment';
 
 /** Card metadata keys this integration owns. */
 export const BEADS_META = {
@@ -508,6 +511,14 @@ export class BeadsIntegration implements FactoryIntegration {
   readonly #resetRepos = new Set<string>();
   /** Repositories (slug) whose refresh read is failing: warned once per failure streak. */
   readonly #refreshFailing = new Set<string>();
+  /**
+   * The bd comment count each card's feed was last brought up to (card id to
+   * count, samskara-l2t.6). In memory, not on the card: a metadata write bumps
+   * the card's revision, and a bd comment added during a run would then make
+   * the run's next move stale. A restart reads each commented bead once
+   * more; the feed's own source key keeps that from duplicating anything.
+   */
+  readonly #commentCounts = new Map<string, number>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -1114,7 +1125,8 @@ export class BeadsIntegration implements FactoryIntegration {
     // 2b. Bead edits on cards intake did not reach (samskara-l2t.8): every
     //     card's title follows its bead's, and a card whose bead is not ready
     //     (in_progress, blocked by a dependency, held) gets its kind and its
-    //     parent link as intake gives a ready one.
+    //     parent link as intake gives a ready one. Chips (l2t.5) and bd
+    //     comments on the feed (l2t.6) follow here too.
     await this.#followBeadEdits(scope, readyIds);
 
     // 3. Open-children counts on the overview cards intake did not count this
@@ -1961,6 +1973,11 @@ export class BeadsIntegration implements FactoryIntegration {
             card = updated.item;
           }
         }
+        try {
+          await this.#followComments(scope, card, bead);
+        } catch (error) {
+          this.#log.warn(`[factory-beads] ${slug}: bd comments of ${beadId} not on its card yet: ${error instanceof Error ? error.message : String(error)}`);
+        }
         if (readyIds.has(beadId) || bead.status === 'closed') continue;
         if (card.stages.some(stage => board?.phaseKind(stage) === 'terminal')) continue;
         const current = card.metadata?.[BEADS_META.cardKind];
@@ -1980,6 +1997,51 @@ export class BeadsIntegration implements FactoryIntegration {
         this.#log.warn(`[factory-beads] ${slug}: card of ${beadId} not updated from its bead: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+  }
+
+  /**
+   * bd comments on the card's feed (samskara-l2t.6), as part of step 2b. When
+   * the bead's `comment_count` in the refresh read differs from the count the
+   * feed was last brought up to, the bead's comments are read
+   * (`bd comments <id> --json`) and each is posted through Factory's own feed
+   * ingest (`IntegrationContext.feed.createComment`, the path Slack asides
+   * take, @mastra/factory 0.20.0 dist/integrations/slack/slack.js:712-719),
+   * backdated to the comment's bd timestamp. Its source,
+   * `{ beads, comment, <bd comment id> }`, is the feed's idempotency key
+   * (dist/storage/domains/comments/base.js:150-197): a comment already on the
+   * feed is returned as it is, never posted twice, and one a person deleted
+   * from the feed keeps its tombstone and is not brought back. The count is
+   * recorded only once every comment is on the feed, so a failed read or post
+   * is retried on the next sweep. A comment does not change the card's
+   * revision (the feed touch writes only `comment_count` and
+   * `feed_activity_at`, base.js:268-285).
+   */
+  async #followComments(scope: IntakeScope, card: WorkItemRow, bead: BeadRow): Promise<void> {
+    const feed = this.#ctx?.feed;
+    const count = bead.comment_count ?? 0;
+    if (!feed || (this.#commentCounts.get(card.id) ?? 0) === count) return;
+    const comments = await scope.repo.comments(bead.id);
+    for (const comment of comments) {
+      const body = comment.text.trim() ? comment.text : '';
+      if (!body) continue;
+      const author = comment.author?.trim() || 'unknown';
+      const occurredAt = comment.created_at ? new Date(comment.created_at) : undefined;
+      const result = await feed.createComment({
+        orgId: scope.orgId,
+        workItemId: card.id,
+        author: {
+          kind: 'user',
+          id: `${BEADS_INTEGRATION_ID}:${author}`,
+          displayName: author,
+          external: { platform: BEADS_INTEGRATION_ID, userId: author },
+        },
+        body: body.length > MAX_COMMENT_BODY_LENGTH ? `${body.slice(0, MAX_COMMENT_BODY_LENGTH - 40)}\n\n(cut short; the full comment is in bd)` : body,
+        ...(occurredAt && !Number.isNaN(occurredAt.getTime()) ? { occurredAt } : {}),
+        externalSource: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: comment.id },
+      });
+      if (result.status !== 'created') throw new Error(`comment ${comment.id} not posted to the feed: ${result.status}`);
+    }
+    this.#commentCounts.set(card.id, count);
   }
 
   /** A new card for `bead`, under `parent` when given. Undefined when another project in the org holds its claim. */

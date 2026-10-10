@@ -42,6 +42,15 @@ export interface BeadDetails {
   description?: string;
 }
 
+/** One comment as `bd comments <id> --json` prints it (bd 1.3.1). */
+export interface BeadComment {
+  id: string;
+  issue_id?: string;
+  author?: string;
+  text: string;
+  created_at?: string;
+}
+
 /**
  * One row of `bd list --all --brief --json`: a bead as the per-sweep refresh
  * reads it. Checked on bd 1.3.1: every row carries id, title, status,
@@ -258,6 +267,26 @@ export class BdRepo {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * The bead's comments, oldest first (samskara-l2t.6). Throws when bd fails
+   * or prints something that is not a list, so a failed read is never taken
+   * for "no comments". Each comment's id is a UUIDv5 of its content, the same
+   * on every copy of the repository (bd 1.3.1), so it can key the comment on
+   * the card's feed.
+   */
+  async comments(id: string): Promise<BeadComment[]> {
+    const res = await this.runner.bd(['--readonly', 'comments', id, '--json'], { cwd: this.dir });
+    if (res.code !== 0) throw new Error(`bd comments ${id} failed (exit ${res.code}): ${tail(res)}`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(res.stdout.trim() || '[]') ?? [];
+    } catch {
+      throw new Error(`bd comments ${id} printed no JSON: ${tail(res, 200)}`);
+    }
+    if (!Array.isArray(parsed)) throw new Error(`bd comments ${id} printed no list`);
+    return (parsed as BeadComment[]).filter(c => typeof c?.id === 'string' && typeof c.text === 'string');
   }
 
   /** The bead's status, or undefined when bd cannot read it. */

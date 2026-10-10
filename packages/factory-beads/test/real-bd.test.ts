@@ -551,6 +551,34 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown().status).toBe('blocked');
   }, 300_000);
 
+  it('posts bd comments to the card feed once, keyed by the bd comment id every copy shares (samskara-l2t.6)', async () => {
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    run('bd', ['dolt', 'pull']);
+    const bead = run('bd', ['create', 'Commented', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    run('bd', ['comments', 'add', bead, 'Line one\nline **two**', '--actor', 'alice']);
+    run('bd', ['dolt', 'push']);
+    const [seedComment] = JSON.parse(run('bd', ['--readonly', 'comments', bead, '--json'])) as Array<{ id: string; created_at: string }>;
+
+    await sweep(integration);
+    await sweep(integration);
+    const card = h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === bead)!;
+    const posted = h.feed.on(card.id);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({
+      body: 'Line one\nline **two**',
+      author: { id: 'beads:alice', displayName: 'alice' },
+      externalSource: { integrationId: 'beads', type: 'comment', externalId: seedComment!.id },
+      occurredAt: new Date(seedComment!.created_at),
+    });
+  }, 300_000);
+
   it('BdRepo.setStatus: writes only over the status read, exit 13 otherwise (samskara-l2t.4)', async () => {
     const dir = join(root, 'st');
     run('git', ['init', '-q', dir], root);

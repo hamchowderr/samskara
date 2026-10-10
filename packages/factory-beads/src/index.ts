@@ -1,6 +1,7 @@
 export {
   BeadsIntegration,
   BEADS_DATA_REF,
+  BEADS_COMMENT_SOURCE,
   BEADS_INTEGRATION_ID,
   BEADS_META,
   CARD_LABEL_COLORS_META,
@@ -57,7 +58,7 @@ export type { BeadsSetting } from './setting';
 export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runner';
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
 export { BdRepo, BeadSnapshot, cacheDirFor, CONTAINER_TYPES, NEVER_READY_TYPES, OVERVIEW_TYPES } from './repo';
-export type { BeadDetails, BeadRow, ReadyBead } from './repo';
+export type { BeadComment, BeadDetails, BeadRow, ReadyBead } from './repo';
 export { BeadsSyncWorker, LeaseWaitTimeoutError } from './worker';
 export type { LeaseSource, TickOutcome, WithLeaseOptions } from './worker';
 export {

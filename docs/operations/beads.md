@@ -338,6 +338,43 @@ retries it. After that only changes are written.
 --add-label` / `--remove-label`). A label may not contain a comma, since
 `--labels` is comma-separated.
 
+### bd comments on the feed
+
+Every comment on a carded bead appears on its card's feed (samskara-l2t.6),
+under its bd author, at its bd time, with its Markdown as written. Step 2b of
+each sweep compares the bead's `comment_count` in the refresh read with the
+count the card's feed was last brought up to. Only when they differ does it
+read the bead's comments (`bd --readonly comments <id> --json`) and post
+each one through Factory's own feed ingest, `IntegrationContext.feed.createComment`,
+the path Slack messages take (`@mastra/factory` 0.20.0
+`dist/integrations/slack/slack.js:712-719`).
+
+- **Once only.** A comment's source is `{ beads, comment, <bd comment id> }`,
+  and that source is the feed's idempotency key
+  (`dist/storage/domains/comments/base.js:150-197`): posting a comment that
+  is already on the feed returns the existing one. bd derives the comment id
+  from its content (a UUIDv5), so every copy of the repository gives the
+  same id; the real-bd test checks the id on the integration's copy against
+  the seed's. A comment a person deleted from the feed keeps its tombstone
+  and is not brought back.
+- **No revision change.** The count is held in memory, not on the card: a
+  metadata write would bump the card's revision, and a bd comment added
+  during a run would then make the run's next move stale. A comment on the
+  feed writes only the card's `comment_count` and `feed_activity_at`
+  (`base.js:268-285`). After a restart, each commented bead is read once
+  more and nothing is posted twice.
+- **Retried until posted.** The count is recorded only once every comment is
+  on the feed. A failed read or post is logged and retried on the next
+  sweep, and the rest of step 2b still runs for that card.
+- **Authors.** bd authors are free text (an `--actor`, a git user name), so
+  each becomes an external identity, `beads:<author>`, shown by name. It is
+  never matched to a Factory account and cannot be mentioned.
+- **Limits.** An empty comment is skipped. One longer than the feed takes
+  (16,000 characters, `MAX_COMMENT_BODY_LENGTH`) is cut short with a note
+  that the full comment is in bd.
+- **Every card follows**, Done and Canceled included, since a comment often
+  explains a close. A bead that is not carded has no feed to post to.
+
 ### Card kinds
 
 Every beads card is one of four kinds, set in `beadsCardKind` from the bead
@@ -1787,7 +1824,15 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   only on change; a bead labelled `human` carrying the approval label and
   getting Work's prepare-approval run in Triage; and in
   `test/agent-tools.test.ts`, labels on `beads_create` and
-  `beads_update`, and a label with a comma refused.
+  `beads_update`, and a label with a comma refused. bd comments on the
+  feed (samskara-l2t.6, `test/comments-feed.test.ts`): each comment posted
+  once with its bd author and time; bd not read again while the count is
+  unchanged; a new comment added alone, with the card's revision unchanged;
+  no duplicate after a restart; comments on an in-progress and a closed
+  bead's card; a refused post retried on the next sweep while the title
+  still follows; an over-long comment cut and an empty one skipped. In
+  `test/real-bd.test.ts`, a comment made on one copy posted once with the
+  same bd id and time.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote, including
   an epic with two children and a nested epic, and a real `bd mol pour` whose
@@ -1862,8 +1907,9 @@ build never runs bd.
   automated writer.
 - **No live plan-gate run yet.** The gate is proven by unit tests only. The
   transition API always acts as a person, and a live agent run costs credits.
-- **bd comments do not reach the card's feed yet** (samskara-l2t.6). A
-  card's title, phase, kind, labels, priority and type follow the bead; see
+- **Card comments do not reach bd yet** (samskara-l2t.7). bd comments reach
+  the card ([bd comments on the feed](#bd-comments-on-the-feed)), as do a
+  bead's title, status, kind, labels, priority and type; see
   [What the agent sees](#what-the-agent-sees), [Status sync](#status-sync)
   and [Label chips](#label-chips).
 - **Multi-repository start is proven by unit tests only (`samskara-srl`).**
