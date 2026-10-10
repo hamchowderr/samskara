@@ -42,15 +42,18 @@ export function createBeadsPlanningRule(
 ): FactoryRuleHandler<FactoryStageRuleContext> {
   return context => {
     const metadata = context.item.metadata;
+    // Same test as the board policy, so a research card never runs factory-plan
+    // only to have the policy refuse its move to execute.
+    if (!isResearchCard(metadata)) return fallback?.(context);
     const beadId = metadata?.[BEADS_META.id];
-    if (!isResearchCard(metadata) || typeof beadId !== 'string') return fallback?.(context);
     const repo = metadata?.[BEADS_META.repo];
+    const bead = typeof beadId === 'string' ? `Decision bead ${beadId}` : `Decision card ${context.item.id}`;
     return {
       type: 'invokeSkill',
       idempotencyKey: `${context.ingress.id}:${DECISION_SKILL}`,
       role: 'plan',
       skillName: DECISION_SKILL,
-      arguments: typeof repo === 'string' ? `Decision bead ${beadId} in repository ${repo}` : `Decision bead ${beadId}`,
+      arguments: typeof repo === 'string' ? `${bead} in repository ${repo}` : bead,
     };
   };
 }

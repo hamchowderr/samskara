@@ -358,11 +358,20 @@ describe('beads research cards (samskara-l2t.2.3)', () => {
     });
 
     it("returns Work's own planning decision for every other manual card", () => {
-      for (const metadata of [null, { beadsId: 'w-1', beadsType: 'task' }, { beadsId: 'w-d', beadsType: 'decision' }, { beadsCardKind: 'research' }]) {
+      for (const metadata of [null, { beadsId: 'w-1', beadsType: 'task' }, { beadsId: 'w-d', beadsType: 'decision' }]) {
         const context = entry(metadata, 'A request');
         expect((planning.manual as Rule)(context)).toEqual((workPlanning.manual as Rule)(context));
       }
       expect((planning.manual as Rule)(entry(null, 'A request'))).toMatchObject({ skillName: 'factory-plan', role: 'plan' });
+    });
+
+    it('runs the decision skill for any research-kind card, the same test the policy uses', () => {
+      // The policy refuses a research card's move to execute, so factory-plan
+      // would strand it; the kind alone decides, even without a bead id.
+      expect((planning.manual as Rule)(entry({ beadsCardKind: 'research' }, 'A request'))).toMatchObject({
+        skillName: DECISION_SKILL,
+        role: 'plan',
+      });
     });
 
     it('ships the skill where Factory loads project skills (dist/workspace.js:31), with parseable frontmatter', () => {
