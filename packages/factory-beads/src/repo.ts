@@ -7,6 +7,7 @@
  *
  *   first use : git clone --depth 1  ->  bd --sandbox bootstrap --yes
  *   each poll : bd dolt pull         ->  bd --readonly ready --json (with descriptions)
+ *                                    ->  bd --readonly list --all --brief --json (the refresh)
  *   write-back: bd --sandbox close   ->  bd sync (exit 2 conflict, 3 retry)
  *
  * `--sandbox` disables Dolt auto-push (bd --help), so a close is published only
@@ -43,11 +44,94 @@ export interface BeadDetails {
   description?: string;
 }
 
-/** One child row of `bd list --parent`. */
-export interface ChildBead {
+/**
+ * One row of `bd list --all --brief --json`: a bead as the per-sweep refresh
+ * reads it. Checked on bd 1.3.1: every row carries id, title, status,
+ * priority, issue_type, created_at, updated_at and comment_count; bd omits an
+ * empty field, so assignee, labels, parent, dependencies, closed_at and
+ * close_reason appear only when set. `--brief` drops the free-form text
+ * (description, design, acceptance criteria, notes), so a row never carries
+ * a description: read one with `bd show`.
+ *
+ * Carried for the consumers of the refresh (samskara-l2t.15): status and
+ * close_reason for the inbound close (l2t.3) and two-way status sync (l2t.4),
+ * comment_count for bd comments on the feed (l2t.6), title for the card title
+ * (l2t.8), labels and assignee for label chips (l2t.5), updated_at to tell a
+ * changed bead.
+ */
+export interface BeadRow {
   id: string;
+  title?: string;
   status?: string;
+  /** Absent for an open bead and for a superseded or duplicate one (bd 1.3.1 leaves it empty). */
+  close_reason?: string;
+  closed_at?: string;
+  priority?: number;
   issue_type?: string;
+  assignee?: string;
+  labels?: string[];
+  /** The lowest parent-child target (bd 1.3.1 internal/storage/sqlbuild/counts.go:239, `MIN(...)`). */
+  parent?: string;
+  comment_count?: number;
+  updated_at?: string;
+  /** Every dependency edge of the bead, parent-child included. */
+  dependencies?: Array<{ issue_id?: string; depends_on_id?: string; type?: string }>;
+}
+
+/**
+ * Every bead `bd list --all` returns, by id, with each bead's direct
+ * children: one read per repository per sweep (samskara-l2t.15).
+ *
+ * `children(id)` answers exactly what `bd list --parent=<id> --all` would on
+ * the same copy. Both go through the same list filter
+ * (bd v1.3.1 internal/workapi/list.go:186-453: `--parent` only adds
+ * `ParentID`), whose parent clause is (internal/storage/sqlbuild/filter.go:174-178):
+ *
+ *   - every bead with a parent-child edge to `id`, a bead with two parents
+ *     included under each; the row's own `parent` names only the lowest one,
+ *     so the edges are read from `dependencies`; and
+ *   - every bead whose id starts with `<id>.` and that has no parent-child
+ *     edge at all: a dotted id with no edge (an import, say) is a child of
+ *     EVERY dotted prefix of it, grandparent included (checked on bd 1.3.1:
+ *     an edge-less `x.1.9.1` is listed under both `x` and `x.1`).
+ */
+export class BeadSnapshot {
+  readonly #rows = new Map<string, BeadRow>();
+  readonly #children = new Map<string, BeadRow[]>();
+
+  constructor(rows: readonly BeadRow[]) {
+    for (const row of rows) this.#rows.set(row.id, row);
+    for (const row of this.#rows.values()) {
+      const parents = new Set<string>();
+      for (const dep of row.dependencies ?? []) {
+        if (dep?.type === 'parent-child' && typeof dep.depends_on_id === 'string') parents.add(dep.depends_on_id);
+      }
+      // A row from a bd that names the parent without the edge list.
+      if (parents.size === 0 && row.dependencies === undefined && row.parent) parents.add(row.parent);
+      if (parents.size === 0) {
+        for (let dot = row.id.indexOf('.'); dot > 0; dot = row.id.indexOf('.', dot + 1)) parents.add(row.id.slice(0, dot));
+      }
+      for (const parent of parents) {
+        const list = this.#children.get(parent);
+        if (list) list.push(row);
+        else this.#children.set(parent, [row]);
+      }
+    }
+  }
+
+  /** The bead, or undefined when the list does not have it (bd leaves gates, templates and wisps out). */
+  get(id: string): BeadRow | undefined {
+    return this.#rows.get(id);
+  }
+
+  /** The bead's direct children, closed ones included. */
+  children(id: string): readonly BeadRow[] {
+    return this.#children.get(id) ?? [];
+  }
+
+  get size(): number {
+    return this.#rows.size;
+  }
 }
 
 /** Issue types that group work and are never carded as work themselves. */
@@ -177,25 +261,55 @@ export class BdRepo {
     }
   }
 
-  /**
-   * The bead's direct children, closed ones included. Checked on bd 1.3.1:
-   * `--parent` lists direct children only (a grandchild is listed under its
-   * own parent), `--all` adds closed children, `--flat` turns off the tree
-   * output, and `-n 0` lifts the default limit of 50 (`bd list --help`).
-   * Throws when bd fails, so a failed read is never taken for "no children".
-   */
-  async children(id: string): Promise<ChildBead[]> {
-    const res = await this.runner.bd(['--readonly', 'list', `--parent=${id}`, '--all', '--flat', '--json', '-n', '0'], {
-      cwd: this.dir,
-    });
-    if (res.code !== 0) throw new Error(`bd list --parent=${id} failed (exit ${res.code}): ${tail(res)}`);
-    const parsed = JSON.parse(res.stdout.trim() || '[]') as unknown;
-    return Array.isArray(parsed) ? (parsed as ChildBead[]).filter(child => typeof child?.id === 'string') : [];
-  }
-
   /** The bead's status, or undefined when bd cannot read it. */
   async status(id: string): Promise<string | undefined> {
     return (await this.show(id))?.status;
+  }
+
+  /**
+   * The per-sweep refresh (samskara-l2t.15): every bead of the copy in one
+   * call, as a snapshot. Throws when bd fails or prints something that is not
+   * a list, so a failed read is never taken for "no beads" or "no children".
+   *
+   * Why this call. Measured on bd 1.3.1 (Windows 11, embedded Dolt, a copy
+   * holding 1,180 beads with 400-character descriptions, median of 5):
+   *
+   *   bd --version                                    146 ms
+   *   bd --readonly show <id> --json                  609 ms
+   *   bd --readonly list --parent=<id> --all ...      660 ms
+   *   bd --readonly list --all --json -n 0            685 ms, 1.04 MB
+   *   bd --readonly list --all --brief --json -n 0    686 ms, 0.67 MB
+   *   bd --readonly list --id=<50 ids> --all ...      655 ms
+   *   bd --readonly list --id=<1000 ids> --all ...    767 ms
+   *
+   * Process start and opening the database dominate, so one list of every
+   * bead costs about what one `bd show` does, and it replaces the two reads
+   * per container (show + list --parent) and one per other overview card the
+   * sweep made before. `--id <carded ids>` (the design in the bead) is not
+   * cheaper, cannot name the children an open-children count needs (they are
+   * not carded: a closed child never is), and puts every id on the command
+   * line, which Windows caps at 32,767 characters (CreateProcess).
+   *
+   * `--brief` drops the free-form text, which only the description comment
+   * needs (read with `bd show`, once per card), and keeps the output well
+   * under the runner's 32 MB buffer on a large repository. `--flat` is not
+   * passed: with `--json` the tree is never built (bd v1.3.1
+   * cmd/bd/list.go:265-285 returns before it), and both forms print the same
+   * bytes. `-n 0` lifts the default limit of 50. The row cap
+   * (`BEADS_MAX_ROWS`) cannot apply: the runner passes bd an allowlisted
+   * environment without it (runner.ts).
+   */
+  async refresh(): Promise<BeadSnapshot> {
+    const res = await this.runner.bd(['--readonly', 'list', '--all', '--brief', '--json', '-n', '0'], { cwd: this.dir });
+    if (res.code !== 0) throw new Error(`bd list --all failed (exit ${res.code}): ${tail(res)}`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(res.stdout.trim() || '[]');
+    } catch {
+      throw new Error(`bd list --all printed no JSON: ${tail(res, 200)}`);
+    }
+    if (!Array.isArray(parsed)) throw new Error('bd list --all printed no list');
+    return new BeadSnapshot((parsed as BeadRow[]).filter(row => typeof row?.id === 'string'));
   }
 
   /**

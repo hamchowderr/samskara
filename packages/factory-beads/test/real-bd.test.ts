@@ -153,13 +153,21 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     const second = poured.id_mapping['demo.second']!;
     run('bd', ['dolt', 'push']);
 
+    // Every bd call the integration makes, to count the reads per sweep (samskara-l2t.15).
+    const calls: string[][] = [];
+    class RecordingRunner extends BdRunner {
+      override bd(args: readonly string[], options: Parameters<BdRunner['bd']>[1]) {
+        calls.push([...args]);
+        return super.bd(args, options);
+      }
+    }
     const integration = h.integration({
       sourceControl: {
         id: 'github',
         versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
       },
       cacheDir: join(root, 'c'),
-      runner: new BdRunner(),
+      runner: new RecordingRunner(),
     });
     const summary = await sweep(integration);
     expect(summary.repos[0], JSON.stringify(summary)).toMatchObject({ state: 'ok' });
@@ -180,10 +188,13 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(card(second)).toBeUndefined();
     expect(card(grand)?.metadata?.beadsCardKind).toBeUndefined();
 
-    // Idempotent: a further sweep changes no card.
+    // Idempotent: a further sweep changes no card, and reads every bead with one
+    // bd list, whatever the number of containers (samskara-l2t.15).
     const revisions = h.workItems.beadCards().map(c => [c.id, c.revision, c.parentWorkItemId]);
+    calls.length = 0;
     await sweep(integration);
     expect(h.workItems.beadCards().map(c => [c.id, c.revision, c.parentWorkItemId])).toEqual(revisions);
+    expect(calls.map(c => c.filter(a => !a.startsWith('-'))[0])).toEqual(['dolt', 'list', 'ready']);
   }, 300_000);
 
   it('moves an overview card to Done when its last child closes: the epic closed by factory-beads, a molecule root by bd (samskara-l2t.2.2)', async () => {
@@ -258,6 +269,52 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     run('bd', ['dolt', 'pull']);
     expect(show(epic)).toMatchObject({ status: 'closed', close_reason: `Factory card ${card(epic).id} reached done` });
     expect(show(mol)).toMatchObject({ status: 'closed', close_reason: 'all steps complete' });
+  }, 300_000);
+
+  it('re-reads after a close: a molecule root bd closed with its last step keeps its holder (samskara-l2t.15)', async () => {
+    mkdirSync(join(seed, '.beads', 'formulas'), { recursive: true });
+    writeFileSync(join(seed, '.beads', 'formulas', 'demo.formula.toml'), DEMO_FORMULA);
+    const poured = JSON.parse(run('bd', ['mol', 'pour', 'demo', '--var', 'name=reread', '--json'])) as {
+      new_epic_id: string;
+      id_mapping: Record<string, string>;
+    };
+    const mol = poured.new_epic_id;
+    run('bd', ['close', poured.id_mapping['demo.first']!]);
+    const last = poured.id_mapping['demo.second']!;
+    run('bd', ['update', mol, '--assignee', 'alice']);
+    run('bd', ['dolt', 'push']);
+
+    const calls: string[][] = [];
+    class RecordingRunner extends BdRunner {
+      override bd(args: readonly string[], options: Parameters<BdRunner['bd']>[1]) {
+        calls.push([...args]);
+        return super.bd(args, options);
+      }
+    }
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new RecordingRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id)!;
+    await sweep(integration);
+    // Both cards wait in Done in one sweep, the last step's first: the refresh
+    // read still shows the root open and held by alice when that close closes it.
+    h.workItems.move(card(last).id, 'done');
+    h.workItems.move(card(mol).id, 'done');
+    h.workItems.items.sort((a, b) => Number(a.metadata?.[BEADS_META.id] === mol) - Number(b.metadata?.[BEADS_META.id] === mol));
+    calls.length = 0;
+    const summary = await sweep(integration);
+    expect(summary.repos[0], JSON.stringify(summary)).toMatchObject({ state: 'ok', closed: 2 });
+    expect(calls.filter(c => c.includes(mol) && (c.includes('update') || c.includes('close')))).toEqual([]);
+    expect(card(mol).metadata?.[BEADS_META.writeback]).toBe('synced');
+
+    run('bd', ['dolt', 'pull']);
+    const rootBead = (JSON.parse(run('bd', ['--readonly', 'show', mol, '--json'])) as Array<{ status: string; assignee?: string; close_reason?: string }>)[0]!;
+    expect(rootBead).toMatchObject({ status: 'closed', assignee: 'alice', close_reason: 'all steps complete' });
   }, 300_000);
 
   it('cards an open decision as a research card and never a closed one; approving it closes the bead (samskara-l2t.2.3)', async () => {
@@ -393,6 +450,49 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     run('bd', ['dolt', 'pull']);
     const shown = JSON.parse(run('bd', ['--readonly', 'show', task, '--json'])) as Array<{ status: string }>;
     expect(shown[0]?.status).toBe('closed');
+  }, 300_000);
+
+  it('BdRepo.refresh: one bd list answers every bead and its children as bd list --parent does (samskara-l2t.15)', async () => {
+    const dir = join(root, 'r');
+    run('git', ['init', '-q', dir], root);
+    run('bd', ['init', '-p', 'rf', '--skip-agents', '-q'], dir);
+    const make = (title: string, type: string, parent?: string) =>
+      run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])], dir).split(/\r?\n/)[0]!;
+    // Nested epics, a task with subtasks, closed and claimed children.
+    const outer = make('Outer', 'epic');
+    const inner = make('Inner', 'epic', outer);
+    const task = make('Task', 'task', inner);
+    const sub1 = make('Sub one', 'task', task);
+    const sub2 = make('Sub two', 'task', task);
+    const sibling = make('Sibling', 'task', outer);
+    const lone = make('Lone', 'task');
+    run('bd', ['close', sub1, '--reason', 'done here'], dir);
+    run('bd', ['update', sibling, '--assignee', 'alice', '--add-label', 'ui', '--add-label', 'api'], dir);
+    run('bd', ['comments', 'add', task, 'a note'], dir);
+    // A bead with two parents, and a dotted bead with no edge (as an import leaves one).
+    const twice = make('Twice', 'task', inner);
+    run('bd', ['dep', 'add', twice, sibling, '--type', 'parent-child'], dir);
+    writeFileSync(join(dir, 'edgeless.jsonl'), `{"id":"${task}.9","title":"Edgeless","issue_type":"task","status":"open"}\n`);
+    run('bd', ['import', 'edgeless.jsonl'], dir);
+
+    const snapshot = await new BdRepo('local/refresh', dir, '', new BdRunner()).refresh();
+    const ids = [outer, inner, task, sub1, sub2, sibling, lone, twice, `${task}.9`];
+    expect(snapshot.size).toBe(ids.length);
+    for (const id of ids) {
+      const listed = (JSON.parse(run('bd', ['--readonly', 'list', `--parent=${id}`, '--all', '--json', '-n', '0'], dir)) as Array<{ id: string }>)
+        .map(r => r.id)
+        .sort();
+      expect(snapshot.children(id).map(r => r.id).sort(), `children of ${id}`).toEqual(listed);
+    }
+    // The edge-less dotted bead is listed under every dotted prefix, the outer epic included.
+    expect(snapshot.children(outer).map(r => r.id).sort()).toEqual([inner, sibling, `${task}.9`].sort());
+    expect(snapshot.children(task).map(r => r.id).sort()).toEqual([sub1, sub2, `${task}.9`].sort());
+    // What the inbound consumers read is on the rows (l2t.3, .4, .5, .6, .8).
+    expect(snapshot.get(sub1)).toMatchObject({ status: 'closed', close_reason: 'done here', parent: task, title: 'Sub one' });
+    expect(snapshot.get(sibling)).toMatchObject({ assignee: 'alice', labels: ['api', 'ui'], parent: outer, comment_count: 0 });
+    expect(snapshot.get(task)).toMatchObject({ comment_count: 1, updated_at: expect.any(String) });
+    // --brief: no description on any row.
+    expect(Object.keys(snapshot.get(lone)!)).not.toContain('description');
   }, 300_000);
 
   it('BdRepo.close: takes over a live claim, never forces, and returns a bead bd refuses to close', async () => {

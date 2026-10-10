@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   BEADS_META,
   beadsClaimKey,
+  BeadSnapshot,
   cacheDirFor,
   createBeadsDoneRule,
   descriptionBody,
@@ -366,13 +367,73 @@ describe('write-back and ordering', () => {
     expect(diagnostic).toContain('returned to "alice"');
   });
 
-  it('reads each pending bead once per sweep', async () => {
-    h = createHarness([{ id: 'w-a', title: 'A', assignee: 'alice' }]);
+  it('reads pending beads from one refresh read until the first close, then each with bd show (samskara-l2t.15)', async () => {
+    h = createHarness([
+      { id: 'w-a', title: 'A', assignee: 'alice' },
+      { id: 'w-b', title: 'B' },
+      { id: 'w-c', title: 'C', assignee: 'carol' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    for (const id of ['w-a', 'w-b', 'w-c']) h.workItems.move(cardFor(h, id).id, 'done');
+    const before = h.state().calls.length;
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 3 });
+    const calls = commands(h).slice(before);
+    // w-a from the read; once it closed, the others right before their own close.
+    expect(calls.filter(c => c.startsWith('show'))).toEqual(['show w-b', 'show w-c']);
+    // One read before write-back (status and holder), one after its sync.
+    expect(calls.filter(c => c === 'list')).toHaveLength(2);
+    // Each holder was read before its close: the handover named it.
+    const handovers = h.state().calls.slice(before).filter(c => c.argv.includes('update')).map(c => c.argv.find(a => a.startsWith('--if-assignee=')));
+    expect(handovers).toEqual(['--if-assignee=alice', '--if-assignee=carol']);
+  });
+
+  it('falls back to bd show when the refresh read fails, so a failing read never holds up a close (samskara-l2t.15)', async () => {
+    h = createHarness([
+      { id: 'w-a', title: 'A', assignee: 'alice' },
+      { id: 'w-b', title: 'B' },
+    ]);
     const integration = h.integration();
     await sweep(integration);
     h.workItems.move(cardFor(h, 'w-a').id, 'done');
+    h.workItems.move(cardFor(h, 'w-b').id, 'done');
+    h.setState(s => (s.listFail = true));
+    const before = h.state().calls.length;
+    const failed = await sweep(integration);
+    const calls = commands(h).slice(before);
+    // Each bead read with bd show right before its close, then synced, as before the refresh read.
+    expect(calls).toEqual(expect.arrayContaining(['show w-a', 'close w-a', 'show w-b', 'close w-b', 'sync']));
+    expect(calls).not.toContain('dolt pull');
+    expect(h.state().beads.find(b => b.id === 'w-a')).toMatchObject({ status: 'closed', assignee: 'factory-beads' });
+    expect(failed.repos[0]).toMatchObject({ state: 'ok', closed: 2 });
+    // The overview steps' read failed too, and its diagnostic is the one shown.
+    expect(failed.repos[0]!.diagnostic).toMatch(/^refresh read failed, so the overview steps skipped this sweep/);
+  });
+
+  it("re-reads after a close: a molecule root bd closed with its last step is not handed over or closed again (samskara-l2t.15)", async () => {
+    h = createHarness([
+      { id: 'w-mol', title: 'demo', issue_type: 'molecule', assignee: 'alice' },
+      { id: 'w-mol.1', title: 'Only step', issue_type: 'task', parent: 'w-mol' },
+    ]);
+    const integration = h.integration();
     await sweep(integration);
-    expect(commands(h).filter(c => c === 'show w-a')).toHaveLength(1);
+    // Both cards wait in Done in one sweep, the step's first: the refresh read
+    // still shows the root open and held by alice when the step's close closes it.
+    h.workItems.move(cardFor(h, 'w-mol.1').id, 'done');
+    h.workItems.move(cardFor(h, 'w-mol').id, 'done');
+    h.workItems.items.sort(
+      (a, b) => Number(a.metadata?.[BEADS_META.id] === 'w-mol') - Number(b.metadata?.[BEADS_META.id] === 'w-mol'),
+    );
+    const before = h.state().calls.length;
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 2 });
+    const calls = commands(h).slice(before);
+    expect(calls).toContain('show w-mol');
+    expect(calls).not.toContain('update w-mol');
+    expect(calls).not.toContain('close w-mol');
+    expect(h.state().beads[0]).toMatchObject({ status: 'closed', assignee: 'alice', closeReason: 'all steps complete' });
+    expect(cardFor(h, 'w-mol').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
   });
 
   it('parks a card as close-failed after the attempt cap', async () => {
@@ -582,8 +643,9 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     // Milestones are never read as ready; an epic is, and is sorted by its children.
     const ready = h.state().calls.find(c => c.argv.includes('ready'))!;
     expect(ready.argv).toContain('--exclude-type=milestone');
-    const list = h.state().calls.find(c => c.argv.includes('list'))!;
-    expect(list.argv).toEqual(['--readonly', 'list', '--parent=w-e', '--all', '--flat', '--json', '-n', '0']);
+    // One refresh read answers the epic and its children (samskara-l2t.15).
+    const lists = h.state().calls.filter(c => c.argv.includes('list'));
+    expect(lists.map(c => c.argv)).toEqual([['--readonly', 'list', '--all', '--brief', '--json', '-n', '0']]);
   });
 
   it('walks nested containers top-down and resolves each container once per sweep', async () => {
@@ -647,14 +709,15 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
   });
 
   it('back-fills the parent of a card made before its overview card, and a further sweep writes nothing', async () => {
+    // Not a dotted id: bd lists an edge-less `w-e.1` as a child of `w-e` (BeadSnapshot).
     h = createHarness([
       { id: 'w-e', title: 'Epic', issue_type: 'epic' },
-      { id: 'w-e.1', title: 'One', issue_type: 'task' },
+      { id: 'w-1', title: 'One', issue_type: 'task' },
     ]);
     const integration = h.integration();
     await sweep(integration);
     // The epic is childless, so it is a planning card for now.
-    expect(order(h)).toEqual(['w-e', 'w-e.1']);
+    expect(order(h)).toEqual(['w-e', 'w-1']);
     expect(card(h, 'w-e')!.metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
     // The bead is moved under the epic (or the card predates this feature).
     h.setState(s => (s.beads[1]!.parent = 'w-e'));
@@ -662,7 +725,7 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     const summary = await sweep(integration);
     expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 0 });
     expect(card(h, 'w-e')!.metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
-    expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
+    expect(card(h, 'w-1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
 
     const revisions = h.workItems.beadCards().map(c => c.revision);
     await sweep(integration);
@@ -757,18 +820,18 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     expect(warnings.some(w => w.includes('w-e is carded in another project'))).toBe(true);
   });
 
-  it('a failed children read still cards the child, unlinked, and the next sweep links it', async () => {
+  it('a failed refresh read still cards the child, unlinked, and the next sweep links it', async () => {
     h = createHarness([
       { id: 'w-e', title: 'Epic', issue_type: 'epic' },
       { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
     ]);
-    h.setState(s => (s.listParentFail = ['w-e']));
+    h.setState(s => (s.listFail = true));
     const integration = h.integration();
     const failed = await sweep(integration);
     expect(failed.repos[0]).toMatchObject({ state: 'ok', created: 1 });
     expect(card(h, 'w-e.1')!.parentWorkItemId).toBeNull();
 
-    h.setState(s => (s.listParentFail = []));
+    h.setState(s => (s.listFail = false));
     await sweep(integration);
     expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
   });
@@ -1001,16 +1064,16 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(1);
     expect(h.workItems.evaluations).toHaveLength(0);
 
-    // The last child closes, but the children cannot be read: the card's count is stale, so no move.
+    // The last child closes, but the refresh read fails: the card's count is stale, so no move.
     h.setState(s => {
       s.beads[2]!.status = 'closed';
-      s.listParentFail = ['w-e'];
+      s.listFail = true;
     });
     await sweep(integration);
     expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(1);
     expect(h.workItems.evaluations).toHaveLength(0);
 
-    h.setState(s => (s.listParentFail = []));
+    h.setState(s => (s.listFail = false));
     await sweep(integration);
     expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(0);
     expect(h.workItems.evaluations).toHaveLength(1);
@@ -1023,8 +1086,11 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     ]);
     const integration = h.integration();
     await sweep(integration);
-    // The child is moved out from under the epic: the epic is childless, not finished.
-    h.setState(s => delete s.beads[1]!.parent);
+    // The child is moved under another epic: this one is childless, not finished.
+    h.setState(s => {
+      s.beads[1]!.parent = 'w-f';
+      s.beads.push({ id: 'w-f', title: 'Other', issue_type: 'epic' });
+    });
     await sweep(integration);
     expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(0);
     expect(h.workItems.evaluations).toHaveLength(0);
@@ -1246,17 +1312,17 @@ describe('planning cards for childless epics (samskara-l2t.2.4)', () => {
 
   it('never makes a planning card from a failed children read, and leaves an existing one alone', async () => {
     h = createHarness([{ id: 'w-e', title: 'Epic', issue_type: 'epic' }]);
-    h.setState(s => (s.listParentFail = ['w-e']));
+    h.setState(s => (s.listFail = true));
     const integration = h.integration();
     const failed = await sweep(integration);
     expect(failed.repos[0]).toMatchObject({ state: 'ok', created: 0 });
     expect(h.workItems.beadCards()).toHaveLength(0);
 
-    h.setState(s => (s.listParentFail = []));
+    h.setState(s => (s.listFail = false));
     await sweep(integration);
     const planned = card(h, 'w-e');
     expect(planned.metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
-    h.setState(s => (s.listParentFail = ['w-e']));
+    h.setState(s => (s.listFail = true));
     await sweep(integration);
     expect(card(h, 'w-e').revision).toBe(planned.revision);
     expect(card(h, 'w-e').metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
@@ -1519,5 +1585,210 @@ describe('legacy container cards, subtasks and the dispatcher (samskara-l2t.2.5)
     expect(kicks).toBe(0);
     expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: card(h, 'w-e').id, stage: 'done', outcome: 'moved' }]);
     expect(kicks).toBe(1);
+  });
+});
+
+describe('per-sweep refresh read (samskara-l2t.15)', () => {
+  const card = (harness: Harness, beadId: string) => harness.workItems.items.find(i => i.metadata?.[BEADS_META.id] === beadId)!;
+  const logs = () => {
+    const lines = { info: [] as string[], warn: [] as string[] };
+    return {
+      lines,
+      logger: {
+        info: (...args: unknown[]) => void lines.info.push(args.join(' ')),
+        warn: (...args: unknown[]) => void lines.warn.push(args.join(' ')),
+        error: () => undefined,
+      },
+    };
+  };
+  /** The bd calls of one sweep, as "<command> <operand>". */
+  const callsOf = async (harness: Harness, integration: ReturnType<Harness['integration']>) => {
+    const before = harness.state().calls.length;
+    await sweep(integration);
+    return commands(harness).slice(before);
+  };
+  /** `count` epics with two children each, one of them closed. */
+  const containers = (count: number) =>
+    createHarness(
+      Array.from({ length: count }, (_, i) => [
+        { id: `w-e${i}`, title: `Epic ${i}`, issue_type: 'epic' },
+        { id: `w-e${i}.1`, title: 'Open', issue_type: 'task', parent: `w-e${i}` },
+        { id: `w-e${i}.2`, title: 'Closed', issue_type: 'task', parent: `w-e${i}`, status: 'closed' },
+      ]).flat(),
+    );
+
+  it('reads every bead with one bd call per sweep, whatever the number of containers, and counts stay correct', async () => {
+    h = containers(5);
+    const integration = h.integration();
+    const first = await callsOf(h, integration);
+    expect(first.filter(c => c === 'list')).toHaveLength(1);
+    // bd show only for a container's description comment, once per card; none of these has one.
+    expect(first.filter(c => c.startsWith('show'))).toHaveLength(5);
+    for (let i = 0; i < 5; i++) {
+      expect(card(h, `w-e${i}`).metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 1 });
+    }
+
+    // Steady state: the pull, one refresh read and bd ready; nothing per container.
+    expect(await callsOf(h, integration)).toEqual(['dolt pull', 'list', 'ready']);
+
+    // A child closes outside the Factory: its epic's count drops on the next sweep, from the same one read.
+    h.setState(s => (s.beads.find(b => b.id === 'w-e3.1')!.status = 'closed'));
+    const after = await callsOf(h, integration);
+    expect(after.filter(c => c === 'list')).toHaveLength(1);
+    expect(after.filter(c => c.startsWith('show'))).toEqual([]);
+    expect(card(h, 'w-e3').metadata?.[BEADS_META.openChildren]).toBe(0);
+    expect(card(h, 'w-e2').metadata?.[BEADS_META.openChildren]).toBe(1);
+  });
+
+  it('counts overview cards intake does not reach from the same read, nested containers by their direct children', async () => {
+    h = createHarness([
+      { id: 'w-m', title: 'Milestone', issue_type: 'milestone' },
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', parent: 'w-m' },
+      { id: 'w-e.1', title: 'Task', issue_type: 'task', parent: 'w-e' },
+      { id: 'w-e.1.1', title: 'Subtask', issue_type: 'task', parent: 'w-e.1' },
+      { id: 'w-e.2', title: 'Claimed', issue_type: 'task', parent: 'w-e', status: 'in_progress' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-m').metadata?.[BEADS_META.openChildren]).toBe(1);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(2);
+
+    // Nothing under the milestone is ready any more: step 3 counts both, with no bd call of its own.
+    h.setState(s => {
+      for (const b of s.beads) if (b.id !== 'w-m' && b.id !== 'w-e') b.status = 'in_progress';
+      s.beads.find(b => b.id === 'w-e')!.blockedBy = ['w-e.2'];
+    });
+    expect(await callsOf(h, integration)).toEqual(['dolt pull', 'list', 'ready']);
+    expect(card(h, 'w-m').metadata?.[BEADS_META.openChildren]).toBe(1);
+    expect(card(h, 'w-e').metadata?.[BEADS_META.openChildren]).toBe(2);
+  });
+
+  it('warns once per failure streak, logs the recovery, and warns again on a new streak', async () => {
+    h = containers(2);
+    const { lines, logger } = logs();
+    const integration = h.integration({ logger });
+    await sweep(integration);
+    const refreshWarnings = () => lines.warn.filter(w => w.includes('bd list --all failed'));
+
+    h.setState(s => (s.listFail = true));
+    for (let i = 0; i < 3; i++) {
+      const summary = await sweep(integration);
+      expect(summary.repos[0]!.diagnostic).toMatch(/refresh read failed/);
+    }
+    expect(refreshWarnings()).toHaveLength(1);
+    expect(refreshWarnings()[0]).toMatch(/Logged once until it recovers/);
+
+    h.setState(s => (s.listFail = false));
+    const recovered = await sweep(integration);
+    expect(recovered.repos[0]!.diagnostic).toBeUndefined();
+    expect(lines.info.filter(l => l.includes('works again'))).toHaveLength(1);
+
+    h.setState(s => (s.listFail = 1));
+    await sweep(integration);
+    await sweep(integration);
+    expect(refreshWarnings()).toHaveLength(2);
+  });
+
+  it('shows a container for its description once per card, and again only after an empty one changes', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', description: 'The whole thing.' },
+      { id: 'w-f', title: 'Bare', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+      { id: 'w-f.1', title: 'Two', issue_type: 'task', parent: 'w-f' },
+    ]);
+    const integration = h.integration();
+    const first = await callsOf(h, integration);
+    expect(first.filter(c => c.startsWith('show')).sort()).toEqual(['show w-e', 'show w-f']);
+    expect(h.feed.on(card(h, 'w-e').id).map(c => c.body)).toEqual(['The whole thing.']);
+    expect((await callsOf(h, integration)).filter(c => c.startsWith('show'))).toEqual([]);
+
+    // The bare epic gets a description: its updated_at moves, so it is shown and posted once.
+    h.setState(s => {
+      const bead = s.beads.find(b => b.id === 'w-f')!;
+      bead.description = 'Now described.';
+      bead.updatedAt = '2026-02-01T00:00:00Z';
+    });
+    expect((await callsOf(h, integration)).filter(c => c.startsWith('show'))).toEqual(['show w-f']);
+    expect(h.feed.on(card(h, 'w-f').id).map(c => c.body)).toEqual(['Now described.']);
+    expect((await callsOf(h, integration)).filter(c => c.startsWith('show'))).toEqual([]);
+  });
+
+  it('reads a parent the list leaves out with bd show, as before', async () => {
+    // The parent is not in the list at all: bd show is asked, and fails, so the child is carded unlinked.
+    h = createHarness([{ id: 'w-1', title: 'Orphan', issue_type: 'task', parent: 'w-gone' }]);
+    const { lines, logger } = logs();
+    const integration = h.integration({ logger });
+    expect(await callsOf(h, integration)).toContain('show w-gone');
+    expect(card(h, 'w-1').parentWorkItemId).toBeNull();
+    expect(lines.warn.filter(w => w.includes('w-gone is not in bd list'))).toHaveLength(1);
+  });
+});
+
+describe('BeadSnapshot (samskara-l2t.15)', () => {
+  // Rows as bd 1.3.1 printed them (bd --readonly list --all --brief --json -n 0), trimmed.
+  const rows = [
+    { id: 'x-e', title: 'Epic', status: 'open', priority: 2, issue_type: 'epic', updated_at: '2026-10-10T05:31:49Z', comment_count: 0 },
+    {
+      id: 'x-e.1',
+      title: 'Child',
+      status: 'open',
+      priority: 2,
+      issue_type: 'task',
+      updated_at: '2026-10-10T05:31:51Z',
+      labels: ['foo'],
+      assignee: 'someone',
+      comment_count: 1,
+      parent: 'x-e',
+      dependencies: [{ issue_id: 'x-e.1', depends_on_id: 'x-e', type: 'parent-child' }],
+    },
+    {
+      id: 'x-e.1.1',
+      title: 'Sub',
+      status: 'closed',
+      close_reason: 'done here',
+      priority: 2,
+      issue_type: 'task',
+      updated_at: '2026-10-10T05:31:55Z',
+      comment_count: 0,
+      parent: 'x-e.1',
+      dependencies: [{ issue_id: 'x-e.1.1', depends_on_id: 'x-e.1', type: 'parent-child' }],
+    },
+    // Imported with a dotted id and no edge: bd lists it under every dotted prefix.
+    { id: 'x-e.1.9', title: 'Edgeless', status: 'open', issue_type: 'task', comment_count: 0 },
+    { id: 'x-e.1.9.1', title: 'Edgeless grandchild', status: 'open', issue_type: 'task', comment_count: 0 },
+    // Two parents: the row's parent names the lower one; bd list --parent lists it under both.
+    {
+      id: 'x-t',
+      title: 'Twice',
+      status: 'open',
+      issue_type: 'task',
+      comment_count: 0,
+      parent: 'x-a',
+      dependencies: [
+        { issue_id: 'x-t', depends_on_id: 'x-b', type: 'parent-child' },
+        { issue_id: 'x-t', depends_on_id: 'x-a', type: 'parent-child' },
+        { issue_id: 'x-t', depends_on_id: 'x-e', type: 'blocks' },
+      ],
+    },
+  ];
+  const ids = (list: readonly { id: string }[]) => list.map(r => r.id).sort();
+
+  it('answers children as bd list --parent=<id> --all does', () => {
+    const snapshot = new BeadSnapshot(rows);
+    // Checked on bd 1.3.1 with this shape: an edge-less dotted bead under each dotted prefix.
+    expect(ids(snapshot.children('x-e'))).toEqual(['x-e.1', 'x-e.1.9', 'x-e.1.9.1']);
+    expect(ids(snapshot.children('x-e.1'))).toEqual(['x-e.1.1', 'x-e.1.9', 'x-e.1.9.1']);
+    expect(ids(snapshot.children('x-e.1.9'))).toEqual(['x-e.1.9.1']);
+    expect(ids(snapshot.children('x-a'))).toEqual(['x-t']);
+    expect(ids(snapshot.children('x-b'))).toEqual(['x-t']);
+    expect(snapshot.children('x-t')).toEqual([]);
+    expect(snapshot.size).toBe(6);
+  });
+
+  it('carries what the inbound consumers read', () => {
+    const snapshot = new BeadSnapshot(rows);
+    expect(snapshot.get('x-e.1')).toMatchObject({ title: 'Child', status: 'open', labels: ['foo'], assignee: 'someone', parent: 'x-e', comment_count: 1 });
+    expect(snapshot.get('x-e.1.1')).toMatchObject({ status: 'closed', close_reason: 'done here', updated_at: '2026-10-10T05:31:55Z' });
+    expect(snapshot.get('x-missing')).toBeUndefined();
   });
 });

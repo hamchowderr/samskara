@@ -46,8 +46,8 @@ export { beadsSetting, beadsStartupLine } from './setting';
 export type { BeadsSetting } from './setting';
 export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runner';
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
-export { BdRepo, cacheDirFor, CONTAINER_TYPES, NEVER_READY_TYPES, OVERVIEW_TYPES } from './repo';
-export type { BeadDetails, ChildBead, ReadyBead } from './repo';
+export { BdRepo, BeadSnapshot, cacheDirFor, CONTAINER_TYPES, NEVER_READY_TYPES, OVERVIEW_TYPES } from './repo';
+export type { BeadDetails, BeadRow, ReadyBead } from './repo';
 export { BeadsSyncWorker, LeaseWaitTimeoutError } from './worker';
 export type { LeaseSource, TickOutcome, WithLeaseOptions } from './worker';
 export {

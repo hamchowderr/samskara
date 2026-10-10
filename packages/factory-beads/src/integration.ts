@@ -47,7 +47,7 @@ import { createBeadsTools, resolveToolProject } from './agent-tools';
 import type { ToolScope } from './agent-tools';
 import { registerLive } from './done-rule';
 import { BdRepo, cacheDirFor, OVERVIEW_TYPES, resultTail } from './repo';
-import type { BeadDetails } from './repo';
+import type { BeadDetails, BeadRow, BeadSnapshot } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
 import { BeadsToolOps } from './tool-ops';
@@ -228,6 +228,9 @@ export interface SweepSummary {
 
 const DEFAULT_REMOTE_CHECK_INTERVAL_MS = 15 * 60_000;
 
+/** How a repository's diagnostic starts when the refresh read failed (#readSnapshot). */
+const REFRESH_FAILED = 'refresh read failed';
+
 /** The ref beads publishes its Dolt data to (bd's git remote). */
 export const BEADS_DATA_REF = 'refs/dolt/data';
 
@@ -263,6 +266,13 @@ interface IntakeScope {
   counted: Map<string, { open: number; total: number }>;
   /** Open containers whose children were read this sweep and that have none, by bead id. */
   childless: Set<string>;
+  /**
+   * The refresh read (samskara-l2t.15, BdRepo.refresh): every bead of the
+   * copy and each one's children, read once after the copy's last change in
+   * this sweep. Undefined when the read failed: every step that needs a
+   * bead's state or its children is skipped for the repository this sweep.
+   */
+  snapshot: BeadSnapshot | undefined;
 }
 
 /** What committing a rule-evaluated transition came to. */
@@ -310,6 +320,13 @@ export class BeadsIntegration implements FactoryIntegration {
   #toolsFailureLogged = false;
   /** Repositories parked by an agent-write conflict whose reset was requested (POST /web/beads/reset). */
   readonly #resetRepos = new Set<string>();
+  /** Repositories (slug) whose refresh read is failing: warned once per failure streak. */
+  readonly #refreshFailing = new Set<string>();
+  /**
+   * Overview cards whose container had no description when last shown, by
+   * card id: the bead's `updated_at` then. Shown again only once it changes.
+   */
+  readonly #undescribed = new Map<string, string>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -693,10 +710,22 @@ export class BeadsIntegration implements FactoryIntegration {
         Number(item.metadata?.[BEADS_META.closeAttempts] ?? 0) < maxAttempts,
     );
     if (pending.length > 0) {
+      // Each bead's status and holder come from one refresh read of the copy
+      // as it is, before any pull, which is what the `bd show` per card it
+      // replaces read, until the first close lands. A close can change other
+      // beads: closing a molecule's last open step closes the root too (bd
+      // v1.3.1 cmd/bd/close.go:700-735), and a root read before that still
+      // shows its holder, so the handover would rewrite a closed bead's
+      // assignee. From the first close on, each bead is read with `bd show`
+      // right before its close, as before the refresh read. A failed read
+      // falls back to `bd show` for every bead, so write-back never waits on
+      // the refresh read.
+      let before = await this.#readSnapshot(repo, report, 'write-back read each bead with bd show');
       const closed: WorkItemRow[] = [];
       for (const item of pending) {
         const beadId = String(item.metadata?.[BEADS_META.id]);
-        const bead = await repo.show(beadId);
+        // A bead the list leaves out (a gate, a wisp) is read with bd show, as before.
+        const bead = before?.get(beadId) ?? (await repo.show(beadId));
         if (bead?.status === 'closed') {
           closed.push(item);
           continue;
@@ -704,6 +733,7 @@ export class BeadsIntegration implements FactoryIntegration {
         const res = await repo.close(beadId, this.#closeReason(item), bead?.assignee);
         if (res.code === 0) {
           closed.push(item);
+          before = undefined;
           continue;
         }
         const attempts = Number(item.metadata?.[BEADS_META.closeAttempts] ?? 0) + 1;
@@ -781,6 +811,8 @@ export class BeadsIntegration implements FactoryIntegration {
     //    task's subtask) is linked under the parent's card when it has one;
     //    ready parents are carded before their ready children, so that link
     //    is made in the same sweep.
+    //    Every step from here reads bead state from one refresh read, taken
+    //    now, after the copy's last change in this sweep (samskara-l2t.15).
     const scope: IntakeScope = {
       orgId,
       projectId,
@@ -791,6 +823,10 @@ export class BeadsIntegration implements FactoryIntegration {
       overviews: new Map(),
       counted: new Map(),
       childless: new Set(),
+      // Read after write-back, never reused from before it: a close, a refused
+      // close's handover and back, or the sync (which pulls) may have changed
+      // the copy.
+      snapshot: await this.#readSnapshot(repo, report, 'the overview steps skipped'),
     };
     for (const bead of parentsFirst(await repo.ready())) {
       // No `workspaceId` in the source: POST /web/factory/projects/:id/work-items
@@ -857,7 +893,10 @@ export class BeadsIntegration implements FactoryIntegration {
     //    A planning card intake did not reach (its epic is blocked, say) is
     //    resolved here too, so it becomes an overview card as soon as its
     //    epic has children, whether or not the epic is ready.
-    for (const card of cards) {
+    //    Counts come from the refresh read, with no bd call per card. Without
+    //    it (the read failed) no count is written, so step 4 moves nothing.
+    const beads = scope.snapshot;
+    for (const card of beads ? cards : []) {
       const beadId = card.metadata?.[BEADS_META.id];
       if (typeof beadId !== 'string' || card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
       if (card.metadata?.[BEADS_META.cardKind] === PLAN_CARD_KIND) {
@@ -866,12 +905,12 @@ export class BeadsIntegration implements FactoryIntegration {
       }
       if (card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || scope.counted.has(beadId)) continue;
       try {
-        const children = await repo.children(beadId);
+        const children = beads!.children(beadId);
         const open = children.filter(child => child.status !== 'closed').length;
         if (card.metadata?.[BEADS_META.openChildren] !== open) await this.#mark(orgId, card, { [BEADS_META.openChildren]: open });
         scope.counted.set(beadId, { open, total: children.length });
       } catch (error) {
-        this.#log.warn(`[factory-beads] ${slug}: children of ${beadId} not read: ${error instanceof Error ? error.message : String(error)}`);
+        this.#log.warn(`[factory-beads] ${slug}: open-children count of ${beadId} not written: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -896,6 +935,38 @@ export class BeadsIntegration implements FactoryIntegration {
   }
 
   /**
+   * The refresh read (samskara-l2t.15, BdRepo.refresh), or undefined when it
+   * failed. A failure warns once per failure streak, not once per sweep, and
+   * the first read that works again logs one line. The repository's report
+   * carries the failure as its diagnostic, naming the `consequence`; a later
+   * failed read in the same sweep replaces an earlier one's, so the overview
+   * steps' is the one shown. Its state is left as the other steps set it:
+   * write-back falls back to `bd show`, and the pull and the intake of ready
+   * beads still run.
+   */
+  async #readSnapshot(repo: BdRepo, report: RepoSyncReport, consequence: string): Promise<BeadSnapshot | undefined> {
+    try {
+      const snapshot = await repo.refresh();
+      if (this.#refreshFailing.delete(repo.slug)) {
+        this.#log.info(`[factory-beads] ${repo.slug}: the refresh read (bd list --all) works again; ${snapshot.size} beads read`);
+      }
+      return snapshot;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!this.#refreshFailing.has(repo.slug)) {
+        this.#refreshFailing.add(repo.slug);
+        this.#log.warn(
+          `[factory-beads] ${repo.slug}: ${message}. Until it reads again, each sweep skips open-children counts, overview and planning cards, overview moves and re-arms for this repository, and write-back reads each bead with bd show. Ready beads are still carded; a ready bead is linked under its parent only when the parent already has a card. Logged once until it recovers.`,
+        );
+      }
+      if (report.diagnostic === undefined || report.diagnostic.startsWith(REFRESH_FAILED)) {
+        report.diagnostic = `${REFRESH_FAILED}, so ${consequence} this sweep: ${message}`;
+      }
+      return undefined;
+    }
+  }
+
+  /**
    * Step 4 of a sweep. A card moves only when its count was read this sweep,
    * is 0, and is the count on the card, so the board policy (board-rules.ts:
    * Done is refused while `beadsOpenChildren` is above 0) accepts the move. A
@@ -914,7 +985,7 @@ export class BeadsIntegration implements FactoryIntegration {
     const moved = new Set<string>();
     const settled = [...scope.counted].filter(([, count]) => count.open === 0);
     if (settled.length === 0) return moved;
-    const { orgId, projectId, slug, repo } = scope;
+    const { orgId, projectId, slug, repo, snapshot } = scope;
     // Re-read: revisions moved during this sweep, and a commit naming any but
     // the card's current revision is stored as rejected.
     const cards = await this.#ctx!.runtime!.workItems.list({ orgId, factoryProjectId: projectId });
@@ -929,7 +1000,8 @@ export class BeadsIntegration implements FactoryIntegration {
       if (card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
       if (card.metadata?.[BEADS_META.openChildren] !== 0) continue;
       try {
-        if (count.total === 0 && (await repo.status(beadId)) !== 'closed') continue;
+        // A counted container is in the refresh read; bd show only for one the list leaves out.
+        if (count.total === 0 && (snapshot?.get(beadId) ?? (await repo.show(beadId)))?.status !== 'closed') continue;
         const outcome = await this.#commitTransition(orgId, card, this.donePhase, 'overview-done');
         if (outcome === 'committed' || outcome === 'replayed') moved.add(card.id);
         if (outcome === 'committed') {
@@ -1024,18 +1096,19 @@ export class BeadsIntegration implements FactoryIntegration {
    * children is never re-armed.
    */
   async #rearmParentCloses(scope: IntakeScope, cards: WorkItemRow[]): Promise<void> {
-    const { orgId, slug, repo } = scope;
+    const { orgId, slug, snapshot } = scope;
+    // Children come from the refresh read; without it nothing is re-armed this sweep.
+    if (!snapshot) return;
     let rearmed = 0;
     for (const card of cards) {
       const beadId = card.metadata?.[BEADS_META.id];
       if (typeof beadId !== 'string' || card.board !== this.board) continue;
       if (card.stages.length !== 1 || card.stages[0] !== this.donePhase) continue;
       if (card.metadata?.[BEADS_META.writeback] !== 'close-failed' || card.metadata?.[BEADS_META.closeRearmedAt]) continue;
-      // Only a close bd refused for an open child can clear on its own; any
-      // other parked card would cost a bd read every tick for nothing.
+      // Only a close bd refused for an open child can clear on its own.
       if (!String(card.metadata?.[BEADS_META.diagnostic] ?? '').includes('open child')) continue;
       try {
-        const children = await repo.children(beadId);
+        const children = snapshot.children(beadId);
         if (children.length === 0 || children.some(child => child.status !== 'closed')) continue;
         await this.#mark(orgId, card, {
           [BEADS_META.writeback]: null,
@@ -1045,7 +1118,7 @@ export class BeadsIntegration implements FactoryIntegration {
         rearmed++;
         this.#log.info(`[factory-beads] ${slug}: every child of ${beadId} is closed; its close is retried`);
       } catch (error) {
-        this.#log.warn(`[factory-beads] ${slug}: children of ${beadId} not read: ${error instanceof Error ? error.message : String(error)}`);
+        this.#log.warn(`[factory-beads] ${slug}: close of ${beadId} not re-armed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     // Write-back ran before this step; the next tick retries the close.
@@ -1149,16 +1222,25 @@ export class BeadsIntegration implements FactoryIntegration {
 
   async #resolveOverview(scope: IntakeScope, id: string, trail: Set<string>): Promise<WorkItemRow | undefined> {
     const runtime = this.#ctx!.runtime!;
-    const bead = await scope.repo.show(id);
+    const { snapshot } = scope;
+    // No refresh read this sweep (warned once per streak by #readSnapshot):
+    // nothing is known about the container, so nothing is carded or changed
+    // for it, and its children are carded without a parent.
+    if (!snapshot) return undefined;
+    // The container from the refresh read; bd show only for a bead the list
+    // leaves out (bd list hides gates, templates and wisps by default).
+    const row = snapshot.get(id);
+    const shown = row ? undefined : await scope.repo.show(id);
+    const bead: BeadRow | BeadDetails | undefined = row ?? shown;
     if (!bead) {
       this.#warnOnce(
         `unreadable:${scope.slug}:${id}`,
-        `[factory-beads] ${scope.slug}: parent ${id} cannot be read with bd show; its children are carded without an overview card`,
+        `[factory-beads] ${scope.slug}: parent ${id} is not in bd list and cannot be read with bd show; its children are carded without an overview card`,
       );
       return undefined;
     }
     if (!(OVERVIEW_TYPES as readonly string[]).includes(bead.issue_type ?? '') || bead.status === 'closed') return undefined;
-    const children = await scope.repo.children(id);
+    const children = snapshot.children(id);
     if (children.length === 0) {
       scope.childless.add(id);
       return undefined;
@@ -1187,8 +1269,36 @@ export class BeadsIntegration implements FactoryIntegration {
         return undefined;
       }
     }
-    await this.#postDescription(card, bead);
+    await this.#describeOverview(scope, card, id, row, shown);
     return card;
+  }
+
+  /**
+   * The description comment on an overview card. A refresh row carries no
+   * description (`--brief`), so the container is read with `bd show` only
+   * while its card has no description comment in this process: once per card
+   * per process, and for a container whose description is empty, again only
+   * after the bead changes (its `updated_at`). `shown` is the container as
+   * bd show already read it, for one the list leaves out.
+   */
+  async #describeOverview(
+    scope: IntakeScope,
+    card: WorkItemRow,
+    id: string,
+    row: BeadRow | undefined,
+    shown: BeadDetails | undefined,
+  ): Promise<void> {
+    if (this.#described.has(card.id)) return;
+    const stamp = row?.updated_at ?? '';
+    if (!shown && this.#undescribed.get(card.id) === stamp) return;
+    const bead = shown ?? (await scope.repo.show(id));
+    if (!bead) return;
+    if (!bead.description?.trim()) {
+      this.#undescribed.set(card.id, stamp);
+      return;
+    }
+    this.#undescribed.delete(card.id);
+    await this.#postDescription(card, bead);
   }
 
   /** A new card for `bead`, under `parent` when given. Undefined when another project in the org holds its claim. */
