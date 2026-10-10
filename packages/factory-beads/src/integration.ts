@@ -37,6 +37,7 @@ import type { RequestContext } from '@mastra/core/request-context';
 import type { MastraWorker } from '@mastra/core/worker';
 import type { VersionControl } from '@mastra/factory/capabilities/version-control';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
+import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
 import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
@@ -70,6 +71,11 @@ export const BEADS_META = {
   cardKind: 'beadsCardKind',
   /** Overview cards: how many of the container's direct children are not closed. */
   openChildren: 'beadsOpenChildren',
+  /**
+   * Overview cards parked `close-failed` in Done: when the write-back was
+   * re-armed after the last child closed. Set once; a card is re-armed once.
+   */
+  closeRearmedAt: 'beadsCloseRearmedAt',
 } as const;
 
 /** `BEADS_META.cardKind` of an epic's, milestone's or molecule root's card. */
@@ -203,7 +209,23 @@ interface IntakeScope {
   report: RepoSyncReport;
   /** Overview cards resolved this sweep, by container bead id; undefined = none. */
   overviews: Map<string, Promise<WorkItemRow | undefined>>;
+  /**
+   * Overview cards whose open-children count was read and written this sweep,
+   * by container bead id: `open` children not closed, `total` children.
+   */
+  counted: Map<string, { open: number; total: number }>;
 }
+
+/** What committing a rule-evaluated transition came to. */
+export type TransitionCommit =
+  /** Stored; Factory's dispatcher applies the move. */
+  | 'committed'
+  /** This evaluation (same card revision) was stored before; nothing new. */
+  | 'replayed'
+  /** Stored as rejected: the card changed after it was read (`stale`). */
+  | 'rejected'
+  /** The card is gone. */
+  | 'missing';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -706,7 +728,7 @@ export class BeadsIntegration implements FactoryIntegration {
     //    on the card's feed (back-filled for cards that predate it). A bead
     //    with a parent container is linked under the container's overview
     //    card, which is made first.
-    const scope: IntakeScope = { orgId, projectId, slug, repo, initialPhase, report, overviews: new Map() };
+    const scope: IntakeScope = { orgId, projectId, slug, repo, initialPhase, report, overviews: new Map(), counted: new Map() };
     for (const bead of await repo.ready()) {
       // No `workspaceId` in the source: POST /web/factory/projects/:id/work-items
       // drops it (routes/contracts.js externalSourceSchema), so a key carrying
@@ -738,21 +760,170 @@ export class BeadsIntegration implements FactoryIntegration {
       if (card) await this.#postDescription(card, bead);
     }
 
-    // 3. Open-children counts on the overview cards intake did not reach this
-    //    sweep (none of their children is ready). The board policy reads the
-    //    count to refuse Done while a child is open, and a policy may not read
-    //    storage itself (configure-factory-rules/SKILL.md:63).
+    // 3. Open-children counts on the overview cards intake did not count this
+    //    sweep: none of their children is ready, or the container itself is
+    //    closed. #resolveOverview stops at a closed container before counting,
+    //    so skipping every container intake touched froze a force-closed
+    //    container's count while one of its children was still ready.
+    //    The board policy reads the count to refuse Done while a child is
+    //    open, and a policy may not read storage itself
+    //    (configure-factory-rules/SKILL.md:63).
     for (const card of cards) {
       const beadId = card.metadata?.[BEADS_META.id];
       if (card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || typeof beadId !== 'string') continue;
-      if (scope.overviews.has(beadId) || card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
+      if (scope.counted.has(beadId) || card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
       try {
-        const open = (await repo.children(beadId)).filter(child => child.status !== 'closed').length;
+        const children = await repo.children(beadId);
+        const open = children.filter(child => child.status !== 'closed').length;
         if (card.metadata?.[BEADS_META.openChildren] !== open) await this.#mark(orgId, card, { [BEADS_META.openChildren]: open });
+        scope.counted.set(beadId, { open, total: children.length });
       } catch (error) {
         this.#log.warn(`[factory-beads] ${slug}: children of ${beadId} not read: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+
+    // 4. Overview cards whose last child closed move to Done. The move is a
+    //    rule decision, so Factory's own transition applies it and the Done
+    //    rule wakes this worker; the next sweep's write-back (step 1) then
+    //    closes the container as this integration's actor and syncs it, or,
+    //    when bd already closed it (a molecule root closes with its last
+    //    step), only marks the card synced. Not `bd epic close-eligible`: it
+    //    closes every eligible epic in the repository, as actor system (owner
+    //    decision, samskara-l2t.2).
+    await this.#closeSettledOverviews(scope, phaseKind);
+
+    // 5. Overview cards parked `close-failed` in Done whose children have all
+    //    closed since: bd refused the close while a child was open.
+    await this.#rearmOverviewCloses(scope, cards);
+  }
+
+  /**
+   * Step 4 of a sweep. A card moves only when its count was read this sweep,
+   * is 0, and is the count on the card, so the board policy (board-rules.ts:
+   * Done is refused while `beadsOpenChildren` is above 0) accepts the move. A
+   * container with no children at all moves only when its bead is closed: a
+   * childless epic is not finished work (samskara-l2t.2.4).
+   *
+   * The dispatcher applies the move after this sweep (it polls every second,
+   * rules/dispatcher.js:17,295), and the policy reads the card as it is then.
+   * A child added after the count was read is caught by bd instead, which
+   * refuses the container's close; step 5 re-arms that close once the child
+   * closes.
+   */
+  async #closeSettledOverviews(scope: IntakeScope, phaseKind: (phase: string) => string | undefined): Promise<void> {
+    const settled = [...scope.counted].filter(([, count]) => count.open === 0);
+    if (settled.length === 0) return;
+    const { orgId, projectId, slug, repo } = scope;
+    // Re-read: revisions moved during this sweep, and a commit naming any but
+    // the card's current revision is stored as rejected.
+    const cards = await this.#ctx!.runtime!.workItems.list({ orgId, factoryProjectId: projectId });
+    for (const [beadId, count] of settled) {
+      const card = cards.find(
+        item =>
+          item.externalSource?.integrationId === BEADS_INTEGRATION_ID &&
+          item.metadata?.[BEADS_META.repo] === slug &&
+          item.metadata?.[BEADS_META.id] === beadId,
+      );
+      if (!card || card.board !== this.board || card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND) continue;
+      if (card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
+      if (card.metadata?.[BEADS_META.openChildren] !== 0) continue;
+      try {
+        if (count.total === 0 && (await repo.status(beadId)) !== 'closed') continue;
+        const outcome = await this.#commitTransition(orgId, card, this.donePhase, 'overview-done');
+        if (outcome === 'committed') {
+          this.#log.info(`[factory-beads] ${slug}: every child of ${beadId} is closed; its card moves to ${this.donePhase}`);
+        }
+      } catch (error) {
+        this.#log.warn(
+          `[factory-beads] ${slug}: card of ${beadId} not moved to ${this.donePhase}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Step 5 of a sweep. bd refuses to close a container while a child is open,
+   * so an overview card that reached Done early (moved by hand, or a child was
+   * added after the count was read) is parked `close-failed` after
+   * `maxCloseAttempts`, and write-back never tries it again. Once every child
+   * is closed that refusal no longer holds: the attempts and the write-back
+   * state are reset so the close is retried. Once per card
+   * (`beadsCloseRearmedAt`): a close that then fails for another reason stays
+   * parked for an operator. The card stays in Done. Cards made before overview
+   * cards existed carry only `beadsType`, and are re-armed too.
+   */
+  async #rearmOverviewCloses(scope: IntakeScope, cards: WorkItemRow[]): Promise<void> {
+    const { orgId, slug, repo } = scope;
+    let rearmed = 0;
+    for (const card of cards) {
+      const beadId = card.metadata?.[BEADS_META.id];
+      if (typeof beadId !== 'string' || card.board !== this.board) continue;
+      if (card.stages.length !== 1 || card.stages[0] !== this.donePhase) continue;
+      if (card.metadata?.[BEADS_META.writeback] !== 'close-failed' || card.metadata?.[BEADS_META.closeRearmedAt]) continue;
+      const container =
+        card.metadata?.[BEADS_META.cardKind] === OVERVIEW_CARD_KIND ||
+        (OVERVIEW_TYPES as readonly string[]).includes(String(card.metadata?.[BEADS_META.type] ?? ''));
+      if (!container) continue;
+      try {
+        const children = await repo.children(beadId);
+        if (children.length === 0 || children.some(child => child.status !== 'closed')) continue;
+        await this.#mark(orgId, card, {
+          [BEADS_META.writeback]: null,
+          [BEADS_META.closeAttempts]: 0,
+          [BEADS_META.closeRearmedAt]: new Date().toISOString(),
+        });
+        rearmed++;
+        this.#log.info(`[factory-beads] ${slug}: every child of ${beadId} is closed; its close is retried`);
+      } catch (error) {
+        this.#log.warn(`[factory-beads] ${slug}: children of ${beadId} not read: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    // Write-back ran before this step; the next tick retries the close.
+    if (rearmed > 0) this.kick();
+  }
+
+  /**
+   * Move `card` to `stage` on this integration's board the way Factory's own
+   * integrations do: commit a rule evaluation carrying a `transition`
+   * decision, as Linear's issue-closed rule does (@mastra/factory 0.20.0
+   * dist/integrations/linear/default-rules.js:35-49, committed at
+   * integrations/linear/rules.js:131-158). Factory's dispatcher applies it
+   * through the transition service as actor system, so the board policy and
+   * the phase's rules run as for any move (rules/dispatcher.js:507-534); a
+   * refused move fails the decision, retried up to 5 times (:19, :39-41).
+   *
+   * `key` names the reason, e.g. `overview-done`. The ingress identity
+   * carries the card's revision: commitRuleEvaluation replays any identity it
+   * has seen, and stores an evaluation whose expected revision is not the
+   * card's as rejected with code `stale`
+   * (storage/domains/work-items/base.js:1424-1473). Without the revision a
+   * stale evaluation would be replayed, rejected, forever; with it, the
+   * card's next revision gets a fresh evaluation, and a repeat at the same
+   * revision is a harmless replay.
+   */
+  async #commitTransition(orgId: string, card: WorkItemRow, stage: string, key: string): Promise<TransitionCommit> {
+    const runtime = this.#ctx!.runtime!;
+    const identity = `${BEADS_INTEGRATION_ID}:${key}:${card.id}@${card.revision}`;
+    // Factory's own validation, as the Linear rules run it (linear/rules.js:131-134).
+    const decisions = validateFactoryRuleDecisions([
+      { type: 'transition', idempotencyKey: `${identity}:transition`, board: this.board, stage },
+    ]).map(decision => ({ ...decision }) as Record<string, unknown>);
+    const result = await runtime.workItems.commitRuleEvaluation({
+      orgId,
+      factoryProjectId: card.factoryProjectId,
+      workItemId: card.id,
+      ingress: { identity, triggerType: `${BEADS_INTEGRATION_ID}.${key}` },
+      configVersion: runtime.configVersion,
+      expectedRevision: card.revision,
+      // System, not an external actor: the dispatcher asks no consent for it (rules/dispatcher.js:193-201).
+      actor: { type: 'system', id: `integration:${BEADS_INTEGRATION_ID}` },
+      outcome: { status: 'accepted' },
+      decisions,
+      causalChain: [],
+      now: new Date(),
+    });
+    if (result.status === 'missing' || result.status === 'replayed') return result.status;
+    return result.result.status === 'accepted' ? 'committed' : 'rejected';
   }
 
   /**
@@ -797,6 +968,7 @@ export class BeadsIntegration implements FactoryIntegration {
     const children = await scope.repo.children(id);
     if (children.length === 0) return undefined;
     const open = children.filter(child => child.status !== 'closed').length;
+    scope.counted.set(id, { open, total: children.length });
     const parent = bead.parent ? await this.#overview(scope, bead.parent, trail) : undefined;
 
     let card: WorkItemRow | undefined =

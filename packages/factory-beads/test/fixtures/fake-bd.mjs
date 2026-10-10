@@ -178,6 +178,13 @@ switch (words[0]) {
     } else {
       bead.status = 'closed';
       bead.closeReason = reasonIndex >= 0 ? argv[reasonIndex + 1] : null;
+      // Like bd 1.3.1 (checked by hand): closing a molecule's last open step
+      // auto-closes the root ("Auto-closed completed molecule"). An epic is not.
+      const root = state.beads.find(b => b.id === bead.parent);
+      if (root?.issue_type === 'molecule' && isOpen(root) && state.beads.every(b => b.parent !== root.id || !isOpen(b))) {
+        root.status = 'closed';
+        root.closeReason = 'all steps complete';
+      }
     }
     break;
   }

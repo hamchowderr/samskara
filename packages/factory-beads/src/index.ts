@@ -16,6 +16,7 @@ export type {
   RepoState,
   RepoSyncReport,
   SweepSummary,
+  TransitionCommit,
   WritebackState,
 } from './integration';
 export { createBeadsDoneRule } from './done-rule';
