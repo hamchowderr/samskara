@@ -16,7 +16,7 @@ import { pathToFileURL } from 'node:url';
 import type { RequestContext } from '@mastra/core/request-context';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { BdRepo, BdRunner, BEADS_META, createBeadsTransitionPolicy } from '../src/index';
+import { BdRepo, BdRunner, BEADS_META } from '../src/index';
 import { createHarness, PROJECT, sweep } from './harness';
 import type { Harness } from './harness';
 
@@ -221,7 +221,6 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     });
     const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id)!;
     const closedBy = (id: string) => calls.filter(c => c.includes('close') && c.includes(id));
-    const policy = createBeadsTransitionPolicy(undefined);
     const show = (id: string) =>
       (JSON.parse(run('bd', ['--readonly', 'show', id, '--json'])) as Array<{ status: string; close_reason?: string }>)[0]!;
 
@@ -240,7 +239,7 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(card(mol).metadata?.[BEADS_META.openChildren]).toBe(0);
 
     // Both moves were committed, and the board policy accepts each.
-    const moved = await h.workItems.applyDecisions(policy);
+    const moved = await h.workItems.applyDecisions();
     expect(moved).toEqual(
       expect.arrayContaining([
         { workItemId: card(epic).id, stage: 'done', outcome: 'moved' },
@@ -351,6 +350,49 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(card(one)?.parentWorkItemId).toBe(card(epic)!.id);
     // Blocked by the first child, so not ready and not carded yet.
     expect(card(two)).toBeUndefined();
+  }, 300_000);
+
+  it('links a subtask card under its parent task card without making the task an overview card (samskara-l2t.2.5)', async () => {
+    // The previous test published through the integration's tools: catch this copy up first.
+    run('bd', ['dolt', 'pull']);
+    const make = (title: string, type: string, parent?: string) =>
+      run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])]).split(/\r?\n/)[0]!;
+    const task = make('Parent task', 'task');
+    const sub = make('Subtask', 'task', task);
+    run('bd', ['dolt', 'push']);
+
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+      maxCloseAttempts: 1,
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id)!;
+    const linked = await sweep(integration);
+    expect(linked.repos[0], JSON.stringify(linked)).toMatchObject({ state: 'ok' });
+    // bd 1.3.1 lists both as ready, the subtask naming its parent.
+    expect(card(sub).parentWorkItemId).toBe(card(task).id);
+    expect(card(task).metadata?.[BEADS_META.cardKind]).toBeUndefined();
+    expect(card(task).metadata?.[BEADS_META.openChildren]).toBeUndefined();
+
+    // The task's card reaches Done first: bd refuses to close a bead with an open child.
+    h.workItems.move(card(task).id, 'done');
+    await sweep(integration);
+    expect(card(task).metadata).toMatchObject({ [BEADS_META.writeback]: 'close-failed' });
+    expect(String(card(task).metadata?.[BEADS_META.diagnostic])).toContain('open child');
+    // The subtask closes, which re-arms the task's close; the next sweep closes it.
+    h.workItems.move(card(sub).id, 'done');
+    await sweep(integration);
+    expect(card(task).metadata?.[BEADS_META.closeRearmedAt]).toEqual(expect.any(String));
+    const closed = await sweep(integration);
+    expect(closed.repos[0], JSON.stringify(closed)).toMatchObject({ state: 'ok' });
+    expect(card(task).metadata?.[BEADS_META.writeback]).toBe('synced');
+    run('bd', ['dolt', 'pull']);
+    const shown = JSON.parse(run('bd', ['--readonly', 'show', task, '--json'])) as Array<{ status: string }>;
+    expect(shown[0]?.status).toBe('closed');
   }, 300_000);
 
   it('BdRepo.close: takes over a live claim, never forces, and returns a bead bd refuses to close', async () => {

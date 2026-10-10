@@ -34,7 +34,7 @@ Code:
   package. It is not published to npm.
 - Wiring: `src/mastra/index.ts:469-501` (the switch, construction and the
   `integrations` list; the switch is `beadsSetting` in
-  `packages/factory-beads/src/setting.ts`), Done rule at `src/mastra/boards/requests-board.ts:63-69`.
+  `packages/factory-beads/src/setting.ts`), board policy and phase handlers at `src/mastra/boards/requests-board.ts:64-70,92-115`.
 - Image: the `bd-cli` stage of the `Dockerfile`.
 
 ## What it does
@@ -49,7 +49,7 @@ App:
    [Repository states](#repository-states)). This runs every tick for a
    repository that has the ref, so a ref deleted on origin, or a copy
    bootstrapped before this check existed, is caught too
-   (`packages/factory-beads/src/integration.ts:535-553`).
+   (`packages/factory-beads/src/integration.ts:660-678`).
 1. **Bootstrap, first time only.** `git clone --depth 1`, then
    `bd --sandbox bootstrap --yes`, in `<BEADS_CACHE_DIR>/<owner>__<name>`. A
    marker file in `.git/` records that the copy is ready. The copy is kept
@@ -57,7 +57,7 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:559-625`). bd refuses to close
+   (`packages/factory-beads/src/integration.ts:684-751`). bd refuses to close
    a bead assigned to anyone but the closing actor, so a bead someone holds is
    first handed over with `bd update <id> --assignee=factory-beads
    --if-assignee=<holder>` (`repo.ts`, `BdRepo.close`). That swap fails with
@@ -80,15 +80,17 @@ App:
    that container's overview card, which is made first; see
    [Overview cards](#overview-cards). A ready epic with children is that
    overview card; a ready epic with none is a planning card; see
-   [Planning cards](#planning-cards).
+   [Planning cards](#planning-cards). A bead whose parent is any other bead
+   is put under the parent's card when it has one; see
+   [Subtasks](#subtasks).
 5. **Open-children counts.** Each overview card that intake did not reach
    in this tick, and that is not in a terminal phase, gets its open-children
    count read again. A planning card that intake did not reach is checked for
    children too.
-6. **Overview moves.** Overview cards whose last child closed are committed
-   to Done; overview cards stranded in a working phase with no active run
-   binding are committed to Intake; `close-failed` container cards whose
-   children have all closed are re-armed.
+6. **Overview moves and re-arms.** Overview cards whose last child closed
+   are committed to Done; overview cards stranded in a working phase whose
+   phase seat is not bound are committed to Intake; `close-failed` cards in
+   Done whose children have all closed are re-armed.
 
 A project connection whose GitHub installation no longer exists (an orphaned
 link, samskara-1ra) is skipped with one warning per connection, and the other
@@ -112,7 +114,7 @@ root is carded only as the parent of a ready child, as an overview card.
 
 Two things cannot change while the server runs. Each is checked once, at the
 first tick, and a failure logs **one** line and leaves the integration idle
-(`#checkPreconditions`, `integration.ts:238-255`). Nothing is synced until the
+(`#checkPreconditions`, `integration.ts:351-368`). Nothing is synced until the
 server restarts; `GET /web/beads/status` shows `state: 'idle'` and the reason.
 
 | Precondition | Log line |
@@ -146,7 +148,7 @@ Restarting the server re-checks at once.
 | `externalSource` | `{ integrationId: 'beads', type: 'issue', externalId: <bead id> }` |
 | `claimKey` | `beads:<owner/name>:<bead id>` |
 | `title` | `<bead id>: <bead title>` |
-| `parentWorkItemId` | the overview card of the bead's parent container, if it has one |
+| `parentWorkItemId` | the overview card of the bead's parent container, or the card of any other parent bead, when it has one |
 | `metadata` | `repository` (`<owner/name>`), `beadsId`, `beadsRepo`, `beadsType`, `beadsPriority`, plus write-back state; on an overview card also `beadsCardKind: 'overview'` and `beadsOpenChildren`; on an open decision's card `beadsCardKind: 'research'`; on a childless open epic's card `beadsCardKind: 'plan'` |
 
 Intake is idempotent. Before creating a card the integration looks it up by
@@ -162,6 +164,82 @@ Cards are created with `workItems.upsert` and not with a rule decision.
 `upsert` is the call that `POST /web/factory/projects/:id/work-items` makes, and
 it accepts any external source. A card with an unknown source classifies as
 `manual` (`rules/types.d.ts:12`), so the board's `manual` rules apply to it.
+
+### Card kinds
+
+Every beads card is one of four kinds, set in `beadsCardKind` from the bead
+(samskara-l2t.2). The kind decides what runs on the card, which moves the
+board allows, and who approves. The sections below give the detail; this is
+the summary.
+
+| Kind | Bead | `beadsCardKind` | What runs on it | How it moves | Who approves |
+|------|------|-----------------|-----------------|--------------|--------------|
+| Work | any other ready bead (task, bug, feature, chore, spike, story) | absent | Work's own triage, plan and build runs | as any Work card | Work's plan gate; a card reaching Done closes the bead |
+| [Overview](#overview-cards) | an epic, milestone or molecule root with children | `overview` | nothing | rests in Intake; the worker commits it to Done when its last child closes; never into a working phase | nobody: the last child's close is the signal |
+| [Planning](#planning-cards) | an open epic with no children | `plan` | Planning: `factory-beads-epic` propose mode; Building: file mode | a person moves it to Planning, then to Building; the file run moves it back to Intake; it becomes an overview card | a person, by moving it to Building (never the system or an agent, whatever auto-approve says) |
+| [Research](#research-cards) | an open `decision` | `research` | Planning: `factory-beads-decision` | a person moves it to Planning; it never enters Triage, Building or Review | a person, by moving it to Done, which closes the bead |
+
+A bead whose parent is not a container (a task with subtasks) is linked under
+its parent's card, which stays a work card (samskara-l2t.2.5): see
+[Subtasks](#subtasks).
+
+**What the board can and cannot guard.** Every rule above that refuses a move
+is the Requests board's `transitionPolicy` (`board-rules.ts`), which Factory
+asks on every transition, for every actor, before any phase rule
+(`@mastra/factory` 0.20.0 `dist/rules/transition-service.js:245-262`). The
+policy is consulted only when a card moves. Three things in the Factory UI
+matter here; all were checked in `mastra` 1.33.0
+(`node_modules/mastra/dist/factory/assets/index-BaghZlUk.js`):
+
+- **"Start session".** Every card without a session shows it, overview,
+  research and planning cards included: `Tdt` falls back to
+  `{label: "Start session", start: () => onCreateSession(Sue(card))}` when no
+  other action applies. `onCreateSession` is `openOrCreateSession` (`Lde`),
+  which opens the card's existing session if it has one, or else creates a
+  session on the card's repository and calls
+  `POST /web/factory/projects/:id/runs/start` (`rQe`) with
+  `workItem: {id, role: "chat", input: {..., stages: ["intake"]}}` and no
+  destination stage. On the server
+  (`dist/routes/work-items.js:508-534`), the body schema has no
+  `destinationStage` field (`dist/routes/contracts.js:99-108`), and
+  `FactoryStartCoordinator.prepare` (`dist/rules/start-coordinator.js:67-220`)
+  binds the session to the card in the `chat` seat
+  (`prepareRunStart`, `dist/storage/domains/work-items/base.js:2219-2382`:
+  for an existing card only its `sessions` change, never its stages) with
+  `kickoffMessage: null`, marks the start `sent`, and transitions only when a
+  destination stage is given (`:181-206`), which this route never does. So
+  no transition runs, no board policy, phase handler or tool rule is asked,
+  no skill is invoked, and no agent turn starts: the person gets an empty
+  chat thread bound to the card. The agent in it sees the card's phase
+  (`dist/rules/processor.js:206`; in Intake it is told the card's work is
+  paused) and may request moves with `factory_transition_work_item`, which
+  `prepare` allows without a prompt (`start-coordinator.js:153-156`). Those
+  requests go through the transition service (`dist/rules/tools.js:53-87`),
+  so the board policy refuses them as for any other agent. Factory has no
+  board or integration hook for a session start: a board declares phases'
+  `onEnter`/`onExit`, tool-result rules and `transitionPolicy` only
+  (`dist/boards/define-board.d.ts:43-62`), and an integration's hooks
+  (`dist/integrations/base.d.ts:180-286`) include none either. The board
+  therefore cannot refuse the session or run the card's own skill in it.
+  What an overview card's chat session can do is what any chat session can;
+  the `factory-beads` skill tells agents not to build on one. This is
+  recorded as a Mastra gap below. A middleware on `runs/start` could refuse
+  overview cards, but it would override a Factory route, which the
+  native-only rule rules out; the session it opens is empty and harmless.
+- **"Resume".** A card in Intake that has had a triage, plan, work or review
+  session shows "Resume" (`Rdt`: the furthest such seat's phase in pipeline
+  order triage < plan < work < review, via
+  `K4 = {triage, plan → planning, work → execute, review}`). It calls the
+  card's move (`onMove`), which is `POST .../work-items/:id/transition` as a
+  person (`dist/routes/work-items.js:472-507`), so the board policy decides.
+  For an overview card that phase is a working phase, and the move is
+  refused with `forbidden`. For a planning card, Resume into Building is a
+  person's move, so it approves the latest proposal, the same as moving the
+  card to Building.
+- **Greyed moves while a session is open.** While a card has a session
+  status, the card menu disables every move into a working phase; see
+  [Planning cards](#planning-cards), step 3. That is the UI, not the board
+  policy.
 
 ### Overview cards
 
@@ -213,7 +291,7 @@ bumps the card's revision. Overview cards rest in the board's initial phase
 | The container has no children | No overview card (owner decision). A childless open epic gets a [planning card](#planning-cards); a childless milestone or molecule root gets no card. |
 | The child is already carded in another project of the organization | No overview card in this project, and one warning per process. The child's claim (`getByClaimKey`, `base.js:1220-1226`) says where its family lives. |
 | The container itself is carded in another project | The children are carded here without a parent, with one warning. |
-| The parent is not an epic, milestone or molecule, or it is closed | The child is carded without a parent. |
+| The parent is not an epic, milestone or molecule, or it is closed | No overview card. The child is linked under the parent's own card when the parent has one ([Subtasks](#subtasks)), else carded without a parent. |
 | `bd show` or `bd list --parent` fails | The child is carded without a parent; the next tick tries again. |
 
 **The board policy.** An overview card must never run. A phase handler that
@@ -226,24 +304,51 @@ phase still starts one with a generic stage message
 The policy runs for every transition and every actor before any phase rule,
 and a `reject` ends the transition (`transition-service.js:245-262`).
 
-The policy covers moves, not runs started without one. `POST
-/web/factory/projects/:id/runs/start` with no destination stage
-(`dist/routes/contracts.js:99-108`, `start-coordinator.js:181-201`) and the
-admin-only automation runs route dispatch a run without a transition, so the
-policy is never asked. Whether the Factory UI calls them on a card is not
-verified.
+The policy covers moves, not sessions started without one. The Factory UI's
+"Start session" button calls `POST /web/factory/projects/:id/runs/start`
+with no destination stage, which binds a chat session to the card and asks
+no board hook at all; see [Card kinds](#card-kinds) for what that session
+can and cannot do. The admin-only
+`POST .../work-items/:workItemId/automation-runs` route
+(`dist/routes/contracts.js:386-393`, for a trusted external orchestrator)
+also dispatches a skill without a transition. The UI bundle has no call to
+it (searched for `automation-runs` in `index-BaghZlUk.js`); nothing in
+Samskara calls it.
 
 An existing card for a container becomes an overview card wherever it sits:
 a planning card whose epic gets children, or a card made before overview
 cards existed. One left in a working phase is stranded, since no phase
 handler runs it and the policy refuses its moves into other working phases.
-Each tick commits a move of such a card to Intake when it has **no active
-run binding** (`integration.ts`, `#resetStrandedOverviews`; bindings from
+Each tick commits a move of such a card to Intake unless **the phase's own
+seat is bound to it**: an active run binding whose role is the seat the
+phase seats (`roleForPhase`, so `work` in Building)
+(`integration.ts:987-1010`, `#resetStrandedOverviews`; bindings from
 `WorkItemsStorage.listRunBindings`, `dist/storage/domains/work-items/base.d.ts:730`).
+A binding for another seat does not hold the card: the `chat` seat a
+person's "Start session" takes neither runs the phase nor moves the card.
 The move is a committed transition, like the Done move below, with the
 ingress identity `beads:overview-intake:<card id>@<revision>`, and the
 policy allows it because Intake is not a working phase. A card that step
 also commits to Done is left to that move.
+
+**A card with its seat bound** (samskara-l2t.2.5). The seat's binding is
+how Factory records the run that may still be moving the card: the planning
+card's file run, which moves it back to Intake itself, or, on a card made
+before overview cards existed, the run that was building it. Factory gives
+an integration no way to tell a live run from a finished one:
+`IntegrationContext.runtime` holds only `configVersion`, `workItems` and
+`boards` (`dist/integrations/base.d.ts:137-143`), and the running-session
+set is the HTTP layer's (`liveSessions`, `dist/routes/work-items.js:250`).
+Moving the card from under a live run would only turn that run's own move
+to Intake into a `stale` rejection, so the worker leaves it. The run is
+not stuck either. The policy refuses its moves into a working phase with a
+reason that names the way out, "An overview card holds no work and closes
+when its last child closes; move it to Intake and work on its children
+instead", which the agent receives as the tool result
+(`dist/rules/tools.js:53-87`). Its move to Intake is allowed, and so is
+its move to Done once no child is open. A person can move it to Intake or
+Canceled at any time: the card menu keeps resting and terminal moves
+enabled while a run holds the card.
 
 A binding stays active after its run ends: Factory revokes it when the card
 reaches a terminal phase or when the session takes another role
@@ -254,15 +359,13 @@ earlier (`dist/rules/dispatcher.js:34-35,373-385`,
 `dist/storage/domains/work-items/base.js:2159-2181`; samskara overrides
 neither value). So a card whose run ended without moving it keeps its
 active binding and is not moved until that sweep revokes it, about 24
-hours after the run started; the next tick then moves it to Intake. A
-person can move it to Intake or Canceled sooner, which the policy allows
-(cleanup of such cards is samskara-l2t.2.5).
+hours after the run started; the next tick then moves it to Intake.
 
 | Move of an overview card | Result |
 |--------------------------|--------|
-| Into Triage, Planning, Building (`execute`) or Review, by a person, an agent or the system | Rejected, `forbidden`: "An overview card closes when its last child closes". |
+| Into Triage, Planning, Building (`execute`) or Review, by a person, an agent or the system | Rejected, `forbidden`: "An overview card holds no work and closes when its last child closes; move it to Intake and work on its children instead". |
 | Into Done while `beadsOpenChildren` is above 0 | Rejected, `forbidden`. |
-| Into Done with no open children, or into Canceled | Allowed (then Work's own policy decides). |
+| Into Done with no open children, into Canceled, or out of a working phase into Intake | Allowed (then Work's own policy decides). |
 
 The working phases are the board's phases declared `kind: 'working'`, read
 from Work's definition, not a hard-coded list. Every other card, and every
@@ -355,14 +458,50 @@ marks it synced without closing the bead again.
   (`dispatcher.js:507-520`), and Work allows Canceled to Done, so the card
   still lands in Done and the container is closed. Every child is already
   closed by then.
-- *Re-arm.* A container card in Done that is parked `close-failed` gets its
-  write-back re-armed once every child is closed: `beadsCloseAttempts` is set
-  back to 0 and `beadsWriteback` is cleared. The card stays in Done, and the
-  next tick tries the close again (`#rearmOverviewCloses`). This also applies
-  to cards made before overview cards existed, which carry only
-  `beadsType: epic | milestone | molecule`. It happens once per card
-  (`beadsCloseRearmedAt`). If the close fails again for another reason, the
-  card stays parked for an operator (`POST /web/beads/reset`).
+- *Re-arm.* A card in Done that is parked `close-failed` gets its
+  write-back re-armed once every child of its bead is closed:
+  `beadsCloseAttempts` is set back to 0 and `beadsWriteback` is cleared.
+  The card stays in Done, and the next tick tries the close again
+  (`integration.ts:1026-1050`, `#rearmParentCloses`). bd refuses to close
+  any bead while a child is open ("cannot close <id>: 1 open child
+  issue(s)"; checked on bd 1.3.1 for an epic and for a task with a subtask),
+  so this covers overview cards, cards made before overview cards existed,
+  and a task's card moved to Done before its subtasks closed
+  ([Subtasks](#subtasks)). A card whose bead has no children is never
+  re-armed. It happens once per card (`beadsCloseRearmedAt`). If the close
+  fails again for another reason, the card stays parked for an operator
+  (`POST /web/beads/reset`). Only a card whose diagnostic is bd's "open
+  child" refusal is considered; each tick reads its children with one
+  `bd list --parent`. A card parked for any other reason costs no bd call.
+
+### Subtasks
+
+A bead whose parent is not an epic, milestone or molecule root, a task with
+subtasks say, is linked under its parent's card, and the parent stays a work
+card (owner principle: use all of beads; samskara-l2t.2.5). Nothing about
+the parent changes: it gets no `beadsCardKind`, no open-children count and
+no automatic move, it runs like any other work card, and the board policy
+treats it as Work does.
+
+- **Linking.** For each ready bead with a `parent`, intake first resolves
+  the parent as a container (`#overview`); when that gives no overview card,
+  it looks up the card the parent bead already has in this project
+  (`getByProjectSource`; `integration.ts:1136-1145`, `#parentCard`). No card
+  is made for the parent here: it is carded only when it is ready itself.
+  bd 1.3.1 lists a task with an open subtask as ready (checked by hand), so
+  both are usually carded together. Intake orders the ready list so that a
+  ready parent is carded before its ready children (`parentsFirst`), so the
+  link is made in the same sweep. A child carded while its parent had no
+  card (the parent claimed, say) is linked with `setParentWorkItemIfMissing`
+  on the first sweep after the parent gets one; a parent set by hand stays.
+- **Closing.** bd refuses to close a bead while one of its children is open,
+  a task included. A task's card that reaches Done before its subtasks are
+  closed is therefore parked `close-failed` after `maxCloseAttempts`, and
+  re-armed once its last subtask closes (see *Re-arm* above). The policy does
+  not refuse that move: only overview cards carry the open-children count.
+- **What the agent sees.** Factory shows a card's linked items to its agent
+  (at most five, `dist/rules/processor.js:11,176-179`), so a subtask's run
+  sees its parent task, and the task's run its subtasks.
 
 ### Research cards
 
@@ -898,10 +1037,10 @@ gets them too: the same provider serves it, and its tools sit beside the
 `factoryProjectId`, else its resource id, which for a supervisor is
 `factory-supervisor:<projectId>` (`dist/supervisor/session.js:4-16`). A caller
 from another org gets no tools. A project with no linked repository gets none.
-Code: `packages/factory-beads/src/integration.ts:297` (`agentTools`),
+Code: `packages/factory-beads/src/integration.ts:410-439` (`agentTools`),
 `src/agent-tools.ts` (the tools), `src/tool-ops.ts` (host-side runs).
 
-`agentTools` never throws (`integration.ts:297-326`). The SDK awaits the
+`agentTools` never throws (`integration.ts:410-439`). The SDK awaits the
 merged provider without a catch (`@mastra/code-sdk`
 `dist/agents/tools.js:120-122`), so a storage error in one integration would
 otherwise remove every tool from every session. A failure is logged once and
@@ -927,13 +1066,13 @@ time, the tool is absent.
   (no auto-push), then `bd sync` (`tool-ops.ts:177`). When the sync fails:
   - exit 1, or 3 after retries: the write stays on the host copy, the agent is
     told, and the next sweep publishes it with `bd sync` instead of a pull
-    (`integration.ts:626-642`).
+    (`integration.ts:752-768`).
   - exit 2 or 4: the repository is **parked**, exactly as for a write-back
     conflict: state `parked`, no pull, no intake and no tool writes until an
     operator resolves it and calls `POST /web/beads/reset` (`tool-ops.ts:200`).
     The park is a marker in the copy's own `.git`, so it lasts exactly as long
     as the conflicted copy; the reset drops the copy and the marker together
-    (`integration.ts:504`, `:528`, `:784`). Reads still work while parked.
+    (`integration.ts:619-633`, `:652-658`, `:1343-1364`). Reads still work while parked.
 - Writes are signed `--actor factory-beads/agent`, so the bead history shows
   which writes came from an agent.
 - No tool closes or deletes. `beads_update` refuses `closed` before bd runs
@@ -1076,7 +1215,7 @@ metrics written.
 ## Write-back failures
 
 `bd sync` exit codes (from `bd sync --help`), and what the integration does with
-each (`integration.ts:593-624`, retries at `:698-707`):
+each (`integration.ts:684-751`, retries in `#syncWithRetry` at `:1265-1274`):
 
 | Exit | Meaning | Action |
 |------|---------|--------|
@@ -1168,10 +1307,28 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   back), also for an epic that is not ready; no planning card from a failed
   children read; the kind back-filled and cleared; a stranded overview card
   committed to Intake only once its run binding is gone, and no move for a
-  resting, terminal, non-overview or Done-bound card. The harness records each
-  `commitRuleEvaluation`, and its `applyDecisions()` stands in for the
-  dispatcher: it asks the real beads board policy before it moves a card. The
-  harness store checks `parentWorkItemId` with Factory's own
+  resting, terminal, non-overview or Done-bound card. Legacy cards and
+  subtasks (samskara-l2t.2.5): ready parents ordered before their children
+  (and a parent cycle that cannot loop); a subtask linked under its parent
+  task's card in the same sweep, the task left a work card, no write on later
+  sweeps; a subtask carded before its parent's card, linked once the parent is
+  carded; a task card parked `close-failed` because a subtask was open,
+  re-armed and closed once the subtask closes (the fake bd refuses to close a
+  bead with an open child, as bd 1.3.1 does); a stranded overview card held
+  by its phase's `work` seat but not by a `chat` seat; a refused move
+  replayed on every retry, after the card changed, and failed after five
+  attempts; the Done handler waking the worker when the dispatcher moves an
+  overview card to Done. The harness records each `commitRuleEvaluation`,
+  and its `applyDecisions()` stands in for Factory's dispatcher and
+  transition service on the Requests board this project installs
+  (`src/mastra/boards/requests-board.ts`: Work's own policy wrapped by
+  `createBeadsTransitionPolicy`): one call is one dispatcher pass; each
+  decision is a transition with ingress `decision:<key>` whose stored result
+  is replayed on later attempts; a fresh one checks `allowsTransition`, asks
+  the policy with Factory's snapshot fields, runs the phases' `manual`
+  `onExit`/`onEnter` handlers (the Done handler included) and moves the
+  card; a refusal is retried until the fifth attempt fails it. The harness
+  store checks `parentWorkItemId` with Factory's own
   `validateParentRelation`. The harness remote carries `refs/dolt/data` unless a test
   removes it (`setBeadsData`). The fake feed
   (`MemoryFeed` in `test/harness.ts`) copies the store's replay behaviour.
@@ -1186,7 +1343,10 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   closes the open one when its card reaches Done. It cards a childless epic
   as a planning card, files two children under it through the real
   `beads_create` and `beads_dep_add` tools, and the next sweep turns the card
-  into an overview card with the ready child linked under it. It is
+  into an overview card with the ready child linked under it. It links a
+  subtask's card under its parent task's card without making the task an
+  overview card, shows bd refusing the task's close while the subtask is
+  open, and closes it after the re-arm once the subtask is done. It is
   **local-only**: it is skipped when `bd` is not on PATH, and the CI workflow
   does not install bd. Set `FACTORY_BEADS_REAL_BD=0` to skip it on a machine
   that has bd.
@@ -1204,7 +1364,9 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   work agent and the system with every combination of `plansAutoApproved` and
   `planApproved`, including the approved `submit_plan` path through Work's own
   tool rule; Done refused for the same actors; Building, Done and Canceled
-  allowed for a person; the file run's move back to Intake allowed; the epic
+  allowed for a person; the file run's move back to Intake allowed; a work
+  agent and the system moving an overview card out of Building to Intake
+  allowed, and into Review refused with the reason that names Intake; the epic
   skill started in propose and file mode, the decision skill and Work's
   decisions unchanged for every other card) are covered by
   `tests/boards/requests-board.test.ts`.
@@ -1267,3 +1429,9 @@ skill's feedback process.
   write-back must be built by each integration.
 - The supervisor has no tool to create or split cards
   (`supervisor/instructions.js:18-19`).
+- No board or integration hook runs when a session is started on a card.
+  The UI's "Start session" calls `runs/start` with no destination stage,
+  which binds a `chat` seat without a transition
+  (`rules/start-coordinator.js:158-207`), so a board cannot refuse a session
+  on a card that must never run, or start the card's own skill in it. See
+  [Card kinds](#card-kinds).

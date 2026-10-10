@@ -22,6 +22,7 @@ import type {
 } from '@mastra/factory/storage/domains/work-items/base';
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
+import { requestsBoard } from '../../../src/mastra/boards/requests-board';
 import { BdRunner, BeadsIntegration } from '../src/index';
 import type { BeadsIntegrationOptions } from '../src/index';
 
@@ -71,11 +72,50 @@ export interface FakeState {
   }>;
 }
 
-/** One committed rule evaluation, and which of its decisions `applyDecisions` has applied (by index). */
+/** One committed rule evaluation, and the dispatcher's record of each of its decisions (by index). */
 export interface RecordedEvaluation {
   input: CommitFactoryRuleEvaluationInput;
   result: Record<string, unknown> & { status: 'accepted' | 'rejected'; itemId: string | null; code: string | null; decisions: Record<string, unknown>[] };
-  applied: number[];
+  dispatch: Record<number, { attempts: number; status: 'pending' | 'succeeded' | 'failed' }>;
+}
+
+/** The dispatcher's attempt limit for one decision (@mastra/factory 0.20.0 rules/dispatcher.js:19). */
+export const MAX_DISPATCH_ATTEMPTS = 5;
+
+/** What one dispatcher pass did with one transition decision. */
+export type AppliedTransition =
+  | { workItemId: string; stage: string; outcome: 'moved' | 'inert' }
+  | {
+      workItemId: string;
+      stage: string;
+      outcome: 'rejected';
+      code: string;
+      reason: string;
+      /** This decision's attempt number, 1-based. */
+      attempt: number;
+      /** The stored result of an earlier attempt, not a fresh evaluation. */
+      replayed: boolean;
+      /** The last attempt: the decision failed for good. */
+      failed: boolean;
+    };
+
+type TransitionResult = { status: 'accepted'; moved: boolean } | { status: 'rejected'; code: string; reason: string };
+
+type PhaseHandler = (context: never) => unknown;
+
+/** The slice of a BoardDefinition the stand-in dispatcher reads. */
+export interface HarnessBoard {
+  id: string;
+  phases: Record<string, { onEnter?: Record<string, PhaseHandler | undefined>; onExit?: Record<string, PhaseHandler | undefined> }>;
+  transitionPolicy?: BoardTransitionPolicy;
+  allowsTransition(from: string, to: string): boolean;
+}
+
+export interface ApplyOptions {
+  /** Default: the Requests board this project installs. */
+  board?: HarnessBoard;
+  /** The project's auto-approve-plans setting, as the policy snapshot carries it. Default false. */
+  plansAutoApproved?: boolean;
 }
 
 /** A minimal WorkItemsStorage: the calls the integration makes, with the real semantics it relies on. */
@@ -199,47 +239,124 @@ export class MemoryWorkItems {
       reason: stale ? 'The work item changed before this rule evaluation committed.' : (input.outcome.reason ?? null),
       decisions: status === 'accepted' ? structuredClone(input.decisions) : [],
     };
-    this.evaluations.push({ input: structuredClone(input), result, applied: [] });
+    this.evaluations.push({ input: structuredClone(input), result, dispatch: {} });
     return { status: 'committed', result: structuredClone(result) };
   }
 
   /**
-   * Stands in for Factory's dispatcher (rules/dispatcher.js:507-534): applies
-   * each accepted, not yet applied `transition` decision to the card as it is
-   * now, as actor system, after asking `policy` (the board's transitionPolicy)
-   * as the transition service does (rules/transition-service.js:245-262). A
-   * move to the card's current stage is inert. Returns what each did.
+   * Factory's dispatcher and transition service as far as a committed
+   * `transition` decision goes (@mastra/factory 0.20.0). Each call is one
+   * dispatcher pass over every decision not yet settled:
+   *
+   *   - The decision is one transition request with ingress identity
+   *     `decision:<idempotencyKey>`, actor system (rules/dispatcher.js:507-534).
+   *   - A request whose identity has a stored result gets that result back,
+   *     not a fresh evaluation (transition-service.js:129-130): a refused
+   *     move stays refused on every retry, whatever changed since.
+   *   - Otherwise it is evaluated as the transition service does: the card
+   *     must exist and sit in one phase, the board must allow the move
+   *     (`allowsTransition`, transition-service.js:198-202), then the board's
+   *     `transitionPolicy` decides (:245-262), with Factory's snapshot
+   *     fields. On acceptance the phases' `onExit`/`onEnter` handlers for the
+   *     card's source run (rules/resolve.js:2-19: none for a move to the
+   *     current phase, which is inert) and the card moves.
+   *   - A refusal fails the decision; it is retried up to MAX_ATTEMPTS (5)
+   *     times, then fails for good (dispatcher.js:19,39-41,429-440).
+   *
+   * Beads cards classify as `manual` (integration.ts header), so `manual`
+   * handlers are the ones run. The default board is the Requests board this
+   * project installs (src/mastra/boards/requests-board.ts): Work's own policy
+   * wrapped by createBeadsTransitionPolicy, and its Done handler, which wakes
+   * every live beads integration.
    */
-  async applyDecisions(policy?: BoardTransitionPolicy): Promise<Array<{ workItemId: string; stage: string; outcome: 'moved' | 'inert' | 'rejected'; reason?: string }>> {
-    const out: Array<{ workItemId: string; stage: string; outcome: 'moved' | 'inert' | 'rejected'; reason?: string }> = [];
+  async applyDecisions(options: ApplyOptions = {}): Promise<AppliedTransition[]> {
+    const board = options.board ?? (requestsBoard as unknown as HarnessBoard);
+    const out: AppliedTransition[] = [];
     for (const evaluation of this.evaluations) {
       for (const [index, decision] of (evaluation.result.decisions as Array<Record<string, unknown>>).entries()) {
-        if (decision.type !== 'transition' || evaluation.applied.includes(index)) continue;
-        evaluation.applied.push(index);
-        const item = this.items.find(i => i.id === evaluation.result.itemId)!;
+        if (decision.type !== 'transition') continue;
+        const state = (evaluation.dispatch[index] ??= { attempts: 0, status: 'pending' });
+        if (state.status !== 'pending') continue;
+        state.attempts++;
+        const identity = `decision:${String(decision.idempotencyKey)}`;
         const stage = String(decision.stage);
-        if (item.stages.length === 1 && item.stages[0] === stage) {
-          out.push({ workItemId: item.id, stage, outcome: 'inert' });
+        const prior = this.transitionResults.get(identity);
+        const result = prior ?? (await this.#transition(board, String(evaluation.result.itemId), stage, identity, options));
+        if (!prior) this.transitionResults.set(identity, result);
+        const base = { workItemId: String(evaluation.result.itemId), stage };
+        if (result.status === 'accepted') {
+          state.status = 'succeeded';
+          out.push({ ...base, outcome: result.moved ? 'moved' : 'inert' });
           continue;
         }
-        const verdict = await policy?.({
-          board: String(decision.board),
-          fromStage: item.stages[0]!,
-          toStage: stage,
-          actor: { type: 'system', id: 'factory-rule-dispatcher' },
-          isHumanTransition: false,
-          item: { id: item.id, stages: item.stages, metadata: item.metadata },
-        } as unknown as Parameters<BoardTransitionPolicy>[0]);
-        if (verdict && 'type' in verdict && verdict.type === 'reject') {
-          out.push({ workItemId: item.id, stage, outcome: 'rejected', reason: verdict.reason });
-          continue;
-        }
-        item.stages = [stage];
-        item.revision++;
-        out.push({ workItemId: item.id, stage, outcome: 'moved' });
+        if (state.attempts >= MAX_DISPATCH_ATTEMPTS) state.status = 'failed';
+        out.push({
+          ...base,
+          outcome: 'rejected',
+          code: result.code,
+          reason: result.reason,
+          attempt: state.attempts,
+          replayed: prior !== undefined,
+          failed: state.status === 'failed',
+        });
       }
     }
     return out;
+  }
+
+  /** Stored transition results by ingress identity, as getTransitionResultByIngress reads them. */
+  transitionResults = new Map<string, TransitionResult>();
+
+  async #transition(board: HarnessBoard, itemId: string, stage: string, identity: string, options: ApplyOptions): Promise<TransitionResult> {
+    const item = this.items.find(i => i.id === itemId);
+    if (!item) return { status: 'rejected', code: 'invalid_transition', reason: 'Work item not found.' };
+    const fromStage = item.stages.length === 1 ? item.stages[0]! : undefined;
+    if (!fromStage || !(fromStage in board.phases)) {
+      return { status: 'rejected', code: 'invalid_transition', reason: 'The work item does not have one canonical phase on the requested board.' };
+    }
+    if (!(stage in board.phases) || !board.allowsTransition(fromStage, stage)) {
+      return { status: 'rejected', code: 'invalid_transition', reason: `The board does not allow moving from ${fromStage} to ${stage}.` };
+    }
+    const snapshot = {
+      tenant: { orgId: item.orgId, projectId: item.factoryProjectId },
+      actor: { type: 'system', id: 'factory-rule-dispatcher' },
+      ingress: { type: 'rule', id: identity },
+      cause: 'rule_decision',
+      causalChain: [],
+      configVersion: 'test',
+      board: board.id,
+      fromStage,
+      toStage: stage,
+      source: 'manual',
+      initialEntry: false,
+      reenter: false,
+      itemRevision: item.revision,
+      isHumanTransition: false,
+      plansAutoApproved: options.plansAutoApproved ?? false,
+      planApproved: false,
+      item: {
+        id: item.id,
+        source: 'manual',
+        sourceKey: null,
+        parentWorkItemId: item.parentWorkItemId,
+        title: item.title,
+        url: null,
+        stages: [...item.stages],
+        acceptedAt: item.acceptedAt,
+        metadata: structuredClone(item.metadata),
+        triageType: item.triageType,
+      },
+    };
+    const policy = await board.transitionPolicy?.(snapshot as unknown as Parameters<BoardTransitionPolicy>[0]);
+    if (policy?.type === 'reject') return { status: 'rejected', code: policy.code, reason: policy.reason };
+    if (fromStage === stage) return { status: 'accepted', moved: false };
+    for (const handler of [board.phases[fromStage]?.onExit?.manual, board.phases[stage]?.onEnter?.manual]) {
+      const decision = (await handler?.({ ...snapshot, stage } as never)) as { type?: string; code?: string; reason?: string } | undefined;
+      if (decision?.type === 'reject') return { status: 'rejected', code: String(decision.code), reason: String(decision.reason) };
+    }
+    item.stages = [stage];
+    item.revision++;
+    return { status: 'accepted', moved: true };
   }
 
   /**
@@ -375,13 +492,8 @@ export function createHarness(beads: FakeBead[]): Harness {
 
   const workItems = new MemoryWorkItems();
   const feed = new MemoryFeed(workItems);
-  const board = {
-    id: 'work',
-    initialPhase: 'intake',
-    // Work's phase kinds (boards/work.js:152-198): Intake rests.
-    phaseKind: (p: string) =>
-      p === 'intake' ? 'resting' : ['triage', 'planning', 'execute', 'review'].includes(p) ? 'working' : p === 'done' || p === 'canceled' ? 'terminal' : undefined,
-  };
+  // The board this project installs as `work`: Work's phases, kinds and roles.
+  const board = requestsBoard;
   const sourceControl: FakeSourceControl = {
     projects: [{ id: PROJECT, orgId: ORG }],
     installations: new Set(['inst_1']),

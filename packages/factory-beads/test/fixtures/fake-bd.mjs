@@ -171,6 +171,10 @@ switch (words[0]) {
     } else if (bead.status === 'pinned' && !flags.includes('--force')) {
       code = 1;
       err = `cannot modify pinned issue ${words[1]} (use --force to override)`;
+    } else if (state.beads.some(b => b.parent === bead.id && isOpen(b)) && !flags.includes('--force')) {
+      // Like bd 1.3.1 (checked by hand, an epic and a task alike): no bead closes while a child is open.
+      code = 1;
+      err = `cannot close ${words[1]}: ${state.beads.filter(b => b.parent === bead.id && isOpen(b)).length} open child issue(s); close children first or use --force to override`;
     } else if (bead.assignee && bead.assignee !== actor && !flags.includes('--force')) {
       // Like bd 1.3.1 (validation.AssigneeMatches): only the holder may close.
       code = 1;

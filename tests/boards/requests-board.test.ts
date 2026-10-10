@@ -13,6 +13,7 @@ import { validateFactoryRuleDecision } from '@mastra/factory/rules/validation';
 import {
   DECISION_SKILL,
   EPIC_SKILL,
+  OVERVIEW_WORKING_REASON,
   PLAN_APPROVAL_REASON,
   PLAN_DONE_REASON,
   PLAN_WORKING_REASON,
@@ -190,7 +191,7 @@ describe('beads overview cards (samskara-l2t.2.1)', () => {
         expect(await policy(move(actor, 'intake', toStage, overview(0), { planApproved: true, plansAutoApproved: true }))).toEqual({
           type: 'reject',
           code: 'forbidden',
-          reason: 'An overview card closes when its last child closes',
+          reason: OVERVIEW_WORKING_REASON,
         });
       });
     }
@@ -206,6 +207,14 @@ describe('beads overview cards (samskara-l2t.2.1)', () => {
     expect((await policy(move(human, 'intake', 'done', overview(0))))?.type).toBe('allow');
     expect((await policy(move(system, 'intake', 'done', overview(0))))?.type).toBe('allow');
     expect((await policy(move(human, 'intake', 'canceled', overview(3))))?.type).toBe('allow');
+  });
+
+  it('lets a run seated on a legacy overview card move it out of its working phase to Intake (samskara-l2t.2.5)', async () => {
+    // A card made before overview cards existed may sit in Building with a run on it.
+    const workAgent: FactoryRuleActor = { type: 'agent', bindingId: 'b-w', role: 'work' };
+    expect((await policy(move(workAgent, 'execute', 'intake', overview(2))))?.type).toBe('allow');
+    expect((await policy(move(system, 'execute', 'intake', overview(2))))?.type).toBe('allow');
+    expect(await policy(move(workAgent, 'execute', 'review', overview(2)))).toMatchObject({ type: 'reject', reason: OVERVIEW_WORKING_REASON });
   });
 
   it('leaves every other card to Work: the plan gate still holds, and work cards still move', async () => {

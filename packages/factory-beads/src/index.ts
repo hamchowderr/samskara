@@ -11,6 +11,7 @@ export {
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
   OVERVIEW_CARD_KIND,
+  parentsFirst,
   PLAN_CARD_KIND,
   RESEARCH_CARD_KIND,
 } from './integration';

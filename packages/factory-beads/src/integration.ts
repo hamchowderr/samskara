@@ -231,6 +231,14 @@ const DEFAULT_REMOTE_CHECK_INTERVAL_MS = 15 * 60_000;
 /** The ref beads publishes its Dolt data to (bd's git remote). */
 export const BEADS_DATA_REF = 'refs/dolt/data';
 
+/** What a sweep reads from the installed board (BoardDefinition, boards/define-board.d.ts). */
+interface BoardPhases {
+  readonly initialPhase: string;
+  phaseKind(phase: string): string | undefined;
+  /** The seat a working phase's run takes; undefined for a resting or terminal phase. */
+  roleForPhase(phase: string): string | undefined;
+}
+
 interface LinkedRepo {
   orgId: string;
   projectId: string;
@@ -537,7 +545,7 @@ export class BeadsIntegration implements FactoryIntegration {
           const credentials: RepoCredentials | undefined = access.authorization
             ? { token: access.authorization.token, username: access.authorization.username }
             : undefined;
-          await this.#syncRepo(linked, access.cloneUrl, credentials, board.initialPhase, phase => board.phaseKind(phase), report);
+          await this.#syncRepo(linked, access.cloneUrl, credentials, board, report);
         } catch (error) {
           report.state = 'error';
           report.diagnostic = error instanceof Error ? error.message : String(error);
@@ -592,11 +600,12 @@ export class BeadsIntegration implements FactoryIntegration {
     linked: LinkedRepo,
     cloneUrl: string,
     credentials: RepoCredentials | undefined,
-    initialPhase: string,
-    phaseKind: (phase: string) => string | undefined,
+    board: BoardPhases,
     report: RepoSyncReport,
   ): Promise<void> {
     const runtime = this.#ctx!.runtime!;
+    const initialPhase = board.initialPhase;
+    const phaseKind = (phase: string) => board.phaseKind(phase);
     const { orgId, projectId, slug } = linked;
     const cards = (await runtime.workItems.list({ orgId, factoryProjectId: projectId })).filter(
       item => item.externalSource?.integrationId === BEADS_INTEGRATION_ID && item.metadata?.[BEADS_META.repo] === slug,
@@ -768,7 +777,10 @@ export class BeadsIntegration implements FactoryIntegration {
     // 2. Intake: one card per ready bead, idempotently, and its description
     //    on the card's feed (back-filled for cards that predate it). A bead
     //    with a parent container is linked under the container's overview
-    //    card, which is made first.
+    //    card, which is made first. A bead whose parent is not a container (a
+    //    task's subtask) is linked under the parent's card when it has one;
+    //    ready parents are carded before their ready children, so that link
+    //    is made in the same sweep.
     const scope: IntakeScope = {
       orgId,
       projectId,
@@ -780,7 +792,7 @@ export class BeadsIntegration implements FactoryIntegration {
       counted: new Map(),
       childless: new Set(),
     };
-    for (const bead of await repo.ready()) {
+    for (const bead of parentsFirst(await repo.ready())) {
       // No `workspaceId` in the source: POST /web/factory/projects/:id/work-items
       // drops it (routes/contracts.js externalSourceSchema), so a key carrying
       // it would never match a card made through that route. The repo is in claimKey.
@@ -812,7 +824,7 @@ export class BeadsIntegration implements FactoryIntegration {
         if (!scope.childless.has(bead.id)) continue;
         kind = PLAN_CARD_KIND;
       }
-      const parent = bead.parent ? await this.#overview(scope, bead.parent, new Set()) : undefined;
+      const parent = bead.parent ? await this.#parentCard(scope, bead.parent) : undefined;
       if (existing) {
         report.existing++;
         let card = existing;
@@ -876,11 +888,11 @@ export class BeadsIntegration implements FactoryIntegration {
     // 5. Overview cards stranded in a working phase move to Intake: a
     //    planning card that became an overview card while it sat in Planning
     //    or Building, or a card made before overview cards existed.
-    await this.#resetStrandedOverviews(scope, phaseKind, moved);
+    await this.#resetStrandedOverviews(scope, board, moved);
 
-    // 6. Overview cards parked `close-failed` in Done whose children have all
-    //    closed since: bd refused the close while a child was open.
-    await this.#rearmOverviewCloses(scope, cards);
+    // 6. Cards parked `close-failed` in Done whose children have all closed
+    //    since: bd refuses to close any bead while a child is open.
+    await this.#rearmParentCloses(scope, cards);
   }
 
   /**
@@ -893,7 +905,7 @@ export class BeadsIntegration implements FactoryIntegration {
    * The dispatcher applies the move after this sweep (it polls every second,
    * rules/dispatcher.js:17,295), and the policy reads the card as it is then.
    * A child added after the count was read is caught by bd instead, which
-   * refuses the container's close; step 5 re-arms that close once the child
+   * refuses the container's close; step 6 re-arms that close once the child
    * closes.
    *
    * Returns the ids of the cards whose move is committed.
@@ -938,42 +950,56 @@ export class BeadsIntegration implements FactoryIntegration {
    * phase, but a planning card becomes an overview card wherever it sits (the
    * children its file run creates are seen by the next sweep, possibly before
    * the run moves the card back), and a card made before overview cards
-   * existed may already be in one. Such a card with no active run binding
-   * moves to the board's initial phase (Intake), where overview cards rest.
-   * The move is a committed transition, as in step 4, and the policy allows
-   * it: Intake is not a working phase.
+   * existed may already be in one, with a run on it. Such a card moves to the
+   * board's initial phase (Intake), where overview cards rest, unless the
+   * phase's own seat is still bound to it. The move is a committed
+   * transition, as in step 4, and the policy allows it: Intake is not a
+   * working phase.
    *
    * An active binding is Factory's record of a seat bound to the card
    * (`WorkItemsStorage.listRunBindings`, @mastra/factory 0.20.0
-   * storage/domains/work-items/base.d.ts:730). A binding stays active after
-   * its run ends, until the card reaches a terminal phase or the session
-   * takes another role (storage/domains/work-items/base.js:2121-2190), or
-   * until the dispatcher's stale-binding sweep revokes it: every 10 minutes
-   * it revokes each active binding created more than 24 hours earlier
-   * (rules/dispatcher.js:34-35,373-385, storage/domains/work-items/base.js:
-   * 2159-2181; samskara passes neither override). So a card whose run ended
-   * without moving it keeps its binding and is not moved here until that
-   * sweep runs, about 24 hours after the run started; a person can move it
-   * sooner. `moved` holds the cards step 4 just committed to Done.
+   * storage/domains/work-items/base.d.ts:730). Only a binding for the seat
+   * the phase seats (`roleForPhase`) holds the card: that is the run that
+   * may still be moving it, the planning card's file run above all, and
+   * moving the card from under it would turn that run's own move back to
+   * Intake into a stale rejection. Factory gives an integration no way to
+   * tell a live run from a finished one: `IntegrationContext.runtime` holds
+   * only configVersion, workItems and boards (integrations/base.d.ts:137-143),
+   * and the running-session set is the HTTP layer's (routes/work-items.js:250).
+   * A binding for any other seat does not hold the card: the `chat` seat a
+   * person's "Start session" takes (rules/start-coordinator.js:158-175, role
+   * `chat` from the UI) neither runs the phase nor moves the card.
+   *
+   * A held card is not stuck. Its run's moves into a working phase are
+   * refused with a reason that names the way out (OVERVIEW_WORKING_REASON,
+   * board-rules.ts), and its moves to Intake, or to Done once no child is
+   * open, are allowed; a person can move it to Intake at any time. A binding
+   * stays active after its run ends, until the card reaches a terminal phase
+   * or the session takes another role (storage/domains/work-items/base.js:
+   * 2121-2190), or until the dispatcher's stale-binding sweep revokes it:
+   * every 10 minutes it revokes each active binding created more than 24
+   * hours earlier (rules/dispatcher.js:34-35,373-385, storage/domains/
+   * work-items/base.js:2159-2181; samskara passes neither override). So a
+   * held card whose run ended without moving it is moved here about 24 hours
+   * after that run started. `moved` holds the cards step 4 just committed to
+   * Done.
    */
-  async #resetStrandedOverviews(
-    scope: IntakeScope,
-    phaseKind: (phase: string) => string | undefined,
-    moved: Set<string>,
-  ): Promise<void> {
+  async #resetStrandedOverviews(scope: IntakeScope, board: BoardPhases, moved: Set<string>): Promise<void> {
     const runtime = this.#ctx!.runtime!;
     const { orgId, projectId, slug, initialPhase } = scope;
     const cards = await runtime.workItems.list({ orgId, factoryProjectId: projectId });
     for (const card of cards) {
       if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID || card.metadata?.[BEADS_META.repo] !== slug) continue;
       if (card.board !== this.board || card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || moved.has(card.id)) continue;
-      if (card.stages.length !== 1 || phaseKind(card.stages[0]!) !== 'working') continue;
+      const stage = card.stages.length === 1 ? card.stages[0]! : undefined;
+      if (!stage || board.phaseKind(stage) !== 'working') continue;
       try {
+        const seat = board.roleForPhase(stage);
         const bindings = await runtime.workItems.listRunBindings(orgId, projectId, card.id);
-        if (bindings.some(binding => binding.status === 'active')) continue;
+        if (bindings.some(binding => binding.status === 'active' && binding.role === seat)) continue;
         const outcome = await this.#commitTransition(orgId, card, initialPhase, 'overview-intake');
         if (outcome === 'committed') {
-          this.#log.info(`[factory-beads] ${slug}: overview card ${card.id} sat in ${card.stages[0]} with no run binding; it moves to ${initialPhase}`);
+          this.#log.info(`[factory-beads] ${slug}: overview card ${card.id} sat in ${stage} with no ${seat ?? 'run'} seat bound; it moves to ${initialPhase}`);
         }
       } catch (error) {
         this.#log.warn(
@@ -984,17 +1010,20 @@ export class BeadsIntegration implements FactoryIntegration {
   }
 
   /**
-   * Step 6 of a sweep. bd refuses to close a container while a child is open,
-   * so an overview card that reached Done early (moved by hand, or a child was
-   * added after the count was read) is parked `close-failed` after
-   * `maxCloseAttempts`, and write-back never tries it again. Once every child
-   * is closed that refusal no longer holds: the attempts and the write-back
-   * state are reset so the close is retried. Once per card
+   * Step 6 of a sweep. bd refuses to close any bead while a child is open
+   * ("cannot close X: 1 open child issue(s)", checked on bd 1.3.1 for an epic
+   * and for a task with a subtask), so a parent's card that reached Done
+   * early is parked `close-failed` after `maxCloseAttempts`, and write-back
+   * never tries it again: an overview card moved by hand, or with a child
+   * added after the count was read, and a task's card moved to Done before
+   * its subtasks closed (the board policy guards only overview cards). Once
+   * every child is closed that refusal no longer holds: the attempts and the
+   * write-back state are reset so the close is retried. Once per card
    * (`beadsCloseRearmedAt`): a close that then fails for another reason stays
-   * parked for an operator. The card stays in Done. Cards made before overview
-   * cards existed carry only `beadsType`, and are re-armed too.
+   * parked for an operator. The card stays in Done. A card whose bead has no
+   * children is never re-armed.
    */
-  async #rearmOverviewCloses(scope: IntakeScope, cards: WorkItemRow[]): Promise<void> {
+  async #rearmParentCloses(scope: IntakeScope, cards: WorkItemRow[]): Promise<void> {
     const { orgId, slug, repo } = scope;
     let rearmed = 0;
     for (const card of cards) {
@@ -1002,10 +1031,9 @@ export class BeadsIntegration implements FactoryIntegration {
       if (typeof beadId !== 'string' || card.board !== this.board) continue;
       if (card.stages.length !== 1 || card.stages[0] !== this.donePhase) continue;
       if (card.metadata?.[BEADS_META.writeback] !== 'close-failed' || card.metadata?.[BEADS_META.closeRearmedAt]) continue;
-      const container =
-        card.metadata?.[BEADS_META.cardKind] === OVERVIEW_CARD_KIND ||
-        (OVERVIEW_TYPES as readonly string[]).includes(String(card.metadata?.[BEADS_META.type] ?? ''));
-      if (!container) continue;
+      // Only a close bd refused for an open child can clear on its own; any
+      // other parked card would cost a bd read every tick for nothing.
+      if (!String(card.metadata?.[BEADS_META.diagnostic] ?? '').includes('open child')) continue;
       try {
         const children = await repo.children(beadId);
         if (children.length === 0 || children.some(child => child.status !== 'closed')) continue;
@@ -1098,6 +1126,25 @@ export class BeadsIntegration implements FactoryIntegration {
       scope.overviews.set(id, pending);
     }
     return pending;
+  }
+
+  /**
+   * The card a ready bead is linked under: its container's overview card
+   * (#overview), or else the card its parent bead already has in this
+   * project, a task with subtasks say (owner principle: use all of beads).
+   * Such a parent is never made an overview card and no card is made for it
+   * here: it is linked to only when it is carded already, as intake cards it
+   * when it is ready. A parent that cannot be read is looked up the same way.
+   */
+  async #parentCard(scope: IntakeScope, id: string): Promise<WorkItemRow | undefined> {
+    const overview = await this.#overview(scope, id, new Set());
+    if (overview) return overview;
+    const card = await this.#ctx!.runtime!.workItems.getByProjectSource({
+      orgId: scope.orgId,
+      factoryProjectId: scope.projectId,
+      source: beadSource(id),
+    });
+    return card ?? undefined;
   }
 
   async #resolveOverview(scope: IntakeScope, id: string, trail: Set<string>): Promise<WorkItemRow | undefined> {
@@ -1393,6 +1440,28 @@ export function descriptionBody(description: string): string {
   const code = description.charCodeAt(cut - 1);
   if (code >= 0xd800 && code <= 0xdbff) cut--;
   return description.slice(0, cut) + note;
+}
+
+/**
+ * `ready` reordered so that a bead whose parent is also ready comes after
+ * that parent (and its ancestors), so the parent's card exists when the
+ * child's card is made. Otherwise bd's order is kept. A parent cycle cannot
+ * loop: each bead is placed once.
+ */
+export function parentsFirst<T extends { id: string; parent?: string }>(ready: readonly T[]): T[] {
+  const byId = new Map(ready.map(bead => [bead.id, bead]));
+  const placed = new Set<string>();
+  const out: T[] = [];
+  const place = (bead: T, trail: Set<string>) => {
+    if (placed.has(bead.id) || trail.has(bead.id)) return;
+    trail.add(bead.id);
+    const parent = bead.parent ? byId.get(bead.parent) : undefined;
+    if (parent) place(parent, trail);
+    placed.add(bead.id);
+    out.push(bead);
+  };
+  for (const bead of ready) place(bead, new Set());
+  return out;
 }
 
 /** A bead card's external source. The same for a work card and an overview card. */
