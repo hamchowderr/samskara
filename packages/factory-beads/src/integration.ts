@@ -67,7 +67,10 @@ export const BEADS_META = {
   syncExit: 'beadsSyncExit',
   diagnostic: 'beadsDiagnostic',
   closeAttempts: 'beadsCloseAttempts',
-  /** `overview` on a container's card; absent on a work card. */
+  /**
+   * `overview` on a container's card, `research` on an open decision's card;
+   * absent on a work card.
+   */
   cardKind: 'beadsCardKind',
   /** Overview cards: how many of the container's direct children are not closed. */
   openChildren: 'beadsOpenChildren',
@@ -80,6 +83,26 @@ export const BEADS_META = {
 
 /** `BEADS_META.cardKind` of an epic's, milestone's or molecule root's card. */
 export const OVERVIEW_CARD_KIND = 'overview';
+
+/**
+ * `BEADS_META.cardKind` of an open `decision` bead's card: a research card.
+ * An agent researches the options and writes the decision into the bead; a
+ * person approves it by moving the card to Done, which closes the bead
+ * (owner decision, samskara-l2t.2). It never builds. A closed decision is a
+ * record and is never ready, so it is never carded.
+ */
+export const RESEARCH_CARD_KIND = 'research';
+
+/** The bd issue type whose open beads become research cards. */
+export const DECISION_TYPE = 'decision';
+
+/**
+ * The card kind intake gives a ready (non-container) bead: `research` for a
+ * decision, none for work. Overview kinds are set by #resolveOverview.
+ */
+function readyCardKind(bead: Pick<BeadDetails, 'issue_type'>): string | undefined {
+  return bead.issue_type === DECISION_TYPE ? RESEARCH_CARD_KIND : undefined;
+}
 
 /**
  * The card metadata key Factory reads to pick a card's repository: the
@@ -750,13 +773,23 @@ export class BeadsIntegration implements FactoryIntegration {
         }
       }
       const parent = bead.parent ? await this.#overview(scope, bead.parent, new Set()) : undefined;
+      const kind = readyCardKind(bead);
       if (existing) {
         report.existing++;
-        if (parent) await this.#linkParent(scope, existing, parent);
-        await this.#postDescription(existing, bead);
+        let card = existing;
+        // The research kind follows the bead's type: set on a decision's card
+        // (one made before research cards existed included), cleared when the
+        // bead is no longer a decision. Only on change: every metadata write
+        // bumps the card's revision. An overview card's kind is left alone.
+        const current = card.metadata?.[BEADS_META.cardKind];
+        if (current !== OVERVIEW_CARD_KIND && (current ?? undefined) !== kind) {
+          card = await this.#mark(orgId, card, { [BEADS_META.cardKind]: kind ?? null });
+        }
+        if (parent) card = await this.#linkParent(scope, card, parent);
+        await this.#postDescription(card, bead);
         continue;
       }
-      const card = await this.#createCard(scope, bead, parent, {});
+      const card = await this.#createCard(scope, bead, parent, kind ? { [BEADS_META.cardKind]: kind } : {});
       if (card) await this.#postDescription(card, bead);
     }
 

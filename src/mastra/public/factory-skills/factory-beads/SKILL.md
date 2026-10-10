@@ -89,6 +89,15 @@ Priority runs from 0 (highest) to 4 (lowest); 2 is normal.
 - Found work in the middle of a task? Create it complete, then `beads_dep_add` it to the bead you were working on with type `discovered-from`, so the causal link survives.
 - Reversed a decision? Link the old bead to the new one with type `supersedes` and say why in the notes. Never silently drop the old one: the trail must show why it changed.
 
+## Decisions
+
+A `decision` bead records a choice and why it was made. File one when the project has to settle a question before the work that depends on it can start; link that work to it with `blocks`.
+
+- An **open** decision is a question still to answer. Its card is a research card: when a person moves it into Planning, the `factory-beads-decision` skill researches the options and writes `## Decision`, `## Rationale` and `## Alternatives Considered` into the bead, after the original question. No code, branch or pull request comes from it.
+- A person approves the decision by moving its card to Done, which closes the bead. An agent can never move a decision card to Done, and auto-approved plans do not change that. A decision card never enters Triage, Building or Review.
+- A **closed** decision is a record. It never gets a card. Do not edit it; to reverse it, file a new decision and link it with `supersedes`.
+- Filing an open question: `beads_create` requires the three sections, so put the question first and leave each section empty or write `Open.` under it. The decision skill fills them in. Filing a decision already settled: write the sections in full and say in the notes who decided. Either way it waits in Intake for a person.
+
 ## Workflows
 
 `beads_formula_list` lists the repository's own workflow formulas (its `.beads/formulas`); nothing from elsewhere on the server is offered. `beads_pour` turns one into a molecule: a root bead of type `molecule` with linked, ordered step beads under it, its variables filled in. Preview with `dry_run` first. Poured steps skip the create-time check, so before work starts on a step, fill any missing design or acceptance with `beads_update`.

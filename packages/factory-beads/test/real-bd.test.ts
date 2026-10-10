@@ -253,6 +253,43 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(show(mol)).toMatchObject({ status: 'closed', close_reason: 'all steps complete' });
   }, 300_000);
 
+  it('cards an open decision as a research card and never a closed one; approving it closes the bead (samskara-l2t.2.3)', async () => {
+    // An open question as an agent files one: beads_create validates, and bd
+    // accepts the three required sections empty.
+    const open = run('bd', [
+      'create', 'Which queue', '-t', 'decision', '--validate', '--silent',
+      '-d', 'Which queue should jobs use?\n\n## Decision\n\n## Rationale\n\n## Alternatives Considered\n',
+    ]).split(/\r?\n/)[0]!;
+    const settled = run('bd', ['create', 'Settled', '-t', 'decision', '--silent']).split(/\r?\n/)[0]!;
+    run('bd', ['close', settled, '--reason', 'decided']);
+    run('bd', ['dolt', 'push']);
+
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id);
+    const first = await sweep(integration);
+    expect(first.repos[0], JSON.stringify(first)).toMatchObject({ state: 'ok' });
+    expect(card(open)?.metadata).toMatchObject({ beadsCardKind: 'research', beadsType: 'decision' });
+    expect(h.feed.on(card(open)!.id).map(c => c.body)[0]).toContain('Which queue should jobs use?');
+    // bd ready never lists a closed bead, so a settled decision is a record, not a card.
+    expect(card(settled)).toBeUndefined();
+
+    h.workItems.move(card(open)!.id, 'done');
+    const approved = await sweep(integration);
+    expect(approved.repos[0], JSON.stringify(approved)).toMatchObject({ state: 'ok', closed: 1 });
+    expect(card(open)!.metadata?.[BEADS_META.writeback]).toBe('synced');
+    run('bd', ['dolt', 'pull']);
+    const shown = JSON.parse(run('bd', ['--readonly', 'show', open, '--json'])) as Array<{ status: string }>;
+    expect(shown[0]?.status).toBe('closed');
+    expect(card(settled)).toBeUndefined();
+  }, 300_000);
+
   it('BdRepo.close: takes over a live claim, never forces, and returns a bead bd refuses to close', async () => {
     const dir = join(root, 'l');
     run('git', ['init', '-q', dir], root);

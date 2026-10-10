@@ -5,10 +5,12 @@ export {
   BEADS_INTEGRATION_ID,
   BEADS_META,
   beadsClaimKey,
+  DECISION_TYPE,
   descriptionBody,
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
   OVERVIEW_CARD_KIND,
+  RESEARCH_CARD_KIND,
 } from './integration';
 export type {
   BeadsIntegrationOptions,
@@ -20,11 +22,15 @@ export type {
   WritebackState,
 } from './integration';
 export { createBeadsDoneRule } from './done-rule';
+export { createBeadsPlanningRule, DECISION_SKILL } from './decision-rule';
 export {
   createBeadsTransitionPolicy,
   isOverviewCard,
+  isResearchCard,
   OVERVIEW_OPEN_CHILDREN_REASON,
   OVERVIEW_WORKING_REASON,
+  RESEARCH_APPROVAL_REASON,
+  RESEARCH_WORKING_REASON,
 } from './board-rules';
 export type { BeadsTransitionPolicyOptions } from './board-rules';
 export { beadsSetting, beadsStartupLine } from './setting';

@@ -5,8 +5,12 @@
  * so a misspelled or retired source key compiles and silently never fires.
  * These tests are the validation it does not do.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { workBoard } from '@mastra/factory';
+import { validateFactoryRuleDecision } from '@mastra/factory/rules/validation';
+import { DECISION_SKILL, RESEARCH_APPROVAL_REASON, RESEARCH_WORKING_REASON } from '@samskara/factory-beads';
 import { FACTORY_RULE_SOURCES } from '@mastra/factory/rules/types';
 import type { FactoryRuleActor } from '@mastra/factory/rules/types';
 import type { BoardTransitionPolicyContext } from '@mastra/factory/boards/transition-policy';
@@ -226,5 +230,159 @@ describe('approved plan advances on THIS board', () => {
 
   it('does nothing for a plan that was not approved', () => {
     expect(onResult?.({ ...approved, result: { status: 'success', value: 'Needs changes.' } })).toBeUndefined();
+  });
+});
+
+describe('beads research cards (samskara-l2t.2.3)', () => {
+  const policy = requestsBoard.transitionPolicy!;
+  const human: FactoryRuleActor = { type: 'human', id: 'u1' };
+  const planAgent: FactoryRuleActor = { type: 'agent', bindingId: 'b-1', role: 'plan' };
+  const workAgent: FactoryRuleActor = { type: 'agent', bindingId: 'b-2', role: 'work' };
+  const system: FactoryRuleActor = { type: 'system', id: 'factory-tool-result-rule' };
+  const research = { beadsId: 'w-d', beadsRepo: 'acme/widgets', beadsType: 'decision', beadsCardKind: 'research' };
+  const autoApprove = { plansAutoApproved: true, planApproved: true };
+  const label = (actor: FactoryRuleActor) => (actor.type === 'agent' ? `agent (${actor.role})` : actor.type);
+  const move = (
+    actor: FactoryRuleActor,
+    fromStage: string,
+    toStage: string,
+    metadata: Record<string, unknown> | null = research,
+    flags: Partial<Pick<BoardTransitionPolicyContext, 'planApproved' | 'plansAutoApproved'>> = {},
+  ): BoardTransitionPolicyContext => ({
+    tenant: { orgId: 'org-1', projectId: 'proj-1' },
+    actor,
+    ingress: { type: actor.type === 'human' ? 'human' : 'rule', id: 'ing-1' },
+    cause: 'test',
+    causalChain: [],
+    configVersion: 'test',
+    board: 'work',
+    fromStage,
+    toStage,
+    source: 'manual',
+    initialEntry: false,
+    reenter: false,
+    itemRevision: 1,
+    isHumanTransition: actor.type === 'human',
+    plansAutoApproved: false,
+    planApproved: false,
+    ...flags,
+    item: {
+      id: 'wi-1',
+      source: 'manual',
+      sourceKey: 'beads:issue:w-d',
+      parentWorkItemId: null,
+      title: 'w-d: Which queue?',
+      url: null,
+      stages: [fromStage],
+      acceptedAt: null,
+      metadata,
+      triageType: null,
+    },
+  });
+
+  for (const actor of [human, planAgent, workAgent, system]) {
+    for (const toStage of ['triage', 'execute', 'review']) {
+      it(`rejects a ${label(actor)} moving a research card into ${toStage}, even with plans auto-approved`, async () => {
+        for (const fromStage of ['intake', 'planning']) {
+          expect(await policy(move(actor, fromStage, toStage, research, autoApprove))).toEqual({
+            type: 'reject',
+            code: 'forbidden',
+            reason: RESEARCH_WORKING_REASON,
+          });
+        }
+      });
+    }
+  }
+
+  for (const actor of [planAgent, workAgent, system]) {
+    it(`rejects a ${label(actor)} moving a research card to Done with approval_required, even with plans auto-approved`, async () => {
+      for (const flags of [{}, autoApprove, { plansAutoApproved: true }]) {
+        for (const fromStage of ['planning', 'intake']) {
+          expect(await policy(move(actor, fromStage, 'done', research, flags))).toEqual({
+            type: 'reject',
+            code: 'approval_required',
+            reason: RESEARCH_APPROVAL_REASON,
+          });
+        }
+      }
+    });
+  }
+
+  it('lets a person approve (Done) or cancel a research card, from Planning or Intake', async () => {
+    for (const [from, to] of [['planning', 'done'], ['intake', 'done'], ['planning', 'canceled'], ['intake', 'canceled']] as const) {
+      expect((await policy(move(human, from, to)))?.type, `${from} -> ${to}`).toBe('allow');
+    }
+  });
+
+  it('lets a person move a research card into Planning, accepting it as Work does', async () => {
+    const context = move(human, 'intake', 'planning');
+    expect(await policy(context)).toEqual({ type: 'allow', accept: true });
+    expect(await policy(context)).toEqual(await workBoard.transitionPolicy!(context));
+  });
+
+  it('leaves a decision card without the research kind to Work', async () => {
+    const legacy = { beadsId: 'w-d', beadsType: 'decision' };
+    for (const context of [move(planAgent, 'planning', 'execute', legacy), move(human, 'intake', 'triage', legacy), move(system, 'planning', 'done', legacy)]) {
+      expect(await policy(context)).toEqual(await workBoard.transitionPolicy!(context));
+    }
+  });
+
+  describe('Planning entry rule', () => {
+    type Rule = (context: unknown) => unknown;
+    const planning = board.phases.planning?.onEnter ?? {};
+    const workPlanning = (workBoard as unknown as Board).phases.planning?.onEnter ?? {};
+    const entry = (metadata: Record<string, unknown> | null, title = 'w-d: Which queue?') => ({
+      ...move(human, 'intake', 'planning', metadata),
+      stage: 'planning',
+      ingress: { type: 'human', id: 'ing-7' },
+      item: { id: 'wi-1', source: 'manual', sourceKey: null, parentWorkItemId: null, title, url: null, stages: ['intake'], acceptedAt: null, metadata },
+    });
+
+    it("keeps Work's planning rule for every other source", () => {
+      for (const [source, handler] of Object.entries(workPlanning)) {
+        if (source !== 'manual') expect(planning[source], source).toBe(handler);
+      }
+    });
+
+    it('starts the factory-beads-decision skill on the plan seat for a research card', () => {
+      const decision = (planning.manual as Rule)(entry(research));
+      expect(decision).toEqual({
+        type: 'invokeSkill',
+        idempotencyKey: `ing-7:${DECISION_SKILL}`,
+        role: 'plan',
+        skillName: 'factory-beads-decision',
+        arguments: 'Decision bead w-d in repository acme/widgets',
+      });
+      // Factory's own validation accepts it, as the transition service runs it.
+      expect(() => validateFactoryRuleDecision(decision, 0)).not.toThrow();
+    });
+
+    it("returns Work's own planning decision for every other manual card", () => {
+      for (const metadata of [null, { beadsId: 'w-1', beadsType: 'task' }, { beadsId: 'w-d', beadsType: 'decision' }]) {
+        const context = entry(metadata, 'A request');
+        expect((planning.manual as Rule)(context)).toEqual((workPlanning.manual as Rule)(context));
+      }
+      expect((planning.manual as Rule)(entry(null, 'A request'))).toMatchObject({ skillName: 'factory-plan', role: 'plan' });
+    });
+
+    it('runs the decision skill for any research-kind card, the same test the policy uses', () => {
+      // The policy refuses a research card's move to execute, so factory-plan
+      // would strand it; the kind alone decides, even without a bead id.
+      expect((planning.manual as Rule)(entry({ beadsCardKind: 'research' }, 'A request'))).toMatchObject({
+        skillName: DECISION_SKILL,
+        role: 'plan',
+      });
+    });
+
+    it('ships the skill where Factory loads project skills (dist/workspace.js:31), with parseable frontmatter', () => {
+      const file = join(process.cwd(), 'src', 'mastra', 'public', 'factory-skills', DECISION_SKILL, 'SKILL.md');
+      const text = readFileSync(file, 'utf8');
+      const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+      expect(front).toMatch(new RegExp(`^name: ${DECISION_SKILL}$`, 'm'));
+      const description = /^description: (.+)$/m.exec(front)?.[1] ?? '';
+      expect(description.length).toBeGreaterThan(20);
+      // An unquoted [...] value is a YAML flow sequence, not a string.
+      expect(description.startsWith('[')).toBe(false);
+    });
   });
 });
