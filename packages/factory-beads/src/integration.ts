@@ -261,9 +261,11 @@ export const FACTORY_REPOSITORY_META = 'repository';
  * The card metadata keys Factory's board draws label chips from, for a card
  * of any source, manual included: `labels`, a list of strings, and
  * `labelColors`, label to a hex or named color for the chip's dot
- * (@mastra/factory 0.20.0 board UI: `q2` reads `metadata.labels` and
- * `metadata.labelColors`; GitHub and GitLab cards carry the same keys,
- * integrations/github/rules.js:701). Factory's own keys, not ours.
+ * (the board UI `mastra` 1.33.0 ships, dist/factory/assets/index-*.js: `q2`
+ * reads `metadata.labels` and `metadata.labelColors`; GitHub cards carry
+ * `labels`, @mastra/factory 0.20.0 integrations/github/rules.js:723, and
+ * GitLab cards both, integrations/gitlab/rules.js:366-367). Factory's own
+ * keys, not ours.
  */
 export const CARD_LABELS_META = 'labels';
 export const CARD_LABEL_COLORS_META = 'labelColors';
@@ -285,10 +287,15 @@ const PRIORITY_COLORS: Readonly<Record<number, string>> = { 0: '#dc2626', 1: '#e
 /**
  * A card's chips (samskara-l2t.5): the bead's own bd labels, its priority as
  * `P0`-`P4`, its issue type, and Factory's approval label for a bead labelled
- * `human`. Factory has no sort field for cards, so priority is a chip only
- * (Mastra feature request 31596da1).
+ * `human` (matched exactly, as `bd human list` does) whose card a person
+ * has not accepted yet. Once accepted, the label would no longer gate
+ * anything (`needsApproval` ignores an accepted card, @mastra/factory 0.20.0
+ * dist/rules/types.js:14-18), and Factory's supervisor would report it as
+ * label drift on a card in a working phase (dist/supervisor/health.js:177-187).
+ * Factory has no sort field for cards, so priority is a chip only (Mastra
+ * feature request 31596da1).
  */
-export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_type'>): {
+export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_type'>, accepted = false): {
   labels: string[];
   labelColors: Record<string, string>;
 } {
@@ -302,7 +309,7 @@ export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_typ
     if (color) labelColors[chip] = color;
   }
   if (bead.issue_type) labels.push(bead.issue_type);
-  if (own.some(label => label.toLowerCase() === HUMAN_LABEL)) labels.push(NEEDS_APPROVAL_LABEL);
+  if (!accepted && own.includes(HUMAN_LABEL)) labels.push(NEEDS_APPROVAL_LABEL);
   return { labels: [...new Set(labels)], labelColors };
 }
 
@@ -1923,7 +1930,7 @@ export class BeadsIntegration implements FactoryIntegration {
       if (!bead) continue;
       try {
         // Chips (samskara-l2t.5): only on change, as every write bumps the revision.
-        const chips = cardChips(bead);
+        const chips = cardChips(bead, Boolean(card.acceptedAt));
         const meta = card.metadata ?? {};
         if (
           JSON.stringify(meta[CARD_LABELS_META] ?? null) !== JSON.stringify(chips.labels) ||

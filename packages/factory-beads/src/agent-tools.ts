@@ -158,12 +158,13 @@ function idArg(what: string) {
 }
 
 /**
- * A list of bd labels (samskara-l2t.5). bd's `--labels` is comma-separated,
- * so a label may not contain a comma; whitespace around one is not a label.
+ * A list of bd labels (samskara-l2t.5). bd parses `--labels` as comma-separated
+ * values, so a label may not contain a comma or a double quote (bd 1.3.1:
+ * "bare \" in non-quoted-field"); whitespace around one is not a label.
  */
 function labelsArg(what: string) {
   return z
-    .array(z.string().min(1).regex(/^[^,\s][^,]*$/, 'a label has no comma and does not start with a space').max(100))
+    .array(z.string().min(1).regex(/^[^,"\s][^,"]*$/, 'a label has no comma or double quote and does not start with a space').max(100))
     .max(20)
     .optional()
     .describe(what);

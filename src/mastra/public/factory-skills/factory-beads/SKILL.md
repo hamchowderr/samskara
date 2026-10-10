@@ -82,7 +82,7 @@ A repository may define more types; the tool's error lists every type it accepts
 
 Priority runs from 0 (highest) to 4 (lowest); 2 is normal.
 
-Labels are free-form tags (`labels` on `beads_create`, `add_labels` and `remove_labels` on `beads_update`); they show on the bead's card. The label `human` means a person must decide: its card is held for approval in Triage instead of being worked.
+Labels are free-form tags (`labels` on `beads_create`, `add_labels` and `remove_labels` on `beads_update`); they show on the bead's card. The label `human` means a person must decide: its card is held for approval in Triage instead of being worked. A bead created with `parent` inherits its parent's labels, `human` included.
 
 ## Cards: what each bead becomes
 

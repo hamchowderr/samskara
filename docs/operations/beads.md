@@ -286,8 +286,10 @@ it accepts any external source. A card with an unknown source classifies as
 Factory's board draws a chip for each string in a card's `metadata.labels`,
 for a card of any source, manual included, with the chip's dot colored from
 `metadata.labelColors` (a hex or named color) or by the label's text
-(`@mastra/factory` 0.20.0 board UI; GitHub and GitLab cards carry the same
-keys, `dist/integrations/github/rules.js:701`). Each sweep sets a beads
+(the board UI `mastra` 1.33.0 ships, `dist/factory/assets/index-*.js`; GitHub
+cards carry `labels`, `@mastra/factory` 0.20.0
+`dist/integrations/github/rules.js:723`, and GitLab cards both,
+`dist/integrations/gitlab/rules.js:366-367`). Each sweep sets a beads
 card's chips from the refresh read, writing only on change
 (samskara-l2t.5; `integration.ts`, `cardChips`, applied in
 `#followBeadEdits`):
@@ -297,7 +299,7 @@ card's chips from the refresh read, writing only on change
 | each bd label | the bead's `labels` |
 | `P0` to `P4` | the bead's priority; `P0` red, `P1` orange |
 | the type (`task`, `bug`, `epic`, ...) | the bead's `issue_type` |
-| `status: needs approval` (not drawn) | a bead labelled `human` |
+| `status: needs approval` (not drawn) | a bead labelled `human`, until a person accepts its card |
 
 `beadsPriority` and `beadsType` follow the bead too. Factory has no sort
 field for cards, so priority cannot order a column; it is a chip only until
@@ -308,12 +310,28 @@ v1.3.1). Its card carries Factory's own approval label, `status: needs
 approval` (`dist/rules/types.js:12-18`; the board does not draw it as a
 chip). While such a card is in Intake or Triage and not yet accepted, Work's
 Triage rule starts a prepare-approval run, which summarizes the decision
-needed, instead of an investigation (`dist/boards/work.js:51-60`). Removing
-the label in bd removes it from the card on the next sweep.
+needed, instead of an investigation (`dist/boards/work.js:51-60`). A person
+accepts it by moving the card into Planning or Building (Work's policy sets
+`acceptedAt`, `dist/boards/work-transition-policy.js:40`); from then on the
+approval label is left off the card, since it no longer gates anything and
+Factory's supervisor would report it as label drift on a working card
+(`dist/supervisor/health.js:177-187`). Removing the label in bd removes it
+from the card on the next sweep. `human` is matched exactly, as
+`bd human list` matches it. A bead created under a parent inherits the
+parent's labels unless `--no-inherit-labels` is passed (`bd create --help`),
+so a child of a `human` bead is an approval card too.
 
-**Labels and board routes.** Factory moves cards between boards by label
-only for GitHub and GitLab issue cards (`dist/routes/intake.js:85-102`), so
-a beads card's labels never move it to another board.
+**Labels and board routes.** Factory's label routes apply to integrations
+that have an `intake` member (`dist/routes/surface.js:481-484`), and move
+only that integration's issue cards (`dist/routes/intake.js:85-102`). The
+beads integration has none, so a beads card's labels never move it to
+another board.
+
+**First tick after this shipped.** The first tick writes `labels`,
+`labelColors`, `beadsPriority` and `beadsType` on every beads card, Done
+and Canceled included, so each card's revision goes up once; a run whose
+next move names the old revision has that move refused as stale once and
+retries it. After that only changes are written.
 
 **Agent tools.** `beads_create` takes `labels`, and `beads_update` takes
 `add_labels` and `remove_labels` (`bd create --labels`, `bd update

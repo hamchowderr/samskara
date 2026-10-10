@@ -73,4 +73,18 @@ describe('card chips (samskara-l2t.5)', () => {
     expect(triage?.prompt).toMatch(/^Prepare approval for/);
     expect(triage?.skillName).toBeUndefined();
   });
+
+  it('drops the approval label once a person accepts the card, and matches human exactly', async () => {
+    h = createHarness([
+      { id: 'w-1', title: 'Pick a vendor', labels: ['human'] },
+      { id: 'w-2', title: 'Shouty', labels: ['HUMAN'] },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-2').metadata?.[CARD_LABELS_META]).not.toContain(NEEDS_APPROVAL_LABEL);
+    // A person's move into Planning accepts it (Work's policy, work-transition-policy.js:40).
+    h.workItems.items.find(i => i.id === card(h!, 'w-1').id)!.acceptedAt = new Date() as never;
+    await sweep(integration);
+    expect(card(h, 'w-1').metadata?.[CARD_LABELS_META]).toEqual(['human', 'P2', 'task']);
+  });
 });
