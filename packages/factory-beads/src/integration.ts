@@ -37,10 +37,13 @@ import type { VersionControl } from '@mastra/factory/capabilities/version-contro
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
 import { LiveSessions } from '@mastra/factory/session/live-sessions';
-import { actorFromChannelAuthor } from '@mastra/factory/storage/domains/comments/actor';
+import { actorFromChannelAuthor, isMentionableActorId } from '@mastra/factory/storage/domains/comments/actor';
 import { MAX_COMMENT_BODY_LENGTH } from '@mastra/factory/storage/domains/comments/base';
+import type { WorkItemCommentRow, WorkItemCommentsStorage } from '@mastra/factory/storage/domains/comments/base';
+import type { WorkItemFeedPublisher } from '@mastra/factory/storage/domains/comments/feed-sync';
 import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -533,6 +536,15 @@ export class BeadsIntegration implements FactoryIntegration {
   readonly #commentCounts = new Map<string, number>();
   /** Cards whose bd comments are failing to reach the feed: warned once per failure streak. */
   readonly #commentsFailing = new Set<string>();
+  /**
+   * bd comment ids this process wrote from a card comment (samskara-l2t.7).
+   * Factory records a published comment's source only after `publish`
+   * returns (@mastra/factory 0.20.0 dist/storage/domains/comments/domain.js:113-117),
+   * so a sweep in between finds no feed comment carrying the id yet; this set
+   * keeps that sweep from posting the comment back. After a restart the feed
+   * carries the id.
+   */
+  readonly #mirroredComments = new Set<string>();
 
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
@@ -589,6 +601,72 @@ export class BeadsIntegration implements FactoryIntegration {
       return reason;
     })();
     return this.#preflight;
+  }
+
+  /**
+   * Card comments to bd (samskara-l2t.7), through Factory's own outbound feed
+   * seam: Factory calls `publish` for every comment created on any card
+   * (@mastra/factory 0.20.0 dist/storage/domains/comments/domain.js:108-131,
+   * collected from every ready integration, dist/factory.js:808-826), after the
+   * response, and records the returned source on the comment.
+   *
+   * Only a person's comment on a beads card is copied (owner decision): the
+   * author must be a Factory user (`kind: 'user'` with a bare id, which only
+   * a signed-in person has, dist/storage/domains/comments/actor.js:1-4). Agent
+   * comments, comments from bd itself and unlinked chat senders are left
+   * alone; Factory never offers a comment to the platform it came from
+   * (domain.js:111). The comment is written with `bd comments add --author
+   * <the person's name>` as the integration's actor, under the writer lease,
+   * on the host copy, then published with `bd sync` as an agent tool's
+   * write is (tool-ops.ts). Edits and deletions on the card are not copied:
+   * Factory's publisher seam has no hook for them.
+   */
+  feedPublisher(ctx: IntegrationContext): WorkItemFeedPublisher {
+    return {
+      id: BEADS_INTEGRATION_ID,
+      publish: (comment, card) => this.#publishComment(ctx, comment, card),
+    };
+  }
+
+  async #publishComment(
+    ctx: IntegrationContext,
+    comment: WorkItemCommentRow,
+    card: WorkItemRow,
+  ): Promise<{ source: ExternalWorkItemSource } | null> {
+    if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID) return null;
+    const beadId = card.metadata?.[BEADS_META.id];
+    const slug = card.metadata?.[BEADS_META.repo];
+    if (typeof beadId !== 'string' || typeof slug !== 'string') return null;
+    if (comment.author.kind !== 'user' || !isMentionableActorId(comment.author.id) || comment.deletedAt) return null;
+    const target = (await this.#linkedRepos(ctx, card.factoryProjectId)).find(r => r.slug === slug);
+    if (!target) {
+      this.#log.warn(`[factory-beads] ${slug}: card comment on ${beadId} not copied to bd: the repository is no longer linked to the project`);
+      return null;
+    }
+    // Factory's display name falls back to the person's email
+    // (actorFromAuthUser, actor.js:5-13); bd data is pushed to git, so an
+    // address is never written there, only the part before the @.
+    const shown = comment.author.displayName?.trim() || 'Factory user';
+    const author = shown.includes('@') ? shown.slice(0, shown.indexOf('@')) || 'Factory user' : shown;
+    // The text goes in a file: bd reads an argument that starts with a dash
+    // as a flag, and the write appends `--json` after the arguments.
+    const dir = await mkdtemp(join(tmpdir(), 'factory-beads-comment-'));
+    try {
+      const file = join(dir, 'comment.md');
+      await writeFile(file, comment.body, 'utf8');
+      const { output, published, publishNote } = await this.#tools().write(
+        target,
+        async () => ['comments', 'add', beadId, '--author', author, '-f', file],
+        { actor: this.#runner.actor },
+      );
+      const id = (output as { id?: unknown } | null)?.id;
+      if (typeof id !== 'string') throw new Error(`bd comments add printed no comment id for ${beadId}`);
+      this.#mirroredComments.add(id);
+      if (!published) this.#log.warn(`[factory-beads] ${slug}: card comment copied to ${beadId} on the host copy, not yet published: ${publishNote}`);
+      return { source: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: id } };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 
   workers(ctx: IntegrationContext): MastraWorker[] {
@@ -2039,7 +2117,10 @@ export class BeadsIntegration implements FactoryIntegration {
     const count = bead.comment_count ?? 0;
     if (!feed || (this.#commentCounts.get(card.id) ?? 0) === count) return;
     const comments = await scope.repo.comments(bead.id);
+    const onFeed = await this.#beadsCommentIds(scope, card);
     for (const comment of comments) {
+      // Copied from this card (l2t.7), or already posted: never posted back.
+      if (onFeed.has(comment.id) || this.#mirroredComments.has(comment.id)) continue;
       const body = comment.text.trim() ? comment.text : '';
       if (!body) continue;
       const author = comment.author?.trim() || 'unknown';
@@ -2056,6 +2137,34 @@ export class BeadsIntegration implements FactoryIntegration {
       if (result.status !== 'created') throw new Error(`comment ${comment.id} not posted to the feed: ${result.status}`);
     }
     this.#commentCounts.set(card.id, count);
+  }
+
+  /**
+   * The bd comment ids the card's feed already carries, deleted comments
+   * included: those posted from bd (l2t.6) and those copied to bd from the
+   * card (l2t.7), whose source Factory records after publishing
+   * (`attachExternalSource`). A copied comment keeps its own source key, so
+   * the feed's key check alone would not stop it coming back
+   * (@mastra/factory 0.20.0 dist/storage/domains/comments/base.js:434-452).
+   * Read from Factory's comments domain (registered as
+   * `work-item-comments`, base.js:132-135), whose list returns deleted rows
+   * too (base.js:302-323). Empty without factory storage.
+   */
+  async #beadsCommentIds(scope: IntakeScope, card: WorkItemRow): Promise<Set<string>> {
+    const ids = new Set<string>();
+    const storage = this.#ctx?.factoryStorage;
+    if (!storage) return ids;
+    const comments = storage.getDomain<WorkItemCommentsStorage>('work-item-comments');
+    let before: string | undefined;
+    do {
+      const page = await comments.list({ orgId: scope.orgId, factoryProjectId: scope.projectId, workItemId: card.id, limit: 100, ...(before ? { before } : {}) });
+      for (const row of page.comments) {
+        const source = row.externalSource;
+        if (source?.integrationId === BEADS_INTEGRATION_ID && source.type === BEADS_COMMENT_SOURCE) ids.add(source.externalId);
+      }
+      before = page.nextCursor;
+    } while (before);
+    return ids;
   }
 
   /** A new card for `bead`, under `parent` when given. Undefined when another project in the org holds its claim. */

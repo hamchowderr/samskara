@@ -380,6 +380,49 @@ the path Slack messages take (`@mastra/factory` 0.20.0
   `dist/storage/domains/comments/activity.js:29`), but people who follow
   the card see the new comments.
 
+### Card comments to bd
+
+A comment a person writes on a beads card is copied to its bead
+(samskara-l2t.7) with `bd comments add <id> --author "<their name>"`, so
+`bd comments <id>` shows it under their name. It goes through Factory's own
+outbound seam, `FactoryIntegration.feedPublisher`: Factory offers every new
+comment to each ready integration's publisher after the response, and records
+the source the publisher returns on the comment (`@mastra/factory` 0.20.0
+`dist/storage/domains/comments/domain.js:108-131`, collected at
+`dist/factory.js:808-826`).
+
+- **People only** (owner decision). The author must be a signed-in Factory
+  user: `kind: 'user'` with a bare id (`actor.js:1-4`). Agent comments,
+  comments posted from bd, and unlinked chat senders are not copied, and
+  Factory never offers a comment to the platform it came from
+  (`domain.js:111`). Only beads cards are copied from.
+- **Name, never an address.** The name is the comment's author name.
+  Factory falls back to the person's email when they have none
+  (`actorFromAuthUser`, `actor.js:5-13`), and bd data is pushed to git,
+  so only the part before the `@` is written.
+- **Written as an agent tool's write is**, by the same path (`tool-ops.ts`):
+  under the writer lease, on the host copy, after `bd dolt pull`, then
+  published with `bd sync`; a sync that fails leaves it for the next
+  sweep, and a conflict parks the repository. The bd actor is the
+  integration's (`--actor`), not the agent actor. The text goes through a
+  file (`-f`), since bd reads an argument that starts with a dash as a
+  flag.
+- **Never posted back.** A copied comment keeps its own feed key: Factory
+  attaches the bd source to it but never re-keys a comment made on the web
+  ("a web-born comment is never key-deduped against its own platform echo",
+  `dist/storage/domains/comments/base.js:434-452`). So the sweep that
+  posts bd comments ([bd comments on the feed](#bd-comments-on-the-feed))
+  skips every bd comment id the card's feed already carries, read from
+  Factory's comments domain (`work-item-comments`, `base.js:132-135`;
+  deleted comments included, `base.js:302-323`). Between the bd write and
+  Factory recording the source, the ids this process just wrote are held
+  in memory, so a sweep in that window skips them too.
+- **Not copied:** edits and deletions on the card (the publisher seam has no
+  hook for them), and a comment whose repository is no longer linked to the
+  project (logged).
+- **Failure.** A failed copy is logged by Factory and the comment stays on
+  the card only; nothing retries it.
+
 ### Card kinds
 
 Every beads card is one of four kinds, set in `beadsCardKind` from the bead
@@ -1837,7 +1880,16 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   bead's card; a refused post retried on the next sweep while the title
   still follows; an over-long comment cut and an empty one skipped. In
   `test/real-bd.test.ts`, a comment made on one copy posted once with the
-  same bd id and time.
+  same bd id and time. Card comments to bd (samskara-l2t.7,
+  `test/comments-to-bd.test.ts`): a person's comment copied under their
+  name with a leading dash intact, as the integration's actor; its bd id
+  recorded on the card comment; not posted back by later sweeps, after a
+  restart, or by a sweep that runs before Factory records the source; no
+  copy for an agent, an unlinked chat sender or a card that is not a beads
+  card; an email name cut to its local part. The harness keeps a
+  published web comment's own feed key, as Factory does. In
+  `test/real-bd.test.ts`, a card comment reaching origin with its author
+  and text, and not coming back after a restart.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote, including
   an epic with two children and a nested epic, and a real `bd mol pour` whose
@@ -1912,11 +1964,10 @@ build never runs bd.
   automated writer.
 - **No live plan-gate run yet.** The gate is proven by unit tests only. The
   transition API always acts as a person, and a live agent run costs credits.
-- **Card comments do not reach bd yet** (samskara-l2t.7). bd comments reach
-  the card ([bd comments on the feed](#bd-comments-on-the-feed)), as do a
-  bead's title, status, kind, labels, priority and type; see
-  [What the agent sees](#what-the-agent-sees), [Status sync](#status-sync)
-  and [Label chips](#label-chips).
+- **Card comment edits and deletions stay on the card.** A new comment on a
+  card reaches bd ([Card comments to bd](#card-comments-to-bd)) and bd
+  comments reach the card ([bd comments on the feed](#bd-comments-on-the-feed)),
+  but Factory's publisher seam carries only new comments.
 - **Multi-repository start is proven by unit tests only (`samskara-srl`).**
   The tests run Mastra's own `resolveWorkItemRepository` on the cards the
   integration makes; no beads card has yet been started live in a factory

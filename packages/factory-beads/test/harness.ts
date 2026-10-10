@@ -443,7 +443,16 @@ export interface FeedComment {
   author: { kind: string; id: string; displayName?: string };
   body: string;
   externalSource: ExternalWorkItemSource | null;
+  /** Set at create from the ingest source and never changed by a publish (comments/base.js:441-452). */
+  sourceKey: string | null;
   occurredAt: Date;
+  deletedAt: Date | null;
+}
+
+/** Factory's outbound seam (`WorkItemFeedPublisher`), as the fake feed calls it. */
+export interface FakePublisher {
+  id: string;
+  publish(comment: FeedComment, workItem: WorkItemRow): Promise<{ source: ExternalWorkItemSource } | null>;
 }
 
 /**
@@ -452,10 +461,15 @@ export interface FeedComment {
  * body policy (comments/base.js:37-40), unknown work item
  * (comments/domain.js:49-53), and the externalSource replay that returns the
  * existing row as `created` (comments/base.js:180-191, domain.js:94-99).
+ * The replay matches the source key set at create, which a publish never
+ * changes: a published web comment keeps no key of its platform
+ * (base.js:434-452). `publishers` are offered every new comment except on
+ * its own platform, and a published source is attached (domain.js:108-131).
  */
 export class MemoryFeed {
   comments: FeedComment[] = [];
   calls = 0;
+  publishers: FakePublisher[] = [];
   #seq = 0;
   constructor(private readonly workItems: MemoryWorkItems) {}
 
@@ -478,8 +492,7 @@ export class MemoryFeed {
           c =>
             c.orgId === input.orgId &&
             c.factoryProjectId === workItem.factoryProjectId &&
-            c.externalSource !== null &&
-            key(c.externalSource) === key(input.externalSource!),
+            c.sourceKey === key(input.externalSource!),
         )
       : undefined;
     if (replay) return { status: 'created' as const, comment: structuredClone(replay), workItem, mirrored: Promise.resolve() };
@@ -491,10 +504,33 @@ export class MemoryFeed {
       author: input.author,
       body: input.body,
       externalSource: input.externalSource ?? null,
+      sourceKey: input.externalSource ? key(input.externalSource) : null,
       occurredAt: input.occurredAt ?? new Date(),
+      deletedAt: null,
     };
     this.comments.push(comment);
-    return { status: 'created' as const, comment: structuredClone(comment), workItem, mirrored: Promise.resolve() };
+    return { status: 'created' as const, comment: structuredClone(comment), workItem, mirrored: this.#mirror(comment, workItem) };
+  }
+
+  async #mirror(comment: FeedComment, workItem: WorkItemRow): Promise<void> {
+    for (const publisher of this.publishers) {
+      if (comment.externalSource?.integrationId === publisher.id) continue;
+      try {
+        const published = await publisher.publish(structuredClone(comment), workItem);
+        if (published) comment.externalSource = published.source;
+      } catch {
+        // Factory logs a failed publish and never fails the create.
+      }
+    }
+  }
+
+  /** `WorkItemCommentsStorage.list`: every row, deleted ones included, newest first. */
+  async list(input: { orgId: string; workItemId: string }) {
+    const comments = this.comments
+      .filter(c => c.orgId === input.orgId && c.workItemId === input.workItemId)
+      .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime())
+      .map(c => structuredClone(c));
+    return { comments };
   }
 
   on(workItemId: string) {
@@ -638,10 +674,22 @@ export function createHarness(beads: FakeBead[]): Harness {
     auth: { enabled: () => true, ensureUser: async () => undefined, tenant: () => ({ orgId: ORG, userId: 'u1' }), isOrganizationAdmin: async () => true },
     storage: {
       sourceControls: [sourceControlHandle],
-      projects: { listAll: async () => sourceControl.projects.map(p => ({ ...p })) },
+      projects: {
+        listAll: async () => sourceControl.projects.map(p => ({ ...p })),
+        getById: async ({ id }: { id: string }) => {
+          const project = sourceControl.projects.find(p => p.id === id);
+          return project ? { ...project } : null;
+        },
+      },
     },
     runtime: { configVersion: 'test', workItems, boards: new Map([['work', board]]) },
     feed,
+    factoryStorage: {
+      getDomain: (name: string) => {
+        if (name !== 'work-item-comments') throw new Error(`fake factory storage has no domain ${name}`);
+        return feed;
+      },
+    },
   } as unknown as IntegrationContext;
 
   const cacheDir = join(dir, 'cache');
