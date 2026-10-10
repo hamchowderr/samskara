@@ -889,8 +889,11 @@ export class BeadsIntegration implements FactoryIntegration {
    * dist/integrations/linear/default-rules.js:35-49, committed at
    * integrations/linear/rules.js:131-158). Factory's dispatcher applies it
    * through the transition service as actor system, so the board policy and
-   * the phase's rules run as for any move (rules/dispatcher.js:507-534); a
-   * refused move fails the decision, retried up to 5 times (:19, :39-41).
+   * the phase's rules run as for any move (rules/dispatcher.js:507-534). A
+   * refused move fails the decision; its retries reuse the same ingress
+   * (:526), so the transition service replays the rejection
+   * (transition-service.js:129-130) and the decision ends in attention. Only
+   * a new evaluation at a new revision can move the card.
    *
    * `key` names the reason, e.g. `overview-done`. The ingress identity
    * carries the card's revision: commitRuleEvaluation replays any identity it

@@ -305,10 +305,20 @@ marks it synced without closing the bead again.
   the container while that child is open. Write-back counts the failed
   attempts, and after `maxCloseAttempts` (3) it parks the card as
   `close-failed`. The re-arm below recovers it.
-- *A refused move.* The dispatcher retries a failed decision up to 5 times,
-  with backoff (`dispatcher.js:19,39-41`). The card stays where it is. The
-  next tick that finds the count at 0 on a new card revision commits a new
-  move.
+- *A refused move.* The card stays where it is. The dispatcher retries a
+  failed decision up to 5 times (`dispatcher.js:19,39-41`), but every retry
+  uses the same transition ingress (`decision:<key>`, `dispatcher.js:526`),
+  and the transition service replays a stored rejection for a seen ingress
+  (`transition-service.js:129-130`). So a refused move is replayed, not
+  re-evaluated, and after 5 attempts it shows as an "automation-failed"
+  attention item until the card reaches a terminal phase. A real move comes
+  only from a new evaluation, which the next tick that finds the count at 0
+  commits on the card's new revision.
+- *A person cancels the card just after the move is committed.* The
+  dispatcher applies a transition at the card's current revision
+  (`dispatcher.js:507-520`), and Work allows Canceled to Done, so the card
+  still lands in Done and the container is closed. Every child is already
+  closed by then.
 - *Re-arm.* A container card in Done that is parked `close-failed` gets its
   write-back re-armed once every child is closed: `beadsCloseAttempts` is set
   back to 0 and `beadsWriteback` is cleared. The card stays in Done, and the
