@@ -261,6 +261,11 @@ export class BdRepo {
     }
   }
 
+  /** The bead's status, or undefined when bd cannot read it. */
+  async status(id: string): Promise<string | undefined> {
+    return (await this.show(id))?.status;
+  }
+
   /**
    * The per-sweep refresh (samskara-l2t.15): every bead of the copy in one
    * call, as a snapshot. Throws when bd fails or prints something that is not
@@ -294,11 +299,6 @@ export class BdRepo {
    * (`BEADS_MAX_ROWS`) cannot apply: the runner passes bd an allowlisted
    * environment without it (runner.ts).
    */
-  /** The bead's status, or undefined when bd cannot read it. */
-  async status(id: string): Promise<string | undefined> {
-    return (await this.show(id))?.status;
-  }
-
   async refresh(): Promise<BeadSnapshot> {
     const res = await this.runner.bd(['--readonly', 'list', '--all', '--brief', '--json', '-n', '0'], { cwd: this.dir });
     if (res.code !== 0) throw new Error(`bd list --all failed (exit ${res.code}): ${tail(res)}`);

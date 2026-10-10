@@ -271,6 +271,52 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(show(mol)).toMatchObject({ status: 'closed', close_reason: 'all steps complete' });
   }, 300_000);
 
+  it('re-reads after a close: a molecule root bd closed with its last step keeps its holder (samskara-l2t.15)', async () => {
+    mkdirSync(join(seed, '.beads', 'formulas'), { recursive: true });
+    writeFileSync(join(seed, '.beads', 'formulas', 'demo.formula.toml'), DEMO_FORMULA);
+    const poured = JSON.parse(run('bd', ['mol', 'pour', 'demo', '--var', 'name=reread', '--json'])) as {
+      new_epic_id: string;
+      id_mapping: Record<string, string>;
+    };
+    const mol = poured.new_epic_id;
+    run('bd', ['close', poured.id_mapping['demo.first']!]);
+    const last = poured.id_mapping['demo.second']!;
+    run('bd', ['update', mol, '--assignee', 'alice']);
+    run('bd', ['dolt', 'push']);
+
+    const calls: string[][] = [];
+    class RecordingRunner extends BdRunner {
+      override bd(args: readonly string[], options: Parameters<BdRunner['bd']>[1]) {
+        calls.push([...args]);
+        return super.bd(args, options);
+      }
+    }
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new RecordingRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id)!;
+    await sweep(integration);
+    // Both cards wait in Done in one sweep, the last step's first: the refresh
+    // read still shows the root open and held by alice when that close closes it.
+    h.workItems.move(card(last).id, 'done');
+    h.workItems.move(card(mol).id, 'done');
+    h.workItems.items.sort((a, b) => Number(a.metadata?.[BEADS_META.id] === mol) - Number(b.metadata?.[BEADS_META.id] === mol));
+    calls.length = 0;
+    const summary = await sweep(integration);
+    expect(summary.repos[0], JSON.stringify(summary)).toMatchObject({ state: 'ok', closed: 2 });
+    expect(calls.filter(c => c.includes(mol) && (c.includes('update') || c.includes('close')))).toEqual([]);
+    expect(card(mol).metadata?.[BEADS_META.writeback]).toBe('synced');
+
+    run('bd', ['dolt', 'pull']);
+    const rootBead = (JSON.parse(run('bd', ['--readonly', 'show', mol, '--json'])) as Array<{ status: string; assignee?: string; close_reason?: string }>)[0]!;
+    expect(rootBead).toMatchObject({ status: 'closed', assignee: 'alice', close_reason: 'all steps complete' });
+  }, 300_000);
+
   it('cards an open decision as a research card and never a closed one; approving it closes the bead (samskara-l2t.2.3)', async () => {
     // An open question as an agent files one: beads_create validates, and bd
     // accepts the three required sections empty.

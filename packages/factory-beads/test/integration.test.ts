@@ -367,7 +367,7 @@ describe('write-back and ordering', () => {
     expect(diagnostic).toContain('returned to "alice"');
   });
 
-  it('reads every pending bead from one refresh read, not one bd show each (samskara-l2t.15)', async () => {
+  it('reads pending beads from one refresh read until the first close, then each with bd show (samskara-l2t.15)', async () => {
     h = createHarness([
       { id: 'w-a', title: 'A', assignee: 'alice' },
       { id: 'w-b', title: 'B' },
@@ -380,31 +380,60 @@ describe('write-back and ordering', () => {
     const summary = await sweep(integration);
     expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 3 });
     const calls = commands(h).slice(before);
-    expect(calls.filter(c => c.startsWith('show'))).toEqual([]);
+    // w-a from the read; once it closed, the others right before their own close.
+    expect(calls.filter(c => c.startsWith('show'))).toEqual(['show w-b', 'show w-c']);
     // One read before write-back (status and holder), one after its sync.
     expect(calls.filter(c => c === 'list')).toHaveLength(2);
-    // Each holder came from the read: the handover named it.
+    // Each holder was read before its close: the handover named it.
     const handovers = h.state().calls.slice(before).filter(c => c.argv.includes('update')).map(c => c.argv.find(a => a.startsWith('--if-assignee=')));
     expect(handovers).toEqual(['--if-assignee=alice', '--if-assignee=carol']);
   });
 
-  it('closes nothing from a failed refresh read, and closes on the next sweep (samskara-l2t.15)', async () => {
-    h = createHarness([{ id: 'w-a', title: 'A' }]);
+  it('falls back to bd show when the refresh read fails, so a failing read never holds up a close (samskara-l2t.15)', async () => {
+    h = createHarness([
+      { id: 'w-a', title: 'A', assignee: 'alice' },
+      { id: 'w-b', title: 'B' },
+    ]);
     const integration = h.integration();
     await sweep(integration);
     h.workItems.move(cardFor(h, 'w-a').id, 'done');
+    h.workItems.move(cardFor(h, 'w-b').id, 'done');
     h.setState(s => (s.listFail = true));
     const before = h.state().calls.length;
     const failed = await sweep(integration);
-    expect(commands(h).slice(before)).not.toContain('close w-a');
-    // The cards stay pending, the copy is pulled instead, and no attempt is counted.
-    expect(commands(h).slice(before)).toContain('dolt pull');
-    expect(failed.repos[0]).toMatchObject({ closed: 0 });
-    expect(failed.repos[0]!.diagnostic).toMatch(/refresh read failed/);
-    expect(cardFor(h, 'w-a').metadata?.[BEADS_META.closeAttempts]).toBeUndefined();
+    const calls = commands(h).slice(before);
+    // Each bead read with bd show right before its close, then synced, as before the refresh read.
+    expect(calls).toEqual(expect.arrayContaining(['show w-a', 'close w-a', 'show w-b', 'close w-b', 'sync']));
+    expect(calls).not.toContain('dolt pull');
+    expect(h.state().beads.find(b => b.id === 'w-a')).toMatchObject({ status: 'closed', assignee: 'factory-beads' });
+    expect(failed.repos[0]).toMatchObject({ state: 'ok', closed: 2 });
+    // The overview steps' read failed too, and its diagnostic is the one shown.
+    expect(failed.repos[0]!.diagnostic).toMatch(/^refresh read failed, so the overview steps skipped this sweep/);
+  });
 
-    h.setState(s => (s.listFail = false));
-    expect((await sweep(integration)).repos[0]).toMatchObject({ state: 'ok', closed: 1 });
+  it("re-reads after a close: a molecule root bd closed with its last step is not handed over or closed again (samskara-l2t.15)", async () => {
+    h = createHarness([
+      { id: 'w-mol', title: 'demo', issue_type: 'molecule', assignee: 'alice' },
+      { id: 'w-mol.1', title: 'Only step', issue_type: 'task', parent: 'w-mol' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    // Both cards wait in Done in one sweep, the step's first: the refresh read
+    // still shows the root open and held by alice when the step's close closes it.
+    h.workItems.move(cardFor(h, 'w-mol.1').id, 'done');
+    h.workItems.move(cardFor(h, 'w-mol').id, 'done');
+    h.workItems.items.sort(
+      (a, b) => Number(a.metadata?.[BEADS_META.id] === 'w-mol') - Number(b.metadata?.[BEADS_META.id] === 'w-mol'),
+    );
+    const before = h.state().calls.length;
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 2 });
+    const calls = commands(h).slice(before);
+    expect(calls).toContain('show w-mol');
+    expect(calls).not.toContain('update w-mol');
+    expect(calls).not.toContain('close w-mol');
+    expect(h.state().beads[0]).toMatchObject({ status: 'closed', assignee: 'alice', closeReason: 'all steps complete' });
+    expect(cardFor(h, 'w-mol').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
   });
 
   it('parks a card as close-failed after the attempt cap', async () => {

@@ -228,6 +228,9 @@ export interface SweepSummary {
 
 const DEFAULT_REMOTE_CHECK_INTERVAL_MS = 15 * 60_000;
 
+/** How a repository's diagnostic starts when the refresh read failed (#readSnapshot). */
+const REFRESH_FAILED = 'refresh read failed';
+
 /** The ref beads publishes its Dolt data to (bd's git remote). */
 export const BEADS_DATA_REF = 'refs/dolt/data';
 
@@ -706,27 +709,31 @@ export class BeadsIntegration implements FactoryIntegration {
         item.metadata?.[BEADS_META.writeback] !== 'close-failed' &&
         Number(item.metadata?.[BEADS_META.closeAttempts] ?? 0) < maxAttempts,
     );
-    // Write-back reads each bead's status and holder from one refresh read of
-    // the copy as it is, before any pull, which is what the `bd show` per card
-    // it replaces read. A failed read skips write-back this sweep: the cards
-    // stay pending, and the sweep pulls instead.
-    let snapshot = pending.length > 0 ? await this.#readSnapshot(repo, report, 'write-back') : undefined;
-    if (pending.length > 0 && snapshot) {
-      const before = snapshot;
+    if (pending.length > 0) {
+      // Each bead's status and holder come from one refresh read of the copy
+      // as it is, before any pull, which is what the `bd show` per card it
+      // replaces read, until the first close lands. A close can change other
+      // beads: closing a molecule's last open step closes the root too (bd
+      // v1.3.1 cmd/bd/close.go:700-735), and a root read before that still
+      // shows its holder, so the handover would rewrite a closed bead's
+      // assignee. From the first close on, each bead is read with `bd show`
+      // right before its close, as before the refresh read. A failed read
+      // falls back to `bd show` for every bead, so write-back never waits on
+      // the refresh read.
+      let before = await this.#readSnapshot(repo, report, 'write-back read each bead with bd show');
       const closed: WorkItemRow[] = [];
-      let attempted = false;
       for (const item of pending) {
         const beadId = String(item.metadata?.[BEADS_META.id]);
         // A bead the list leaves out (a gate, a wisp) is read with bd show, as before.
-        const bead = before.get(beadId) ?? (await repo.show(beadId));
+        const bead = before?.get(beadId) ?? (await repo.show(beadId));
         if (bead?.status === 'closed') {
           closed.push(item);
           continue;
         }
-        attempted = true;
         const res = await repo.close(beadId, this.#closeReason(item), bead?.assignee);
         if (res.code === 0) {
           closed.push(item);
+          before = undefined;
           continue;
         }
         const attempts = Number(item.metadata?.[BEADS_META.closeAttempts] ?? 0) + 1;
@@ -738,9 +745,6 @@ export class BeadsIntegration implements FactoryIntegration {
         report.state = 'error';
         report.diagnostic = `write-back of ${beadId} exit ${res.code}`;
       }
-      // A close (a refused one may have swapped the holder and back) or a sync
-      // (which pulls) changed the copy, so the rest of the sweep reads it again.
-      if (attempted || closed.length > 0) snapshot = undefined;
       if (closed.length > 0) {
         const sync = await this.#syncWithRetry(repo, credentials);
         if (sync.code === 0) {
@@ -819,7 +823,10 @@ export class BeadsIntegration implements FactoryIntegration {
       overviews: new Map(),
       counted: new Map(),
       childless: new Set(),
-      snapshot: snapshot ?? (await this.#readSnapshot(repo, report, 'the overview steps')),
+      // Read after write-back, never reused from before it: a close, a refused
+      // close's handover and back, or the sync (which pulls) may have changed
+      // the copy.
+      snapshot: await this.#readSnapshot(repo, report, 'the overview steps skipped'),
     };
     for (const bead of parentsFirst(await repo.ready())) {
       // No `workspaceId` in the source: POST /web/factory/projects/:id/work-items
@@ -931,10 +938,13 @@ export class BeadsIntegration implements FactoryIntegration {
    * The refresh read (samskara-l2t.15, BdRepo.refresh), or undefined when it
    * failed. A failure warns once per failure streak, not once per sweep, and
    * the first read that works again logs one line. The repository's report
-   * carries the failure as its diagnostic, naming the `skipped` steps; its state is left as the other
-   * steps set it, since the pull and the intake of ready beads still ran.
+   * carries the failure as its diagnostic, naming the `consequence`; a later
+   * failed read in the same sweep replaces an earlier one's, so the overview
+   * steps' is the one shown. Its state is left as the other steps set it:
+   * write-back falls back to `bd show`, and the pull and the intake of ready
+   * beads still run.
    */
-  async #readSnapshot(repo: BdRepo, report: RepoSyncReport, skipped: string): Promise<BeadSnapshot | undefined> {
+  async #readSnapshot(repo: BdRepo, report: RepoSyncReport, consequence: string): Promise<BeadSnapshot | undefined> {
     try {
       const snapshot = await repo.refresh();
       if (this.#refreshFailing.delete(repo.slug)) {
@@ -946,10 +956,12 @@ export class BeadsIntegration implements FactoryIntegration {
       if (!this.#refreshFailing.has(repo.slug)) {
         this.#refreshFailing.add(repo.slug);
         this.#log.warn(
-          `[factory-beads] ${repo.slug}: ${message}. Until it reads again, each sweep skips write-back, open-children counts, overview and planning cards, parent links and re-arms for this repository; ready beads are still carded. Logged once until it recovers.`,
+          `[factory-beads] ${repo.slug}: ${message}. Until it reads again, each sweep skips open-children counts, overview and planning cards, overview moves and re-arms for this repository, and write-back reads each bead with bd show. Ready beads are still carded; a ready bead is linked under its parent only when the parent already has a card. Logged once until it recovers.`,
         );
       }
-      report.diagnostic ??= `refresh read failed, so ${skipped} skipped this sweep: ${message}`;
+      if (report.diagnostic === undefined || report.diagnostic.startsWith(REFRESH_FAILED)) {
+        report.diagnostic = `${REFRESH_FAILED}, so ${consequence} this sweep: ${message}`;
+      }
       return undefined;
     }
   }

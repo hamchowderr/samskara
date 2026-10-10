@@ -57,16 +57,20 @@ App:
 2. **Write-back.** For every beads card in the Done phase that has not been
    published yet: `bd --sandbox --actor factory-beads close <id> --reason
    "Factory card <card id> reached done"`, then `bd sync`
-   (`packages/factory-beads/src/integration.ts:698-777`). Each bead's status
+   (`packages/factory-beads/src/integration.ts:701-781`). Each bead's status
    and holder come from one [refresh read](#refresh-read) of the copy, taken
-   before the close, not from a `bd show` per card; a bead already closed is
-   only synced and marked. bd refuses to close
+   before the first close, not from a `bd show` per card; a bead already closed is
+   only synced and marked. Once a close lands, every later bead in the tick is
+   read with `bd show` right before its close: a close can change other
+   beads (closing a molecule's last open step closes its root, bd v1.3.1
+   `cmd/bd/close.go:700-735`), and a holder read before it would hand over,
+   and so rewrite the assignee of, a root bd has already closed. bd refuses to close
    a bead assigned to anyone but the closing actor, so a bead someone holds is
    first handed over with `bd update <id> --assignee=factory-beads
    --if-assignee=<holder>` (`repo.ts`, `BdRepo.close`). That swap fails with
    exit 13 if the holder changed in between. If the refresh read fails,
-   write-back is skipped for the tick: the cards stay pending, with no
-   attempt counted, and the tick pulls instead.
+   every pending bead is read with `bd show` before its close, as before the
+   refresh read existed, so a failing read never holds up a close.
    - **A live claim does not stop it.** The swap also takes over a bead
      someone claimed (`in_progress`), which a plain reassign refuses without
      `--force`. This is the owner's decision (2026-10-09): a card reaching
@@ -82,7 +86,7 @@ App:
    bead of the copy, with each one's children, in one call
    (`repo.ts`, `BdRepo.refresh`; samskara-l2t.15). Steps 4 to 6 read bead
    state from it. It is taken after the copy's last change in the tick, so
-   after write-back's close and sync the copy is read again. See
+   a tick that wrote back reads the copy again after write-back. See
    [Refresh read](#refresh-read).
 4. **Intake.** `bd --readonly ready --json --exclude-type=milestone -n 0`, then one
    card per bead, and the bead's description as one comment on the card's feed.
@@ -126,8 +130,8 @@ root is carded only as the parent of a ready child, as an overview card.
 One bd call per repository per tick reads every bead the tick needs
 (samskara-l2t.15): `bd --readonly list --all --brief --json -n 0`
 (`repo.ts`, `BdRepo.refresh`), held as a `BeadSnapshot`: each bead by id,
-and each bead's direct children. Write-back's status and holder checks, the
-overview and planning classification, the open-children counts, the
+and each bead's direct children. Write-back's status and holder checks (up
+to the first close of the tick), the overview and planning classification, the open-children counts, the
 overview move's closed check and the re-arm check all read it. Before, each
 container cost a `bd show` and a `bd list --parent`, each other overview
 card one more `bd list --parent`, and each pending write-back a `bd show`.
@@ -179,20 +183,24 @@ with `bd show` while the card has none: once per card per process, and for
 an empty description again only after the bead's `updated_at` changes.
 
 **When it fails.** The repository's report carries
-`refresh read failed, so <write-back | the overview steps> skipped this sweep`
-as its `reason`, and the tick skips write-back, open-children counts,
-overview and planning cards, parent links, overview moves and re-arms for the
-repository. Ready beads are still carded, without a parent; stranded overview
-cards are still moved to Intake. The failure is logged once per failure
-streak, not once per tick, and the first read that works again logs one
-line.
+`refresh read failed, so the overview steps skipped this sweep` (or, when
+only write-back's read failed, `refresh read failed, so write-back read each
+bead with bd show this sweep`) as its `reason`; the state is left as the
+other steps set it. Write-back still runs, reading each bead with `bd show`.
+The tick skips open-children counts, overview and planning cards, overview
+moves and re-arms for the repository. Ready beads are still carded; a ready
+bead is linked under its parent only when the parent already has a card in
+the project (`#parentCard` looks it up by its source), else it is carded
+without a parent. Stranded overview cards are still moved to Intake. The
+failure is logged once per failure streak, not once per tick, and the first
+read that works again logs one line.
 
 **Cost per tick.** For a repository with nothing to write back: the
 `git ls-remote`, `bd dolt pull`, the refresh read and `bd ready`, whatever
 the number of containers. A tick that writes back reads twice (before the
-close and after the sync) instead of one `bd show` per card. A `bd show` is
-left only for a bead the list leaves out and for an overview card's first
-description comment.
+first close and after the sync), plus one `bd show` for each pending bead
+after the first close lands. A `bd show` is otherwise left only for a bead
+the list leaves out and for an overview card's first description comment.
 
 ### Startup preconditions
 
@@ -378,7 +386,7 @@ bumps the card's revision. Overview cards rest in the board's initial phase
 | The child is already carded in another project of the organization | No overview card in this project, and one warning per process. The child's claim (`getByClaimKey`, `base.js:1220-1226`) says where its family lives. |
 | The container itself is carded in another project | The children are carded here without a parent, with one warning. |
 | The parent is not an epic, milestone or molecule, or it is closed | No overview card. The child is linked under the parent's own card when the parent has one ([Subtasks](#subtasks)), else carded without a parent. |
-| The refresh read fails, or the container is neither in it nor readable with `bd show` | The child is carded without a parent; the next tick tries again. |
+| The refresh read fails, or the container is neither in it nor readable with `bd show` | The child is linked under the container's card if the container already has one in this project, else carded without a parent; the next tick tries again. |
 
 **The board policy.** An overview card must never run. A phase handler that
 returns no decision does not stop a run: a person's move into a working
