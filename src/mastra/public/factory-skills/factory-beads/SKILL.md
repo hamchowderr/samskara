@@ -84,7 +84,7 @@ Priority runs from 0 (highest) to 4 (lowest); 2 is normal.
 
 ## Epics, children and dependencies
 
-- Put child beads under an epic with `parent` on `beads_create`. An epic is a container that holds no work itself: once it has children it gets an overview card, and its children's cards are linked under it. An overview card never runs and cannot move to Done while a child is open. A milestone and a poured molecule's root work the same way.
+- Put child beads under an epic with `parent` on `beads_create`. An epic is a container that holds no work itself: once one of its children is ready it gets an overview card, and its children's cards are linked under it. An overview card is never moved into a working phase and cannot move to Done while a child is open. A milestone and a poured molecule's root work the same way.
 - Use `beads_dep_add` with type `blocks` (the default) when one bead cannot start before another closes. A blocked bead stays out of `beads_ready` and gets its card only after its blocker closes, so blocks edges set the build order.
 - Found work in the middle of a task? Create it complete, then `beads_dep_add` it to the bead you were working on with type `discovered-from`, so the causal link survives.
 - Reversed a decision? Link the old bead to the new one with type `supersedes` and say why in the notes. Never silently drop the old one: the trail must show why it changed.

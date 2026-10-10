@@ -158,12 +158,15 @@ it accepts any external source. A card with an unknown source classifies as
 
 An epic, milestone or molecule root (the root bead of a `bd mol pour`) that
 has children gets an **overview card**: a card that groups its children's
-cards and is never run (owner decision, 2026-10-09, samskara-l2t.2). Its
+cards and is never moved into a working phase (owner decision, 2026-10-09,
+samskara-l2t.2). Its
 children's cards are linked under it with Factory's own
 `parentWorkItemId`, so they show under its linked items.
 
 **When it is made.** Intake makes a container's card when it first meets a
-ready child of it: the ready row's `parent` field names the container
+ready child of it, so a container whose children are all in progress or
+blocked has no card until one of them is ready. The ready row's `parent`
+field names the container
 (bd 1.3.1 sets it from the parent-child edge). The integration reads the
 container with `bd --readonly show <id> --json` and its children with
 `bd --readonly list --parent=<id> --all --flat --json -n 0`
@@ -212,6 +215,18 @@ phase still starts one with a generic stage message
 `createBeadsTransitionPolicy`, wired in `src/mastra/boards/requests-board.ts`).
 The policy runs for every transition and every actor before any phase rule,
 and a `reject` ends the transition (`transition-service.js:245-262`).
+
+The policy covers moves, not runs started without one. `POST
+/web/factory/projects/:id/runs/start` with no destination stage
+(`dist/routes/contracts.js:99-108`, `start-coordinator.js:181-201`) and the
+admin-only automation runs route dispatch a run without a transition, so the
+policy is never asked. Whether the Factory UI calls them on a card is not
+verified.
+
+An existing card for a container becomes an overview card wherever it sits.
+A card made before this change that is in a working phase with a live run is
+then stuck: its run's move to the next phase is refused. A person moves it
+to Intake or Canceled, which the policy allows (cleanup in samskara-l2t.2.5).
 
 | Move of an overview card | Result |
 |--------------------------|--------|
