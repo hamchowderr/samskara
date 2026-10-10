@@ -9,7 +9,7 @@
  * FACTORY_BEADS_REAL_BD=0 to skip it there too.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,6 +18,28 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { BdRepo, BdRunner, BEADS_META } from '../src/index';
 import { createHarness, sweep } from './harness';
 import type { Harness } from './harness';
+
+/** A two-step workflow; the second step needs the first. */
+const DEMO_FORMULA = `formula = "demo"
+description = "Demo workflow"
+version = 1
+type = "workflow"
+
+[vars.name]
+description = "name"
+required = true
+
+[[steps]]
+id = "first"
+title = "First: {{name}}"
+description = "do first"
+
+[[steps]]
+id = "second"
+title = "Second: {{name}}"
+description = "do second"
+needs = ["first"]
+`;
 
 const bdAvailable = process.env.FACTORY_BEADS_REAL_BD !== '0' && spawnSync('bd', ['--version']).status === 0;
 
@@ -101,6 +123,59 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown[0]?.status).toBe('closed');
     // No remote-info branch was created on the origin.
     expect(run('git', ['ls-remote', originUrl])).not.toMatch(/remote-info/);
+  }, 300_000);
+
+  it('cards containers with children as overview cards and links their children, molecules included (samskara-l2t.2.1)', async () => {
+    // Added after the first sweep, as new work lands in a live repository.
+    const make = (title: string, type: string, parent?: string) =>
+      run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])]).split(/\r?\n/)[0]!;
+    const epic = make('Overview epic', 'epic');
+    const one = make('Child one', 'task', epic);
+    const two = make('Child two', 'task', epic);
+    const nested = make('Nested epic', 'epic', epic);
+    const grand = make('Grandchild', 'task', nested);
+    mkdirSync(join(seed, '.beads', 'formulas'), { recursive: true });
+    writeFileSync(join(seed, '.beads', 'formulas', 'demo.formula.toml'), DEMO_FORMULA);
+    const poured = JSON.parse(run('bd', ['mol', 'pour', 'demo', '--var', 'name=x', '--json'])) as {
+      new_epic_id: string;
+      id_mapping: Record<string, string>;
+    };
+    const mol = poured.new_epic_id;
+    const first = poured.id_mapping['demo.first']!;
+    const second = poured.id_mapping['demo.second']!;
+    run('bd', ['dolt', 'push']);
+
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const summary = await sweep(integration);
+    expect(summary.repos[0], JSON.stringify(summary)).toMatchObject({ state: 'ok' });
+
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id);
+    const order = h.workItems.beadCards().map(c => c.metadata?.[BEADS_META.id] as string);
+    // The parent card is always made before its children's.
+    for (const [parent, child] of [[epic, one], [epic, two], [epic, nested], [nested, grand], [mol, first]] as const) {
+      expect(order.indexOf(parent), `${parent} before ${child}: ${order.join(', ')}`).toBeLessThan(order.indexOf(child));
+      expect(card(child)?.parentWorkItemId, `${child} under ${parent}`).toBe(card(parent)!.id);
+    }
+    expect(card(epic)!.metadata).toMatchObject({ beadsCardKind: 'overview', beadsOpenChildren: 3, beadsType: 'epic' });
+    expect(card(nested)!.metadata).toMatchObject({ beadsCardKind: 'overview', beadsOpenChildren: 1 });
+    // A poured root is a molecule, which bd ready never lists; its steps carry parent-child edges to it.
+    expect(card(mol)!.metadata).toMatchObject({ beadsCardKind: 'overview', beadsOpenChildren: 2, beadsType: 'molecule' });
+    expect(h.feed.on(card(mol)!.id).map(c => c.body)).toEqual(['Demo workflow']);
+    // The second step needs the first, so it is not ready yet.
+    expect(card(second)).toBeUndefined();
+    expect(card(grand)?.metadata?.beadsCardKind).toBeUndefined();
+
+    // Idempotent: a further sweep changes no card.
+    const revisions = h.workItems.beadCards().map(c => [c.id, c.revision, c.parentWorkItemId]);
+    await sweep(integration);
+    expect(h.workItems.beadCards().map(c => [c.id, c.revision, c.parentWorkItemId])).toEqual(revisions);
   }, 300_000);
 
   it('BdRepo.close: takes over a live claim, never forces, and returns a bead bd refuses to close', async () => {

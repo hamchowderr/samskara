@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { IntegrationContext } from '@mastra/factory/integrations/base';
 import { SourceControlConnectionNotFoundError } from '@mastra/factory/storage/domains/source-control/base';
-import { WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
+import { validateParentRelation, WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
 import type { CreateWorkItemInput, ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 
 import { BdRunner, BeadsIntegration } from '../src/index';
@@ -36,6 +36,8 @@ export interface FakeBead {
   closeReason?: string | null;
   /** Only this repository's copy lists the bead (slug). Unset: every linked repository does. */
   repo?: string;
+  /** The parent bead (a parent-child edge), as bd's `parent` field. */
+  parent?: string;
 }
 
 export interface FakeState {
@@ -45,6 +47,8 @@ export interface FakeState {
   closeFail: string[];
   /** Bead ids whose `--if-assignee` reassign fails as if the holder changed (exit 13). */
   casFail?: string[];
+  /** Parent ids whose `bd list --parent` fails. */
+  listParentFail?: string[];
   calls: Array<{
     argv: string[];
     cwd: string;
@@ -87,6 +91,12 @@ export class MemoryWorkItems {
     if (existing) return { item: existing, created: false, previous: { stages: existing.stages, sessionRoles: [] } };
     const claimant = input.claimKey ? this.items.find(i => i.orgId === orgId && i.claimKey === input.claimKey) : undefined;
     if (claimant) throw new WorkItemClaimConflictError(claimant);
+    // Factory's own check: the parent must be a card in the same project (work-items/base.js:318-332, :2484).
+    validateParentRelation(
+      this.items.filter(i => i.orgId === orgId && i.factoryProjectId === factoryProjectId),
+      undefined,
+      input.parentWorkItemId ?? null,
+    );
     const now = new Date();
     const item = {
       id: `card_${++this.#seq}`,
@@ -95,7 +105,7 @@ export class MemoryWorkItems {
       board: input.board ?? 'work',
       externalSource: input.externalSource ?? null,
       claimKey: input.claimKey ?? null,
-      parentWorkItemId: null,
+      parentWorkItemId: input.parentWorkItemId ?? null,
       title: input.title,
       stages: input.stages ?? ['intake'],
       stageHistory: [],
@@ -124,6 +134,26 @@ export class MemoryWorkItems {
     if (patch.stages) item.stages = patch.stages;
     item.revision++;
     return { item: structuredClone(item), previous: { stages: [], sessionRoles: [] } };
+  }
+
+  async getByClaimKey({ orgId, claimKey }: { orgId: string; claimKey: string }) {
+    const hit = this.items.find(i => i.orgId === orgId && i.claimKey === claimKey);
+    return hit ? structuredClone(hit) : null;
+  }
+
+  /** As WorkItemsStorage.setParentWorkItemIfMissing (work-items/base.js:2512-2530): a set parent is kept. */
+  async setParentWorkItemIfMissing({ orgId, id, parentWorkItemId }: { orgId: string; id: string; userId: string; parentWorkItemId: string }) {
+    const item = this.items.find(i => i.orgId === orgId && i.id === id);
+    if (!item) return null;
+    if (item.parentWorkItemId !== null) return structuredClone(item);
+    validateParentRelation(
+      this.items.filter(i => i.orgId === orgId && i.factoryProjectId === item.factoryProjectId),
+      item.id,
+      parentWorkItemId,
+    );
+    item.parentWorkItemId = parentWorkItemId;
+    item.revision++;
+    return structuredClone(item);
   }
 
   /** Simulates the board moving a card (the transition API's job, not ours). */

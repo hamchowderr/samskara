@@ -27,10 +27,39 @@ export interface ReadyBead {
   issue_type?: string;
   /** Absent when the bead has none: bd omits empty text fields from JSON. */
   description?: string;
+  /** The parent bead's id, from its parent-child edge; absent for a top-level bead. */
+  parent?: string;
+}
+
+/** One bead as `bd show --json` returns it: the fields the integration reads. */
+export interface BeadDetails {
+  id: string;
+  title?: string;
+  status?: string;
+  assignee?: string;
+  priority?: number;
+  issue_type?: string;
+  parent?: string;
+  description?: string;
+}
+
+/** One child row of `bd list --parent`. */
+export interface ChildBead {
+  id: string;
+  status?: string;
+  issue_type?: string;
 }
 
 /** Issue types that group work and are never carded as work themselves. */
 export const CONTAINER_TYPES = ['epic', 'milestone'] as const;
+
+/**
+ * Issue types whose children get an overview card above them. A poured
+ * molecule's root is of type `molecule`, and every poured step carries a
+ * parent-child edge to it (bd v1.3.1 cmd/bd/cook.go:643-649); bd ready never
+ * lists the root itself (internal/storage/sqlbuild/ready.go:16-38).
+ */
+export const OVERVIEW_TYPES = [...CONTAINER_TYPES, 'molecule'] as const;
 
 const MARKER = 'factory-beads-bootstrapped';
 const PARKED = 'factory-beads-parked';
@@ -125,16 +154,33 @@ export class BdRepo {
     );
   }
 
-  /** The bead's status and assignee, or undefined when bd cannot read it. */
-  async show(id: string): Promise<{ status?: string; assignee?: string } | undefined> {
+  /** The bead as `bd show` reads it, or undefined when bd cannot read it. */
+  async show(id: string): Promise<BeadDetails | undefined> {
     const res = await this.runner.bd(['--readonly', 'show', id, '--json'], { cwd: this.dir });
     if (res.code !== 0) return undefined;
     try {
       const parsed = JSON.parse(res.stdout) as unknown;
-      return (Array.isArray(parsed) ? parsed[0] : parsed) as { status?: string; assignee?: string } | undefined;
+      const row = (Array.isArray(parsed) ? parsed[0] : parsed) as BeadDetails | undefined;
+      return row && typeof row === 'object' ? row : undefined;
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * The bead's direct children, closed ones included. Checked on bd 1.3.1:
+   * `--parent` lists direct children only (a grandchild is listed under its
+   * own parent), `--all` adds closed children, `--flat` turns off the tree
+   * output, and `-n 0` lifts the default limit of 50 (`bd list --help`).
+   * Throws when bd fails, so a failed read is never taken for "no children".
+   */
+  async children(id: string): Promise<ChildBead[]> {
+    const res = await this.runner.bd(['--readonly', 'list', `--parent=${id}`, '--all', '--flat', '--json', '-n', '0'], {
+      cwd: this.dir,
+    });
+    if (res.code !== 0) throw new Error(`bd list --parent=${id} failed (exit ${res.code}): ${tail(res)}`);
+    const parsed = JSON.parse(res.stdout.trim() || '[]') as unknown;
+    return Array.isArray(parsed) ? (parsed as ChildBead[]).filter(child => typeof child?.id === 'string') : [];
   }
 
   /** The bead's status, or undefined when bd cannot read it. */

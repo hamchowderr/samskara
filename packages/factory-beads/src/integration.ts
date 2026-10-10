@@ -18,6 +18,9 @@
  *                                                         storage/domains/work-items/base.d.ts:544,562,746,759
  *   - update merges metadata                              storage/domains/work-items/base.js:379-382
  *   - claimKey: org-wide, released on a terminal phase    work-items/base.d.ts:395-400; base.js:912-919
+ *   - WorkItemsStorage.getByClaimKey                      work-items/base.d.ts:589; base.js:1220-1226
+ *   - parentWorkItemId on upsert, setParentWorkItemIfMissing
+ *       (the parent card must be in the same project)     work-items/base.js:318-332,2484,2512-2530
  *
  * Why cards are created with `workItems.upsert` and not a rule decision:
  * `upsertLinkedWorkItem.source` is a closed union (rules/types.d.ts:2) and a
@@ -34,7 +37,7 @@ import type { RequestContext } from '@mastra/core/request-context';
 import type { MastraWorker } from '@mastra/core/worker';
 import type { VersionControl } from '@mastra/factory/capabilities/version-control';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
-import { WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
+import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,8 +45,8 @@ import { join } from 'node:path';
 import { createBeadsTools, resolveToolProject } from './agent-tools';
 import type { ToolScope } from './agent-tools';
 import { registerLive } from './done-rule';
-import { BdRepo, cacheDirFor, resultTail } from './repo';
-import type { ReadyBead } from './repo';
+import { BdRepo, cacheDirFor, OVERVIEW_TYPES, resultTail } from './repo';
+import type { BeadDetails } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
 import { BeadsToolOps } from './tool-ops';
@@ -63,7 +66,14 @@ export const BEADS_META = {
   syncExit: 'beadsSyncExit',
   diagnostic: 'beadsDiagnostic',
   closeAttempts: 'beadsCloseAttempts',
+  /** `overview` on a container's card; absent on a work card. */
+  cardKind: 'beadsCardKind',
+  /** Overview cards: how many of the container's direct children are not closed. */
+  openChildren: 'beadsOpenChildren',
 } as const;
+
+/** `BEADS_META.cardKind` of an epic's, milestone's or molecule root's card. */
+export const OVERVIEW_CARD_KIND = 'overview';
 
 /**
  * The card metadata key Factory reads to pick a card's repository: the
@@ -183,6 +193,18 @@ interface LinkedRepo {
   slug: string;
 }
 
+/** One repository's intake within one sweep. */
+interface IntakeScope {
+  orgId: string;
+  projectId: string;
+  slug: string;
+  repo: BdRepo;
+  initialPhase: string;
+  report: RepoSyncReport;
+  /** Overview cards resolved this sweep, by container bead id; undefined = none. */
+  overviews: Map<string, Promise<WorkItemRow | undefined>>;
+}
+
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export class BeadsIntegration implements FactoryIntegration {
@@ -201,6 +223,8 @@ export class BeadsIntegration implements FactoryIntegration {
   readonly #orphansLogged = new Set<string>();
   /** Card ids whose description comment is confirmed in this process. */
   readonly #described = new Set<string>();
+  /** Keys of warnings already logged, so each repeats once per process, not once per sweep. */
+  readonly #warned = new Set<string>();
   #feedMissingLogged = false;
   /** Startup preconditions, checked once (first sweep): undefined = ok, else the idle reason. */
   #preflight: Promise<string | undefined> | undefined;
@@ -450,7 +474,7 @@ export class BeadsIntegration implements FactoryIntegration {
           const credentials: RepoCredentials | undefined = access.authorization
             ? { token: access.authorization.token, username: access.authorization.username }
             : undefined;
-          await this.#syncRepo(linked, access.cloneUrl, credentials, board.initialPhase, report);
+          await this.#syncRepo(linked, access.cloneUrl, credentials, board.initialPhase, phase => board.phaseKind(phase), report);
         } catch (error) {
           report.state = 'error';
           report.diagnostic = error instanceof Error ? error.message : String(error);
@@ -506,6 +530,7 @@ export class BeadsIntegration implements FactoryIntegration {
     cloneUrl: string,
     credentials: RepoCredentials | undefined,
     initialPhase: string,
+    phaseKind: (phase: string) => string | undefined,
     report: RepoSyncReport,
   ): Promise<void> {
     const runtime = this.#ctx!.runtime!;
@@ -678,51 +703,198 @@ export class BeadsIntegration implements FactoryIntegration {
     }
 
     // 2. Intake: one card per ready bead, idempotently, and its description
-    //    on the card's feed (back-filled for cards that predate it).
+    //    on the card's feed (back-filled for cards that predate it). A bead
+    //    with a parent container is linked under the container's overview
+    //    card, which is made first.
+    const scope: IntakeScope = { orgId, projectId, slug, repo, initialPhase, report, overviews: new Map() };
     for (const bead of await repo.ready()) {
-      const source: ExternalWorkItemSource = { integrationId: BEADS_INTEGRATION_ID, type: 'issue', externalId: bead.id };
-      // No `workspaceId`: POST /web/factory/projects/:id/work-items drops it
-      // (routes/contracts.js externalSourceSchema), so a key carrying it would
-      // never match a card made through that route. The repo is in claimKey.
-      const existing = await runtime.workItems.getByProjectSource({ orgId, factoryProjectId: projectId, source });
+      // No `workspaceId` in the source: POST /web/factory/projects/:id/work-items
+      // drops it (routes/contracts.js externalSourceSchema), so a key carrying
+      // it would never match a card made through that route. The repo is in claimKey.
+      const existing = await runtime.workItems.getByProjectSource({ orgId, factoryProjectId: projectId, source: beadSource(bead.id) });
+      if (!existing) {
+        // Another project in the org already carries this bead. Its container's
+        // overview card belongs there too, so none is made here.
+        const claimant = await runtime.workItems.getByClaimKey({ orgId, claimKey: beadsClaimKey(slug, bead.id) });
+        if (claimant && claimant.factoryProjectId !== projectId) {
+          report.existing++;
+          if (bead.parent) {
+            this.#warnOnce(
+              `claimed:${projectId}:${slug}:${bead.id}`,
+              `[factory-beads] ${slug}: ${bead.id} is carded in project ${claimant.factoryProjectId}, so its parent ${bead.parent} gets no overview card in project ${projectId}`,
+            );
+          }
+          continue;
+        }
+      }
+      const parent = bead.parent ? await this.#overview(scope, bead.parent, new Set()) : undefined;
       if (existing) {
         report.existing++;
+        if (parent) await this.#linkParent(scope, existing, parent);
         await this.#postDescription(existing, bead);
         continue;
       }
+      const card = await this.#createCard(scope, bead, parent, {});
+      if (card) await this.#postDescription(card, bead);
+    }
+
+    // 3. Open-children counts on the overview cards intake did not reach this
+    //    sweep (none of their children is ready). The board policy reads the
+    //    count to refuse Done while a child is open, and a policy may not read
+    //    storage itself (configure-factory-rules/SKILL.md:63).
+    for (const card of cards) {
+      const beadId = card.metadata?.[BEADS_META.id];
+      if (card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || typeof beadId !== 'string') continue;
+      if (scope.overviews.has(beadId) || card.stages.some(stage => phaseKind(stage) === 'terminal')) continue;
       try {
-        const result = await runtime.workItems.upsert({
-          orgId,
-          userId: `integration:${BEADS_INTEGRATION_ID}`,
-          factoryProjectId: projectId,
-          reuseMode: 'preserve',
-          input: {
-            board: this.board,
-            externalSource: source,
-            claimKey: beadsClaimKey(slug, bead.id),
-            title: `${bead.id}: ${bead.title}`,
-            stages: [initialPhase],
-            metadata: {
-              [BEADS_META.id]: bead.id,
-              [BEADS_META.repo]: slug,
-              [FACTORY_REPOSITORY_META]: slug,
-              [BEADS_META.type]: bead.issue_type ?? null,
-              [BEADS_META.priority]: bead.priority ?? null,
-            },
-          },
-        });
-        if (result.created) report.created++;
-        else report.existing++;
-        await this.#postDescription(result.item, bead);
+        const open = (await repo.children(beadId)).filter(child => child.status !== 'closed').length;
+        if (card.metadata?.[BEADS_META.openChildren] !== open) await this.#mark(orgId, card, { [BEADS_META.openChildren]: open });
       } catch (error) {
-        // Another project in the org already carries this bead.
-        if (error instanceof WorkItemClaimConflictError) {
-          report.existing++;
-          continue;
-        }
-        throw error;
+        this.#log.warn(`[factory-beads] ${slug}: children of ${beadId} not read: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+  }
+
+  /**
+   * The overview card of container bead `id`, made on first need: an epic,
+   * milestone or molecule root with at least one child. Its own container is
+   * resolved first, so a card is always made after its parent's: Factory
+   * validates `parentWorkItemId` against the cards already in the project
+   * (storage/domains/work-items/base.js:318-332, called on create at :2484).
+   *
+   * Resolved once per container per sweep. `trail` holds the ids being
+   * resolved below this one, so a parent cycle ends instead of waiting on itself.
+   *
+   * Undefined when there is no card to link under: the bead is not a
+   * container, is closed, cannot be read, has no children (owner decision
+   * 2026-10-09: a childless container gets no overview card), or is carded in
+   * another project. Never throws.
+   */
+  #overview(scope: IntakeScope, id: string, trail: Set<string>): Promise<WorkItemRow | undefined> {
+    if (trail.has(id)) return Promise.resolve(undefined);
+    let pending = scope.overviews.get(id);
+    if (!pending) {
+      pending = this.#resolveOverview(scope, id, new Set([...trail, id])).catch(error => {
+        this.#log.warn(`[factory-beads] ${scope.slug}: no overview card for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      });
+      scope.overviews.set(id, pending);
+    }
+    return pending;
+  }
+
+  async #resolveOverview(scope: IntakeScope, id: string, trail: Set<string>): Promise<WorkItemRow | undefined> {
+    const runtime = this.#ctx!.runtime!;
+    const bead = await scope.repo.show(id);
+    if (!bead) {
+      this.#warnOnce(
+        `unreadable:${scope.slug}:${id}`,
+        `[factory-beads] ${scope.slug}: parent ${id} cannot be read with bd show; its children are carded without an overview card`,
+      );
+      return undefined;
+    }
+    if (!(OVERVIEW_TYPES as readonly string[]).includes(bead.issue_type ?? '') || bead.status === 'closed') return undefined;
+    const children = await scope.repo.children(id);
+    if (children.length === 0) return undefined;
+    const open = children.filter(child => child.status !== 'closed').length;
+    const parent = bead.parent ? await this.#overview(scope, bead.parent, trail) : undefined;
+
+    let card: WorkItemRow | undefined =
+      (await runtime.workItems.getByProjectSource({ orgId: scope.orgId, factoryProjectId: scope.projectId, source: beadSource(id) })) ??
+      undefined;
+    if (card) {
+      scope.report.existing++;
+      // Only on change: every metadata write bumps the card's revision.
+      if (card.metadata?.[BEADS_META.cardKind] !== OVERVIEW_CARD_KIND || card.metadata?.[BEADS_META.openChildren] !== open) {
+        card = await this.#mark(scope.orgId, card, { [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: open });
+      }
+      if (parent) card = await this.#linkParent(scope, card, parent);
+    } else {
+      card = await this.#createCard(scope, bead, parent, { [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: open });
+      if (!card) {
+        this.#warnOnce(
+          `claimed:${scope.projectId}:${scope.slug}:${id}`,
+          `[factory-beads] ${scope.slug}: ${id} is carded in another project, so its children in project ${scope.projectId} are carded without an overview card`,
+        );
+        return undefined;
+      }
+    }
+    await this.#postDescription(card, bead);
+    return card;
+  }
+
+  /** A new card for `bead`, under `parent` when given. Undefined when another project in the org holds its claim. */
+  async #createCard(
+    scope: IntakeScope,
+    bead: Pick<BeadDetails, 'id' | 'title' | 'issue_type' | 'priority'>,
+    parent: WorkItemRow | undefined,
+    metadata: Record<string, unknown>,
+  ): Promise<WorkItemRow | undefined> {
+    const { orgId, projectId, slug } = scope;
+    try {
+      const result = await this.#ctx!.runtime!.workItems.upsert({
+        orgId,
+        userId: `integration:${BEADS_INTEGRATION_ID}`,
+        factoryProjectId: projectId,
+        reuseMode: 'preserve',
+        input: {
+          board: this.board,
+          externalSource: beadSource(bead.id),
+          claimKey: beadsClaimKey(slug, bead.id),
+          title: `${bead.id}: ${bead.title ?? ''}`,
+          stages: [scope.initialPhase],
+          ...(parent ? { parentWorkItemId: parent.id } : {}),
+          metadata: {
+            [BEADS_META.id]: bead.id,
+            [BEADS_META.repo]: slug,
+            [FACTORY_REPOSITORY_META]: slug,
+            [BEADS_META.type]: bead.issue_type ?? null,
+            [BEADS_META.priority]: bead.priority ?? null,
+            ...metadata,
+          },
+        },
+      });
+      if (result.created) scope.report.created++;
+      else scope.report.existing++;
+      return result.item;
+    } catch (error) {
+      // Another project in the org already carries this bead.
+      if (error instanceof WorkItemClaimConflictError) {
+        scope.report.existing++;
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Put a card made before its container's overview card under it. Only a
+   * card with no parent is touched, and setParentWorkItemIfMissing itself
+   * leaves a set parent alone (storage/domains/work-items/base.js:2512-2530),
+   * so a link a person made by hand stays. A relation Factory refuses is
+   * logged once, not thrown.
+   */
+  async #linkParent(scope: IntakeScope, card: WorkItemRow, parent: WorkItemRow): Promise<WorkItemRow> {
+    if (card.parentWorkItemId) return card;
+    try {
+      const linked = await this.#ctx!.runtime!.workItems.setParentWorkItemIfMissing({
+        orgId: scope.orgId,
+        id: card.id,
+        userId: `integration:${BEADS_INTEGRATION_ID}`,
+        parentWorkItemId: parent.id,
+      });
+      return linked ?? card;
+    } catch (error) {
+      if (!(error instanceof WorkItemRelationError)) throw error;
+      this.#warnOnce(`relation:${card.id}:${parent.id}`, `[factory-beads] ${scope.slug}: card ${card.id} not linked under ${parent.id}: ${error.message}`);
+      return card;
+    }
+  }
+
+  #warnOnce(key: string, message: string): void {
+    if (this.#warned.has(key)) return;
+    this.#warned.add(key);
+    this.#log.warn(message);
   }
 
   async #syncWithRetry(repo: BdRepo, credentials: RepoCredentials | undefined): Promise<BdResult> {
@@ -753,7 +925,7 @@ export class BeadsIntegration implements FactoryIntegration {
    *
    * Never throws: a feed failure must not stop intake or write-back.
    */
-  async #postDescription(card: WorkItemRow, bead: ReadyBead): Promise<void> {
+  async #postDescription(card: WorkItemRow, bead: Pick<BeadDetails, 'id' | 'description'>): Promise<void> {
     const description = typeof bead.description === 'string' ? bead.description : '';
     if (!description.trim() || this.#described.has(card.id)) return;
     const feed = this.#ctx?.feed;
@@ -900,6 +1072,11 @@ export function descriptionBody(description: string): string {
   const code = description.charCodeAt(cut - 1);
   if (code >= 0xd800 && code <= 0xdbff) cut--;
   return description.slice(0, cut) + note;
+}
+
+/** A bead card's external source. The same for a work card and an overview card. */
+function beadSource(beadId: string): ExternalWorkItemSource {
+  return { integrationId: BEADS_INTEGRATION_ID, type: 'issue', externalId: beadId };
 }
 
 /** The org-wide claim for one bead: a repo's bead is carded by one project at a time. */

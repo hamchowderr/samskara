@@ -10,6 +10,7 @@ import {
   descriptionBody,
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
+  OVERVIEW_CARD_KIND,
 } from '../src/index';
 import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
 // Factory's own resolver, the one dispatch runs (rules/start-coordinator.js:80, routes/surface.js:159).
@@ -525,5 +526,236 @@ describe('repository on the card', () => {
     const revisions = h.workItems.beadCards().map(c => c.revision);
     await sweep(integration);
     expect(h.workItems.beadCards().map(c => c.revision)).toEqual(revisions);
+  });
+});
+
+describe('overview cards and child linking (samskara-l2t.2.1)', () => {
+  const card = (harness: Harness, beadId: string) => harness.workItems.items.find(i => i.metadata?.[BEADS_META.id] === beadId);
+  const order = (harness: Harness) => harness.workItems.beadCards().map(c => c.metadata?.[BEADS_META.id]);
+  const collectWarnings = () => {
+    const warnings: string[] = [];
+    return {
+      warnings,
+      logger: { info: () => undefined, warn: (...args: unknown[]) => void warnings.push(args.join(' ')), error: () => undefined },
+    };
+  };
+
+  it('cards an epic with children as an overview card first, and links each child card under it', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', priority: 1, description: 'The whole thing.' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+      { id: 'w-e.2', title: 'Two', issue_type: 'task', parent: 'w-e' },
+    ]);
+    const summary = await sweep(h.integration());
+
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 3 });
+    // Parent before child: Factory refuses a parentWorkItemId it cannot find.
+    expect(order(h)).toEqual(['w-e', 'w-e.1', 'w-e.2']);
+    const epic = card(h, 'w-e')!;
+    expect(epic).toMatchObject({
+      title: 'w-e: Epic',
+      stages: ['intake'],
+      parentWorkItemId: null,
+      claimKey: beadsClaimKey(SLUG, 'w-e'),
+      externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e' },
+    });
+    expect(epic.metadata).toMatchObject({
+      [BEADS_META.cardKind]: OVERVIEW_CARD_KIND,
+      [BEADS_META.openChildren]: 2,
+      [BEADS_META.type]: 'epic',
+      [BEADS_META.priority]: 1,
+      [FACTORY_REPOSITORY_META]: SLUG,
+    });
+    for (const id of ['w-e.1', 'w-e.2']) {
+      expect(card(h, id)!.parentWorkItemId).toBe(epic.id);
+      expect(card(h, id)!.metadata?.[BEADS_META.cardKind]).toBeUndefined();
+    }
+    // The container's description is on its card like any other.
+    expect(h.feed.on(epic.id).map(c => c.body)).toEqual(['The whole thing.']);
+    // Containers are still never read as ready work.
+    const ready = h.state().calls.find(c => c.argv.includes('ready'))!;
+    expect(ready.argv).toContain('--exclude-type=epic,milestone');
+    const list = h.state().calls.find(c => c.argv.includes('list'))!;
+    expect(list.argv).toEqual(['--readonly', 'list', '--parent=w-e', '--all', '--flat', '--json', '-n', '0']);
+  });
+
+  it('walks nested containers top-down and resolves each container once per sweep', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'Nested', issue_type: 'epic', parent: 'w-e' },
+      { id: 'w-e.1.1', title: 'Grandchild', issue_type: 'task', parent: 'w-e.1' },
+      { id: 'w-e.1.2', title: 'Grandchild 2', issue_type: 'task', parent: 'w-e.1' },
+      { id: 'w-e.2', title: 'Child', issue_type: 'task', parent: 'w-e' },
+    ]);
+    await sweep(h.integration());
+
+    expect(order(h)).toEqual(['w-e', 'w-e.1', 'w-e.1.1', 'w-e.1.2', 'w-e.2']);
+    const epic = card(h, 'w-e')!;
+    const nested = card(h, 'w-e.1')!;
+    expect(nested.parentWorkItemId).toBe(epic.id);
+    expect(nested.metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.openChildren]: 2 });
+    // Direct children only: the nested epic and the child, not the grandchildren.
+    expect(epic.metadata?.[BEADS_META.openChildren]).toBe(2);
+    expect(card(h, 'w-e.1.1')!.parentWorkItemId).toBe(nested.id);
+    expect(card(h, 'w-e.1.2')!.parentWorkItemId).toBe(nested.id);
+    expect(card(h, 'w-e.2')!.parentWorkItemId).toBe(epic.id);
+    expect(commands(h).filter(c => c === 'show w-e')).toHaveLength(1);
+    expect(commands(h).filter(c => c === 'show w-e.1')).toHaveLength(1);
+  });
+
+  it('cards a molecule root and a milestone with children as overview cards', async () => {
+    h = createHarness([
+      { id: 'w-mol', title: 'demo', issue_type: 'molecule' },
+      { id: 'w-mol.1', title: 'First', issue_type: 'task', parent: 'w-mol' },
+      { id: 'w-mol.2', title: 'Second', issue_type: 'task', parent: 'w-mol', blockedBy: ['w-mol.1'] },
+      { id: 'w-m', title: 'Milestone', issue_type: 'milestone' },
+      { id: 'w-m.1', title: 'Member', issue_type: 'task', parent: 'w-m' },
+    ]);
+    await sweep(h.integration());
+
+    expect(order(h)).toEqual(['w-mol', 'w-mol.1', 'w-m', 'w-m.1']);
+    expect(card(h, 'w-mol')!.metadata).toMatchObject({
+      [BEADS_META.cardKind]: OVERVIEW_CARD_KIND,
+      [BEADS_META.openChildren]: 2,
+      [BEADS_META.type]: 'molecule',
+    });
+    expect(card(h, 'w-mol.1')!.parentWorkItemId).toBe(card(h, 'w-mol')!.id);
+    expect(card(h, 'w-m')!.metadata).toMatchObject({ [BEADS_META.cardKind]: OVERVIEW_CARD_KIND, [BEADS_META.type]: 'milestone' });
+    expect(card(h, 'w-m.1')!.parentWorkItemId).toBe(card(h, 'w-m')!.id);
+  });
+
+  it('gives childless containers no card, and links nothing under a parent that is not a container', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Childless epic', issue_type: 'epic' },
+      { id: 'w-m', title: 'Childless milestone', issue_type: 'milestone' },
+      { id: 'w-p', title: 'Parent task', issue_type: 'task', status: 'in_progress' },
+      { id: 'w-p.1', title: 'Subtask', issue_type: 'task', parent: 'w-p' },
+    ]);
+    const summary = await sweep(h.integration());
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 1 });
+    expect(order(h)).toEqual(['w-p.1']);
+    expect(card(h, 'w-p.1')!.parentWorkItemId).toBeNull();
+  });
+
+  it('back-fills the parent of a card made before its overview card, and a further sweep writes nothing', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    expect(order(h)).toEqual(['w-e.1']);
+    // The bead is moved under the epic (or the card predates this feature).
+    h.setState(s => (s.beads[1]!.parent = 'w-e'));
+
+    const summary = await sweep(integration);
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 1 });
+    expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
+
+    const revisions = h.workItems.beadCards().map(c => c.revision);
+    await sweep(integration);
+    await sweep(h.integration());
+    expect(h.workItems.beadCards().map(c => c.revision)).toEqual(revisions);
+  });
+
+  it('keeps a parent someone set by hand', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    const other = await h.workItems.upsert({ orgId: ORG, userId: 'u', factoryProjectId: PROJECT, input: { title: 'A card made by a person' } });
+    await h.workItems.setParentWorkItemIfMissing({ orgId: ORG, id: card(h, 'w-e.1')!.id, userId: 'u', parentWorkItemId: other.item.id });
+    h.setState(s => (s.beads[1]!.parent = 'w-e'));
+    await sweep(integration);
+    expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(other.item.id);
+  });
+
+  it('keeps the open-children count current, writing only when it changes', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+      { id: 'w-e.2', title: 'Two', issue_type: 'task', parent: 'w-e' },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    const revision = () => card(h!, 'w-e')!.revision;
+    const before = revision();
+    await sweep(integration);
+    expect(revision()).toBe(before);
+
+    // One child closes; the other is still ready.
+    h.setState(s => (s.beads[1]!.status = 'closed'));
+    await sweep(integration);
+    expect(card(h, 'w-e')!.metadata?.[BEADS_META.openChildren]).toBe(1);
+
+    // No child is ready (the last one is claimed): the count is still read.
+    h.setState(s => (s.beads[2]!.status = 'in_progress'));
+    await sweep(integration);
+    expect(card(h, 'w-e')!.metadata?.[BEADS_META.openChildren]).toBe(1);
+    h.setState(s => (s.beads[2]!.status = 'closed'));
+    await sweep(integration);
+    expect(card(h, 'w-e')!.metadata?.[BEADS_META.openChildren]).toBe(0);
+    const settled = revision();
+    await sweep(integration);
+    expect(revision()).toBe(settled);
+  });
+
+  it('makes no overview card for a container whose child is carded in another project, and says so once', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+    ]);
+    await h.workItems.upsert({
+      orgId: ORG,
+      userId: 'u',
+      factoryProjectId: 'other_project',
+      input: { title: 'held elsewhere', claimKey: beadsClaimKey(SLUG, 'w-e.1') },
+    });
+    const { warnings, logger } = collectWarnings();
+    const integration = h.integration({ logger });
+    const summary = await sweep(integration);
+    await sweep(integration);
+
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 0, existing: 1 });
+    expect(h.workItems.items.filter(i => i.factoryProjectId === PROJECT)).toHaveLength(0);
+    expect(commands(h)).not.toContain('show w-e');
+    expect(warnings.filter(w => w.includes('w-e.1 is carded in project other_project'))).toHaveLength(1);
+  });
+
+  it('cards the children without a parent when the container is carded in another project', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+    ]);
+    await h.workItems.upsert({
+      orgId: ORG,
+      userId: 'u',
+      factoryProjectId: 'other_project',
+      input: { title: 'epic elsewhere', claimKey: beadsClaimKey(SLUG, 'w-e') },
+    });
+    const { warnings, logger } = collectWarnings();
+    const summary = await sweep(h.integration({ logger }));
+    expect(summary.repos[0]).toMatchObject({ state: 'ok', created: 1 });
+    expect(order(h)).toEqual(['w-e.1']);
+    expect(card(h, 'w-e.1')!.parentWorkItemId).toBeNull();
+    expect(warnings.some(w => w.includes('w-e is carded in another project'))).toBe(true);
+  });
+
+  it('a failed children read still cards the child, unlinked, and the next sweep links it', async () => {
+    h = createHarness([
+      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
+      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
+    ]);
+    h.setState(s => (s.listParentFail = ['w-e']));
+    const integration = h.integration();
+    const failed = await sweep(integration);
+    expect(failed.repos[0]).toMatchObject({ state: 'ok', created: 1 });
+    expect(card(h, 'w-e.1')!.parentWorkItemId).toBeNull();
+
+    h.setState(s => (s.listParentFail = []));
+    await sweep(integration);
+    expect(card(h, 'w-e.1')!.parentWorkItemId).toBe(card(h, 'w-e')!.id);
   });
 });

@@ -122,20 +122,28 @@ switch (words[0]) {
     // directory is named after the slug (cacheDirFor in src/repo.ts).
     const inThisRepo = b => !b.repo || process.cwd().endsWith(b.repo.replace(/[^A-Za-z0-9._-]/g, '__'));
     const ready = state.beads.filter(
-      // Like bd 1.3.1: pinned beads are never ready (sqlbuild/ready.go:117).
-      b => inThisRepo(b) && isOpen(b) && b.status !== 'pinned' && !blocked(b) && !excluded.includes(b.issue_type),
+      // Like bd 1.3.1: only open beads are ready, so never a pinned
+      // (sqlbuild/ready.go:117) or in_progress one, nor a molecule root (:16-38).
+      b =>
+        inThisRepo(b) &&
+        (b.status ?? 'open') === 'open' &&
+        b.issue_type !== 'molecule' &&
+        !blocked(b) &&
+        !excluded.includes(b.issue_type),
     );
     // Like bd 1.3.0: --brief drops the free-form text, and an empty
     // description is omitted from the row either way.
     const brief = flags.includes('--brief');
     out = JSON.stringify(
-      ready.map(({ id, title, status, priority, issue_type, description }) => ({
+      ready.map(({ id, title, status, priority, issue_type, description, parent }) => ({
         id,
         title,
         ...(!brief && description ? { description } : {}),
         status,
         priority,
         issue_type,
+        // bd 1.3.1 names the parent-child edge's parent on the row.
+        ...(parent ? { parent } : {}),
       })),
     );
     break;
@@ -145,7 +153,13 @@ switch (words[0]) {
     if (!bead) {
       code = 1;
       err = 'not found';
-    } else out = JSON.stringify([{ id: bead.id, status: bead.status, ...(bead.assignee ? { assignee: bead.assignee } : {}) }]);
+    } else {
+      // As bd 1.3.1 shows it: empty fields are omitted.
+      const { id, title, status, priority, issue_type, assignee, parent, description } = bead;
+      out = JSON.stringify([
+        Object.fromEntries(Object.entries({ id, title, status, priority, issue_type, assignee, parent, description }).filter(([, v]) => v !== undefined && v !== '')),
+      ]);
+    }
     break;
   }
   case 'close': {
@@ -197,12 +211,23 @@ switch (words[0]) {
   case 'list': {
     const statuses = flagValue('status')?.split(',');
     const title = flagValue('title-contains')?.toLowerCase();
+    // Like bd 1.3.1: --parent lists direct children only, --all adds closed ones.
+    const parent = flagValue('parent');
+    const all = flags.includes('--all');
+    if (parent !== undefined && (state.listParentFail ?? []).includes(parent)) {
+      code = 1;
+      err = `list --parent=${parent} failed`;
+      break;
+    }
     const rows = state.beads.filter(
       b =>
-        (statuses ? statuses.includes(b.status ?? 'open') : (b.status ?? 'open') !== 'closed') &&
+        (statuses ? statuses.includes(b.status ?? 'open') : all || (b.status ?? 'open') !== 'closed') &&
+        (parent === undefined || b.parent === parent) &&
         (!title || b.title.toLowerCase().includes(title)),
     );
-    out = JSON.stringify(rows.map(({ id, title, status, priority, issue_type }) => ({ id, title, status: status ?? 'open', priority, issue_type })));
+    out = JSON.stringify(
+      rows.map(({ id, title, status, priority, issue_type, parent }) => ({ id, title, status: status ?? 'open', priority, issue_type, ...(parent ? { parent } : {}) })),
+    );
     break;
   }
   case 'update': {

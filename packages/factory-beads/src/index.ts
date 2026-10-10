@@ -8,6 +8,7 @@ export {
   descriptionBody,
   FACTORY_REPOSITORY_META,
   MAX_COMMENT_BODY,
+  OVERVIEW_CARD_KIND,
 } from './integration';
 export type {
   BeadsIntegrationOptions,
@@ -18,12 +19,19 @@ export type {
   WritebackState,
 } from './integration';
 export { createBeadsDoneRule } from './done-rule';
+export {
+  createBeadsTransitionPolicy,
+  isOverviewCard,
+  OVERVIEW_OPEN_CHILDREN_REASON,
+  OVERVIEW_WORKING_REASON,
+} from './board-rules';
+export type { BeadsTransitionPolicyOptions } from './board-rules';
 export { beadsSetting, beadsStartupLine } from './setting';
 export type { BeadsSetting } from './setting';
 export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runner';
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
-export { BdRepo, cacheDirFor } from './repo';
-export type { ReadyBead } from './repo';
+export { BdRepo, cacheDirFor, CONTAINER_TYPES, OVERVIEW_TYPES } from './repo';
+export type { BeadDetails, ChildBead, ReadyBead } from './repo';
 export { BeadsSyncWorker, LeaseWaitTimeoutError } from './worker';
 export type { LeaseSource, TickOutcome, WithLeaseOptions } from './worker';
 export {
