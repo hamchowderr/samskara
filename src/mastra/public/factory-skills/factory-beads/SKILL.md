@@ -82,14 +82,43 @@ A repository may define more types; the tool's error lists every type it accepts
 
 Priority runs from 0 (highest) to 4 (lowest); 2 is normal.
 
+## Cards: what each bead becomes
+
+Every ready bead becomes a card in Intake. The card's kind follows the bead, and it decides what may run on the card and who moves it:
+
+| Bead | Card | What runs on it | Who moves it where |
+|---|---|---|---|
+| a task, bug, feature, chore, spike or story | work card | Work's own triage, plan and build runs | as any card; Done closes the bead |
+| an open `decision` | research card | in Planning, the `factory-beads-decision` skill | only a person moves it to Done, which approves and closes it; it never enters Triage, Building or Review |
+| an open epic with no children | planning card | in Planning, the `factory-beads-epic` skill proposes children; in Building it files the approved ones | only a person moves it to Building (the approval) or Done; it never enters Triage or Review |
+| an epic, milestone or poured molecule's root with children | overview card | nothing, ever | it rests in Intake and moves to Done by itself when its last child closes; it never enters a working phase |
+
+A bead with a `parent` gets its card linked under the parent's card. Under an epic, milestone or molecule root that card is an overview card. Under any other bead, a task with subtasks say, it is the parent's own card, which stays a work card: it runs like any other, and nothing moves it for you.
+
+bd refuses to close any bead while one of its children is open. So a parent's card that reaches Done before its children are closed cannot close its bead; once the last child closes, the close is tried again. Finish the children first.
+
 ## Epics, children and dependencies
 
-- Put child beads under an epic with `parent` on `beads_create`. An epic is a container that holds no work itself: once it has children it gets an overview card, and its children's cards are linked under it. An overview card is never moved into a working phase and cannot move to Done while a child is open. When its last child closes, the card moves to Done by itself and the epic is closed, so there is nothing to move or close by hand. A milestone and a poured molecule's root work the same way, except that a childless milestone or molecule root gets no card at all.
-- An open epic with no children gets a planning card. When a person moves it into Planning, the `factory-beads-epic` skill proposes its child beads into the epic's notes and creates nothing; it never calls `submit_plan`, because the plan seat has no sandbox, so the card's Plan panel cannot load a plan file and its Approve control stays disabled. A person approves the proposal by moving the card to Building. While the card's session is open, the Factory card menu disables every move into a working phase, Building included, so the person closes the session view or waits for the run to finish first. In Building a second run files exactly the approved children with `beads_create` (`parent` = the epic) and `beads_dep_add`; the agent writes no code and opens no pull request, and moves the card back to Intake. The next sync turns it into the epic's overview card. Only a person moves a planning card to Building or Done, and auto-approved plans do not change that. Filing an epic you mean to plan this way: give it its description and success criteria, and leave the children to the planning card.
+- Put child beads under an epic with `parent` on `beads_create`. An epic is a container that holds no work itself: once it has children it gets an overview card, and its children's cards are linked under it. An overview card cannot move to Done while a child is open. When its last child closes, the card moves to Done by itself and the epic is closed, so there is nothing to move or close by hand. A milestone and a poured molecule's root work the same way, except that a childless milestone or molecule root gets no card at all.
+- An open epic with no children gets a planning card. When a person moves it into Planning, the `factory-beads-epic` skill proposes its child beads into the epic's notes and creates nothing; it never calls `submit_plan`, because the plan seat has no sandbox, so the card's Plan panel cannot load a plan file and its Approve control stays disabled. A person approves the proposal by moving the card to Building. In Building a second run files exactly the approved children with `beads_create` (`parent` = the epic) and `beads_dep_add`; the agent writes no code and opens no pull request, and moves the card back to Intake. The next sync turns it into the epic's overview card. Only a person moves a planning card to Building or Done, and auto-approved plans do not change that. Filing an epic you mean to plan this way: give it its description and success criteria, and leave the children to the planning card.
 - An open epic whose children are all closed is already settled: it gets an overview card, not a planning card, and the card moves to Done and the epic closes on the first sync, with nothing to do by hand.
 - Use `beads_dep_add` with type `blocks` (the default) when one bead cannot start before another closes. A blocked bead stays out of `beads_ready` and gets its card only after its blocker closes, so blocks edges set the build order.
 - Found work in the middle of a task? Create it complete, then `beads_dep_add` it to the bead you were working on with type `discovered-from`, so the causal link survives.
 - Reversed a decision? Link the old bead to the new one with type `supersedes` and say why in the notes. Never silently drop the old one: the trail must show why it changed.
+
+## When the board refuses a move
+
+The board refuses a move a card's kind does not allow, and `factory_transition_work_item` returns the reason. Read it and do what it says; do not retry the same move. An overview card's refusal tells you to move it to Intake and work on its children instead: an overview card made before overview cards existed can still have a run on it, and Intake is the one move that run has left (Done too, once no child is open).
+
+## Sessions a person opens on a card
+
+The card's "Start session" button opens a chat session bound to the card. It runs no skill, starts no phase run and moves nothing: the card stays where it is, and the board asks no question until a move is requested. So in such a session:
+
+- On an overview card, do not build anything. Its work is its children's cards. Answer questions; a move into a working phase is refused.
+- On a research or planning card, its skill does not run here. It runs when a person moves the card into Planning (and, for a planning card, Building). Do not write the decision or file the children from a chat session unless the person asks you to, and even then never move the card to Done or Building yourself: those moves are the person's approval.
+- A card that rests in Intake with an earlier run's session shows "Resume" instead. That is a move into the earlier run's phase, and the board refuses it for an overview card like any other.
+
+While a card's session is open, the Factory card menu greys out every move into a working phase. That is the Factory UI, not the board: close the session view, or wait for the run to finish, to make such a move.
 
 ## Decisions
 
