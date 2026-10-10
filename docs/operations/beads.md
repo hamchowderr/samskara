@@ -477,10 +477,17 @@ from intake when the epic is ready, and from the count pass when it is not
 2. The skill reads the epic, researches the work, and appends a
    `## Proposed children` block to the epic's notes with `beads_update`: per
    child, the title, type, priority, description, design, acceptance and what
-   it is blocked by. It creates nothing, calls neither `submit_plan` nor
-   `factory_transition_work_item`, and asks the person to review the proposal
-   and move the card to Building.
-3. A person moves the card to Building. That move is the approval. The
+   it is blocked by. It writes the same proposal to
+   `.artifacts/plans/<epic id>.md` and calls `submit_plan` with that path. It
+   creates no bead and does not call `factory_transition_work_item`.
+3. A person approves with the card's **Approve** control: Factory's native
+   plan approval. Work's tool rule turns the approved `submit_plan` result into
+   a move to Building (`dist/boards/work-tool-rules.js:8-16`), which the
+   processor sends as actor system with `planApproved: true`
+   (`dist/rules/processor.js:381-402`). A rejection with feedback goes back to
+   the same run, which appends a revised `## Proposed children` block,
+   rewrites the plan file and calls `submit_plan` again, as `submit_plan`'s own
+   result tells it to (`@mastra/core` `dist/tools-ChV1bxTW.js:933`). The
    Building `manual` handler, `createBeadsEpicBuildRule`, starts the skill in
    **file** mode on the work seat; it wraps Work's `buildWorkItem`
    (`dist/boards/work.js:110-121`, wired at `:190`), so every other card still
@@ -510,25 +517,43 @@ The decision shapes are checked with Factory's own
 | Move of a planning card | Result |
 |-------------------------|--------|
 | Into Triage or Review, by anyone | Rejected, `forbidden`. |
-| Into Building (`execute`) by an agent, the system, or any actor that is not a person, from any phase | Rejected, `approval_required`, whatever `plansAutoApproved` and `planApproved` say. |
+| Into Building (`execute`) by an actor that is not a person, from Planning, with `planApproved` and with plans not auto-approved | Left to Work's policy, which allows it. This is a person's Approve on the submitted plan. |
+| Into Building by an actor that is not a person, in every other case: no `planApproved`, plans auto-approved, or from any phase but Planning | Rejected, `approval_required`. |
 | Into Done by any actor that is not a person | Rejected, `approval_required`: Done would close the epic with no children. |
 | Into Building, Done or Canceled by a person | Allowed (then Work's own policy decides, and accepts the card as for any card a person starts). |
 | Into Planning, or from Building back to Intake (the file run's move) | Left to Work's policy, which allows them. |
 
-Auto-approve plans never approves an epic's plan (owner decision). Work's
+**Why approval is the Approve control and not a drag.** While the propose
+run holds the card, the Factory UI enables only moves into resting and
+terminal phases: in `node_modules/mastra/dist/factory/assets/index-BaghZlUk.js`,
+`fM(owner, phaseKind)` is `_L(owner) || !ldt(phaseKind)`, `_L` is
+`owner === "free"`, and `ldt` is true for every phase kind but `resting` and
+`terminal`. Building is a working phase, so a person cannot drag the card
+there while an agent holds it (found in a live check, samskara-l2t.2.4). The
+Approve control on the parked `submit_plan` is not a move and is not
+disabled by that rule. It is disabled while the plan text is empty, and the
+UI loads the plan only from a path that starts with `.artifacts/` (same
+bundle, `oye` and `JCt`), which is why the skill writes the plan there and
+passes that relative path.
+
+**Auto-approve plans never approves an epic's plan** (owner decision). Work's
 plan gate lets a non-human actor into Building in two cases
 (`dist/boards/work-transition-policy.js:15-19`): the project's auto-approve
-setting, and a move stamped `planApproved`. The second comes from an approved
-`submit_plan`: Work's tool rule asks for Building
-(`dist/boards/work-tool-rules.js:8-16`) and the processor sends that move as
-actor system with `planApproved: true` (`dist/rules/processor.js:381-402`).
-With auto-approve on, the dispatcher answers a parked `submit_plan` with
-"approved" itself (`dist/rules/dispatcher.js:107-112`), so a `planApproved`
-move cannot be told apart from a person's approval in the policy. The
-planning-card rule therefore refuses every non-human move into Building and
-never reads either flag. A person approves only by moving the card, which is
-`actor.type === 'human'`, the same test Work's gate uses. The skill does not
-call `submit_plan`.
+setting, and a move stamped `planApproved`. With auto-approve on, the
+dispatcher answers a parked `submit_plan` with "approved" itself
+(`dist/rules/dispatcher.js:107-112`), so a `planApproved` move cannot be told
+apart from a person's approval. The planning-card rule therefore allows a
+non-human move into Building only when `planApproved` is set and
+`plansAutoApproved` is not, and only from Planning.
+
+**The auto-approve-on edge.** In a project with auto-approve plans on, the
+propose run's `submit_plan` is approved by the dispatcher, the move to
+Building is refused, and the card stays in Planning. No person sees an
+Approve control, because the dispatcher answered it, and while the run holds
+the card the UI will not let a person drag it to Building either. A planning
+card in such a project cannot be approved from the UI while an agent holds
+it. Whether the card becomes free for a person's move once the run ends is
+not verified.
 
 The build phase is Work's `execute`, passed as `buildPhase`: Review shares
 its `work` role, so the role alone does not name it.
@@ -1167,9 +1192,12 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   Work's `factory-plan` decision for every other card; the skill file's
   location and frontmatter), and the planning card policy and rules (Triage
   and Review refused for every actor; Building refused for a plan agent, a
-  work agent and the system with every combination of `plansAutoApproved` and
-  `planApproved`, including the approved `submit_plan` path through Work's own
-  tool rule; Done refused for the same actors; Building, Done and Canceled
+  work agent and the system without `planApproved`, with plans auto-approved,
+  or from any phase but Planning, and allowed from Planning with
+  `planApproved` and auto-approve off, including the approved `submit_plan`
+  path through Work's own tool rule with auto-approve off (allowed) and on
+  (refused); the skill's propose mode calling `submit_plan` with an
+  `.artifacts/plans/` path; Done refused for the same actors; Building, Done and Canceled
   allowed for a person; the file run's move back to Intake allowed; the epic
   skill started in propose and file mode, the decision skill and Work's
   decisions unchanged for every other card) are covered by

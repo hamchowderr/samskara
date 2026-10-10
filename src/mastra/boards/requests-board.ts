@@ -54,8 +54,9 @@ const workExecute = workBoard.phases.execute.onEnter ?? {};
  * Done while a child is open; a research card (an open decision's) enters
  * no working phase but Planning and reaches Done only by a person's move; and
  * a plan card (a childless epic's) enters no working phase but Planning and
- * Building, and reaches Building or Done only by a person's move, whatever
- * the auto-approve-plans setting. Every other card gets Work's answer
+ * Building, reaches Building only by a person's move or a person's Approve
+ * on its submitted plan (never an auto-approved one), and reaches Done only
+ * by a person's move. Every other card gets Work's answer
  * unchanged. The working phases are read from the phases' declared `kind`,
  * and the plan phase from its `role` (configure-factory-rules/SKILL.md:65).
  * The build phase is Work's `execute`: Review shares its `work` role, so the
@@ -99,7 +100,7 @@ export const requestsBoard = defineBoard({
     },
     execute: {
       ...workBoard.phases.execute,
-      // A beads plan card, moved here by a person, runs the factory-beads-epic
+      // A beads plan card, moved here by a person's plan approval, runs the factory-beads-epic
       // skill in file mode: it files the approved children, with no code,
       // branch or pull request. Every other `manual` card gets Work's own
       // build decision. See docs/operations/beads.md.

@@ -100,11 +100,12 @@ export const DECISION_TYPE = 'decision';
  * `BEADS_META.cardKind` of an open epic's card while the epic has no
  * children: a planning card (owner decision, samskara-l2t.2; built in
  * samskara-l2t.2.4). In Planning an agent proposes child beads into the
- * epic's notes and creates nothing. A person approves by moving the card to
+ * epic's notes, creates nothing, and submits the proposal with `submit_plan`.
+ * A person approves with the card's Approve control, which moves the card to
  * Building, where a run files exactly the approved children and moves the
  * card back to Intake. The next sweep finds the children and makes it an
- * overview card. Only a person ever moves it to Building, whatever the
- * project's auto-approve-plans setting (board-rules.ts).
+ * overview card. Only a person's approval ever moves it to Building; an
+ * auto-approved plan does not (board-rules.ts).
  */
 export const PLAN_CARD_KIND = 'plan';
 
