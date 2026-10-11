@@ -149,10 +149,31 @@ sidebar without the link.
 
 `e2e/invite-flow.spec.ts` clicks the link.
 
+## Mastra's mark inside the app (samskara-jja)
+
+The bundle draws Mastra's mark in four places. The script replaces each with
+the brand's monogram, the first letter of `BRAND.short` in a rounded square
+drawn in the current text colour, so it suits both themes:
+
+| Where | In the bundle | Seen |
+|-------|---------------|------|
+| Top of the sidebar (labelled "Mastra", renamed `BRAND.name`), an eyebrow label, and the "Sign in with Mastra Platform" button | one inline SVG component | signed in; the button only with the `mastra-studio` provider, never under Samskara's Better Auth |
+| The brand loader: "Checking sign-in", "Loading factories" | a function component | before sign-in too; ours pulses with an SVG `<animate>` |
+| The "Mastra Code" logo | a function component | the supervisor and empty-thread pages |
+| The tab icon during a session | `favicon-session-{initializing,working,awaiting,error}.svg` | signed in; the status dot and its colours are kept |
+
+Each component is redefined under its own name, keeping the original's
+classes and size map, and the original stays in the bundle under an unused
+`<name>__mastra` name. Each is found by an anchor (the mark's SVG, or the
+function's signature) asserted to match exactly once, and each favicon must
+hold exactly one Mastra path, so a `mastra` upgrade that redraws any of them
+fails the build. `e2e/invite-flow.spec.ts` checks the signed-in sidebar shows
+an image named "Samskara" and none named "Mastra".
+
 ## What this does not cover
 
-Only pre-auth surfaces were audited. Post-auth screens contain further Mastra
-strings in the bundle — "Mastra Code", "Search MastraCode", "Ask Mastra Code…",
+Beyond the marks above, only pre-auth surfaces were audited. Post-auth
+screens contain further Mastra strings in the bundle — "Mastra Code", "Search MastraCode", "Ask Mastra Code…",
 provider labels — which this script does not touch. Renaming those reliably
 means vendoring the SPA source from the `mastra-ai/mastra` monorepo and
 building it. File a separate issue if clients will see those screens.
