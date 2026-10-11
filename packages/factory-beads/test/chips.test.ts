@@ -108,6 +108,7 @@ describe('dependency chips (samskara-l2t.11)', () => {
     h = createHarness([{ id: 'w-1', title: 'One', related: ['w-2'] }, { id: 'w-2', title: 'Two' }]);
     await sweep(h.integration());
     expect(card(h, 'w-1').metadata?.[CARD_LABELS_META]).toEqual(['P2', 'task', 'related w-2']);
+    expect(card(h, 'w-1').metadata?.[CARD_LABEL_COLORS_META]).toEqual({ 'related w-2': '#64748b' });
     expect(card(h, 'w-2').metadata?.[CARD_LABELS_META]).toEqual(['P2', 'task', 'related w-1']);
   });
 
@@ -132,7 +133,26 @@ describe('dependency chips (samskara-l2t.11)', () => {
       { id: 'p', status: 'open' },
     ]);
     expect(dependencyChips(snapshot.get('a')!, snapshot)).toEqual(['blocked by b', 'blocked by external:other:x', 'related c', 'related d']);
+    // bd lists it as ready: an external reference it could not resolve is not a blocker.
+    expect(dependencyChips(snapshot.get('a')!, snapshot, true)).toEqual(['blocked by b', 'related c', 'related d']);
     expect(dependencyChips(snapshot.get('a')!, undefined)).toEqual([]);
+    // conditional-blocks blocks while its bead is open; waits-for while its bead has an open child; sorted.
+    const waits = new BeadSnapshot([
+      {
+        id: 'x',
+        dependencies: [
+          { issue_id: 'x', depends_on_id: 'z-cond', type: 'conditional-blocks' },
+          { issue_id: 'x', depends_on_id: 'parent-busy', type: 'waits-for' },
+          { issue_id: 'x', depends_on_id: 'parent-idle', type: 'waits-for' },
+        ],
+      },
+      { id: 'z-cond', status: 'open' },
+      { id: 'parent-busy', status: 'open' },
+      { id: 'parent-idle', status: 'open' },
+      { id: 'kid', status: 'open', dependencies: [{ issue_id: 'kid', depends_on_id: 'parent-busy', type: 'parent-child' }] },
+      { id: 'kid2', status: 'closed', dependencies: [{ issue_id: 'kid2', depends_on_id: 'parent-idle', type: 'parent-child' }] },
+    ]);
+    expect(dependencyChips(waits.get('x')!, waits)).toEqual(['blocked by parent-busy', 'blocked by z-cond']);
     // Without an id (a caller that passes none), cardChips adds none.
     expect(cardChips({ priority: 2, issue_type: 'task' }, false, snapshot).labels).toEqual(['P2', 'task']);
   });

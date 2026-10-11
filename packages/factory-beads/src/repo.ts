@@ -177,9 +177,10 @@ export class BeadSnapshot {
 
   /**
    * The beads whose own row links this bead as related (`related` or
-   * `relates-to`). bd stores the edge on the bead it was added from only
-   * (checked on bd 1.3.1: `bd dep add a b --type related` lists the edge on
-   * a's row, none on b's).
+   * `relates-to`). `bd dep add a b --type related` stores the edge on a's
+   * row only, while `bd dep relate` writes `relates-to` on both rows (both
+   * checked on bd 1.3.1), so a caller takes the union with the bead's own
+   * edges.
    */
   relatedFrom(id: string): readonly BeadRow[] {
     return this.#relatedTo.get(id) ?? [];
