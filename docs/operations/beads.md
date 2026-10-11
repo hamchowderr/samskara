@@ -1979,10 +1979,12 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
 
 - `packages/factory-beads/test/*.test.ts`, run by `npm test`. A scripted fake bd
   (`test/fixtures/fake-bd.mjs`) and an in-memory work-item store test the
-  following. The fake's `bd ready` follows bd 1.3.1 (samskara-l2t.17): only
-  `open` beads, never a molecule root, a gate or a message, and every type in
-  `--exclude-type` left out; its `mol pour` makes a `molecule` root, as bd
-  does: the token never appears in argv; the server environment does not
+  following. Its `bd ready` lists what bd 1.3.1 lists for every status and
+  core type (samskara-l2t.17, checked against real bd): only `open` beads,
+  never a molecule root, a gate or a message, never a bead with an open
+  blocker of its own or on a parent above it, and every type in
+  `--exclude-type` left out. Its `dep add` blocks with a `blocks` edge, and
+  its `mol pour` makes a `molecule` root, as bd does. The tests cover: the token never appears in argv; the server environment does not
   reach bd; exit codes 2 and 3; idempotent intake across sweeps and restarts;
   milestone, event and pinned exclusion; claim conflicts; ordering (B is carded only after A's card
   reaches Done and A is closed and synced); the lease; the card's

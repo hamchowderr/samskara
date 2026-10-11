@@ -291,7 +291,7 @@ export class BdRepo {
   }
 
   /**
-   * Ready beads, milestones left out. Epics and milestones are containers ("contains no work itself",
+   * Ready beads, milestones and events left out (NEVER_READY_TYPES). Epics and milestones are containers ("contains no work itself",
    * `bd types`), and bd ready returns both (bd v1.3.1 internal/storage/sqlbuild/ready.go:16-38 excludes
    * neither; an epic with open children is listed too, checked on bd 1.3.1). Epics are read so that a
    * childless one can be carded for planning; the caller tells the two kinds of epic apart. Pinned beads,
@@ -308,7 +308,7 @@ export class BdRepo {
     if (res.code !== 0) throw new Error(`bd ready failed (exit ${res.code}): ${tail(res)}`);
     const parsed = JSON.parse(res.stdout.trim() || '[]') as unknown;
     if (!Array.isArray(parsed)) return [];
-    // Belt and braces: never read a milestone even if a bd version ignores the flag.
+    // Belt and braces: never read a milestone or an event even if a bd version ignores the flag.
     return (parsed as ReadyBead[]).filter(
       bead => typeof bead?.id === 'string' && !(NEVER_READY_TYPES as readonly string[]).includes(bead.issue_type ?? ''),
     );

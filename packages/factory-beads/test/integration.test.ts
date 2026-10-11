@@ -50,6 +50,19 @@ const commands = (harness: Harness) =>
   });
 
 describe('intake', () => {
+  it('never cards a bead under a blocked parent, as bd ready leaves it out (samskara-l2t.17)', async () => {
+    h = createHarness([
+      { id: 'w-t', title: 'Unfinished task', status: 'in_progress' },
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', blockedBy: ['w-t'] },
+      { id: 'w-e.1', title: 'Child', parent: 'w-e' },
+    ]);
+    await sweep(h.integration());
+    expect(cardFor(h, 'w-e.1')).toBeUndefined();
+    h.bd('close', 'w-t', '--reason', 'done');
+    await sweep(h.integration());
+    expect(cardFor(h, 'w-e.1')).toBeDefined();
+  });
+
   it('cards ready beads only, never milestones, events or pinned beads, with the claim key and external source', async () => {
     h = createHarness([
       { id: 'w-1', title: 'Epic', issue_type: 'epic' },
@@ -686,9 +699,9 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
 
   it('makes no overview card for a container whose child is carded in another project, and says so once', async () => {
     h = createHarness([
-      // Blocked, so it is not ready itself and is reached only through its child.
-      { id: 'w-e', title: 'Epic', issue_type: 'epic', blockedBy: ['w-x'] },
-      { id: 'w-x', title: 'Blocker', issue_type: 'task', status: 'in_progress' },
+      // In progress, so it is not ready itself and is reached only through its
+      // child. Not blocked: bd ready leaves out the child of a blocked parent too.
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', status: 'in_progress' },
       { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
     ]);
     await h.workItems.upsert({

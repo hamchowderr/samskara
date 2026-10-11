@@ -57,11 +57,20 @@ let err = '';
 const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
 
 const isOpen = bead => bead.status !== 'closed';
-const blocked = bead =>
-  (bead.blockedBy ?? []).some(id => {
+// Like bd 1.3.1 (checked): a bead is blocked by an open blocker of its own,
+// and by one of any parent above it (an epic that depends on an unfinished
+// task keeps its open child out of ready too).
+const blocked = (bead, seen = new Set()) => {
+  if (seen.has(bead.id)) return false;
+  seen.add(bead.id);
+  const own = (bead.blockedBy ?? []).some(id => {
     const blocker = state.beads.find(b => b.id === id);
     return blocker && isOpen(blocker);
   });
+  if (own) return true;
+  const parent = bead.parent ? state.beads.find(b => b.id === bead.parent) : undefined;
+  return parent ? blocked(parent, seen) : false;
+};
 
 if (words.length === 0 && flags.includes('--version')) words.push('version');
 if (words[0] === 'dolt' && words[1] === 'push') words[0] = 'dolt-push';
@@ -441,6 +450,11 @@ switch (words[0]) {
       break;
     }
     state.deps = [...(state.deps ?? []), { issue: words[2], dependsOn: words[3], type: flagValue('type') ?? 'blocks' }];
+    // A blocks edge (the default) keeps the issue out of ready, as in bd.
+    if ((flagValue('type') ?? 'blocks') === 'blocks') {
+      const issue = state.beads.find(b => b.id === words[2]);
+      if (issue) issue.blockedBy = [...new Set([...(issue.blockedBy ?? []), words[3]])];
+    }
     out = JSON.stringify({ issue_id: words[2], depends_on_id: words[3], status: 'added', type: flagValue('type') ?? 'blocks' });
     break;
   case 'cook': {
