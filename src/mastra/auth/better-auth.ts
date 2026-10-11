@@ -128,6 +128,18 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
     ...(publicUrl ? { baseURL: publicUrl } : {}),
     ...(allowedOrigins.length ? { trustedOrigins: allowedOrigins } : {}),
 
+    // The org the user last acted in, so a new session opens there (see
+    // databaseHooks). Server-owned: `input: false` keeps every API and
+    // provider profile from setting it, and `returned: false` keeps it out of
+    // responses (better-auth.com/docs/concepts/database, additionalFields).
+    // Nullable, so the boot migration adds the column to a populated table
+    // without a backfill (docs/operations/better-auth-migrations.md).
+    user: {
+      additionalFields: {
+        lastActiveOrganizationId: { type: 'string', required: false, input: false, returned: false },
+      },
+    },
+
     emailAndPassword: {
       enabled: true,
       disableSignUp: !signUpEnabled,
@@ -176,23 +188,45 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
     // sign-in, so the provider falls back to the user's OLDEST membership
     // (@mastra/auth-better-auth dist/index.js:546-553). For an invitee that is
     // the personal org the Factory created on their first visit, not the team
-    // they were invited into — they would sign in to an empty org. Pinning the
-    // session to the most recently joined org fixes that. A user in several
-    // orgs lands in the newest one and switches on the team page
-    // (samskara-cai, team/routes.ts), which sets the session's active org.
+    // they were invited into, so they would sign in to an empty org.
+    //
+    // A new session opens in the org the user last acted in: every change of
+    // a session's active org (the team page's switcher, samskara-cai, or
+    // accepting an invitation) is recorded on the user as
+    // lastActiveOrganizationId, and read back here while the user is still a
+    // member of it. Failing that (no record yet, or they left that org), the
+    // most recently joined org.
     databaseHooks: {
       user: { update: clearSessionCache, delete: clearSessionCache },
       session: {
-        update: clearSessionCache,
+        update: {
+          after: async (session: { userId?: string; activeOrganizationId?: string | null } | null) => {
+            await clearSessionCache.after();
+            // The updated row (with-hooks.mjs passes the adapter's result).
+            // An unset org (set-active with null, or a refused one) is not a
+            // choice to remember.
+            if (!session?.userId || !session.activeOrganizationId) return;
+            await client.execute({
+              sql: 'UPDATE "user" SET "lastActiveOrganizationId" = ? WHERE "id" = ? AND ("lastActiveOrganizationId" IS NULL OR "lastActiveOrganizationId" != ?)',
+              args: [session.activeOrganizationId, session.userId, session.activeOrganizationId],
+            });
+          },
+        },
         delete: clearSessionCache,
         create: {
           before: async (session: { userId: string; activeOrganizationId?: string | null }) => {
             if (session.activeOrganizationId) return;
-            const { rows } = await client.execute({
-              sql: 'SELECT "organizationId" FROM "member" WHERE "userId" = ? ORDER BY "createdAt" DESC LIMIT 1',
+            const last = await client.execute({
+              sql: 'SELECT u."lastActiveOrganizationId" AS "organizationId" FROM "user" u JOIN "member" m ON m."organizationId" = u."lastActiveOrganizationId" AND m."userId" = u."id" WHERE u."id" = ?',
               args: [session.userId],
             });
-            const organizationId = rows[0]?.organizationId;
+            const newest = last.rows.length
+              ? last
+              : await client.execute({
+                  sql: 'SELECT "organizationId" FROM "member" WHERE "userId" = ? ORDER BY "createdAt" DESC LIMIT 1',
+                  args: [session.userId],
+                });
+            const organizationId = newest.rows[0]?.organizationId;
             if (typeof organizationId !== 'string') return;
             return { data: { ...session, activeOrganizationId: organizationId } };
           },
