@@ -67,6 +67,21 @@ describe('dated snoozes (samskara-l2t.14)', () => {
     expect(card(h, 'w-1')!.metadata?.[BEADS_META.held] ?? null).toBeNull();
   });
 
+  it('reports a wake that fails, reads the copy again, and publishes what it may have committed on the next sweep', async () => {
+    h = createHarness([{ id: 'w-1', title: 'Snoozed', status: 'deferred', deferUntil: PAST }]);
+    h.setState(s => Object.assign(s, { wakeFail: true }));
+    const integration = h.integration();
+    const failed = await sweep(integration);
+    expect(failed.repos[0]).toMatchObject({ state: 'error', diagnostic: expect.stringMatching(/not woken: bd ready exit 1/) });
+    expect(syncs(h)).toBe(0);
+    // Woken in the copy before the failure: read again, so the card is not taken for held.
+    expect(card(h, 'w-1')!.metadata?.[BEADS_META.held]).toBeUndefined();
+    h.setState(s => Object.assign(s, { wakeFail: false }));
+    const next = await sweep(integration);
+    expect(next.repos[0]).toMatchObject({ state: 'ok' });
+    expect(syncs(h)).toBe(1);
+  });
+
   it('expiredSnoozes: only deferred beads whose date is at or before now', () => {
     const now = Date.parse('2026-01-01T00:00:00Z');
     const snapshot = new BeadSnapshot([

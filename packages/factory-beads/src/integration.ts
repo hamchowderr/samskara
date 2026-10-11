@@ -1287,7 +1287,13 @@ export class BeadsIntegration implements FactoryIntegration {
     if (expired.length > 0) {
       const woke = await repo.wake();
       if (woke.code !== 0) {
+        // It may have committed before it failed (a timeout, say): published
+        // next sweep, as any write whose sync failed, and read again now.
+        this.#unpublished.add(slug);
         this.#warnOnce(`wake:${slug}:${woke.code}`, `[factory-beads] ${slug}: snoozed beads past their date not woken (bd ready exit ${woke.code}), retried every sweep: ${resultTail(woke, 300)}`);
+        report.state = 'error';
+        report.diagnostic = `snoozes past their date not woken: bd ready exit ${woke.code}: ${resultTail(woke, 300)}`;
+        snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
       } else {
         this.#log.info(`[factory-beads] ${slug}: woke ${expired.length} snoozed bead(s) whose date passed: ${expired.join(', ')}`);
         await this.#publish(repo, credentials, report, 'publishing woken snoozes');

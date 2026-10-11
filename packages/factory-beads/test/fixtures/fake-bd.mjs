@@ -116,6 +116,11 @@ if (words[0] === 'ready' && !flags.includes('--readonly')) {
       delete b.deferUntil;
     }
   }
+  // wakeFail: the wake commits, then the process exits non-zero (a timeout after the commit, say).
+  if (state.wakeFail) {
+    code = 1;
+    err = 'Error: timed out';
+  }
   save();
 }
 

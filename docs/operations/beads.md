@@ -1417,8 +1417,11 @@ the writer lease the sweep already holds; bd decides what has expired, on
 its own clock. The wake is published with `bd sync` like any other write
 (a failed sync is retried on the next tick), and the refresh read is taken
 again before intake, so a woken bead is carded in the same sweep and a card
-that was held for it is released. A wake that fails is logged once and
-tried again on the next sweep. A sweep with no expired snooze writes
+that was held for it is released. A wake that fails is logged once, puts
+the repository in `error` with the exit in its diagnostic, and is tried
+again on the next sweep. It may have committed before it failed (a timeout,
+say), so the copy is read again and the next sweep publishes it, as for any
+write whose sync failed. A sweep with no expired snooze writes
 nothing.
 
 A snoozed bead's card, if it had one, was held while the date was ahead

@@ -69,6 +69,8 @@ export interface FakeState {
   syncExits: number[];
   pullExits: number[];
   closeFail: string[];
+  /** A writable `bd ready` (the snooze wake) commits its wake, then exits 1. */
+  wakeFail?: boolean;
   /** Bead ids whose `--if-assignee` reassign fails as if the holder changed (exit 13). */
   casFail?: string[];
   /** The refresh read (`bd list` without --parent) fails: always (true), or this many more times. */
