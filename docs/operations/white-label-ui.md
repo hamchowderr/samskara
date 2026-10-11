@@ -149,9 +149,23 @@ sidebar without the link.
 
 `e2e/invite-flow.spec.ts` clicks the link.
 
+## Mastra's mark inside the app (samskara-jja)
+
+Signed in, the app draws Mastra's mark from one inline SVG component, used in
+three places: the top of the sidebar (labelled "Mastra"), an eyebrow label,
+and a sign-in button. The script redefines that component under its own name
+to draw the brand's "S" monogram (the first letter of `BRAND.short`) in the
+current text colour, so all three change, and renames the sidebar's label to
+`BRAND.name`. Mastra's original drawing stays in the bundle under an unused
+name. The component is found by its SVG (Mastra's 34x21 mark and the start of
+its path), and both it and the label are asserted to match exactly once, so a
+`mastra` upgrade that redraws them fails the build. `e2e/invite-flow.spec.ts`
+checks the signed-in sidebar shows an image named "Samskara" and none named
+"Mastra".
+
 ## What this does not cover
 
-Only pre-auth surfaces were audited. Post-auth screens contain further Mastra
+Beyond the mark above, only pre-auth surfaces were audited. Post-auth screens contain further Mastra
 strings in the bundle — "Mastra Code", "Search MastraCode", "Ask Mastra Code…",
 provider labels — which this script does not touch. Renaming those reliably
 means vendoring the SPA source from the `mastra-ai/mastra` monorepo and

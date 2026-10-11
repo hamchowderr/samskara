@@ -193,6 +193,50 @@ if (teamLinks !== 1) {
   process.exit(1);
 }
 
+// --- the JS bundle: Mastra's mark inside the app (samskara-jja) --------------
+// Signed in, the app draws Mastra's mark from one inline SVG component: the
+// sidebar header (labelled "Mastra"), an eyebrow label and a sign-in button.
+// The component is redefined under its own name to draw the brand's "S"
+// monogram in the current text colour, so all three uses change, and
+// Mastra's original stays in the bundle under a name nothing calls. The
+// component is found by its SVG (Mastra's 34x21 mark and the start of its
+// path), asserted to match exactly once, and its name and the JSX runtime are
+// captured from the match. The sidebar's "Mastra" label is renamed with it.
+const mastraMark =
+  /(?<![\w$.])([\w$]+)=e=>([\w$]+)\.jsx\("svg",\{xmlns:"http:\/\/www\.w3\.org\/2000\/svg",viewBox:"0 0 34 21",fill:"none",\.\.\.e,children:\2\.jsx\("path",\{d:"M4\.49805 11\.6934/g;
+const markLabel = '"aria-label":"Mastra",role:"img"';
+let marks = 0;
+for (const file of bundles) {
+  const p = join(assetsDir, file);
+  const js = readFileSync(p, 'utf8');
+  const found = [...js.matchAll(mastraMark)];
+  if (!found.length) continue;
+  const labels = js.split(markLabel).length - 1;
+  if (found.length !== 1 || labels !== 1) {
+    console.error(
+      `[brand-ui] Mastra mark: expected 1 mark component and 1 "Mastra" label in assets/${file}, found ${found.length} and ${labels}.\n` +
+        '           The SPA bundle changed shape. Re-derive the anchor before trusting this script:\n' +
+        `             grep -o '.\\{40\\}viewBox:"0 0 34 21".\\{120\\}' .branded-ui/assets/*.js\n` +
+        '           See docs/operations/white-label-ui.md.',
+    );
+    process.exit(1);
+  }
+  const [match, name, jsx] = found[0];
+  const ours =
+    `${name}=e=>${jsx}.jsxs("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 21 21",fill:"none",...e,children:[` +
+    `${jsx}.jsx("rect",{x:"0.75",y:"0.75",width:"19.5",height:"19.5",rx:"5",stroke:"currentColor",strokeWidth:"1.5"}),` +
+    `${jsx}.jsx("text",{x:"10.5",y:"15",textAnchor:"middle",fontFamily:"system-ui,sans-serif",fontSize:"13",fontWeight:"600",fill:"currentColor",children:"${BRAND.short.slice(0, 1)}"})]}),` +
+    `${name}__mastra=e=>`;
+  const patched = js.slice(0, found[0].index) + ours + js.slice(found[0].index + match.indexOf('=e=>') + 4);
+  writeFileSync(p, patched.split(markLabel).join(`"aria-label":"${BRAND.name}",role:"img"`));
+  marks += 1;
+  changes.push(`assets/${file} Mastra's in-app mark (${name}) -> "${BRAND.short.slice(0, 1)}" monogram, sidebar label -> ${BRAND.name}`);
+}
+if (marks !== 1) {
+  console.error(`[brand-ui] Mastra mark: found the mark component in ${marks} bundles, expected 1.`);
+  process.exit(1);
+}
+
 // --- icons: real brand files when present, neutral placeholder otherwise ---
 const supplied = [];
 const placeholders = [];
