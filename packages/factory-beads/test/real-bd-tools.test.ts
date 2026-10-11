@@ -43,7 +43,7 @@ description = "do second"
 needs = ["first"]
 `;
 
-/** A repository formula whose first step has a timer gate, which nothing here resolves (samskara-l2t.10). */
+/** A repository formula whose first step has a mail gate, which nothing here resolves (samskara-l2t.10). */
 const GATED_FORMULA = `formula = "mol-demo"
 description = "Demo with a gate"
 version = 1
@@ -55,8 +55,7 @@ title = "Wait"
 description = "wait"
 
 [steps.gate]
-type = "timer"
-timeout = "1h"
+type = "mail"
 
 [[steps]]
 id = "b"
@@ -242,7 +241,7 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     expect((await tools.beads_pour!.execute({ formula: 'mol-hooked', dry_run: true })).error).toMatch(/attaches "mol-demo"/);
     // A gate inherited through extends is refused: only `bd cook` shows it.
     for (const dry_run of [true, false]) {
-      expect((await tools.beads_pour!.execute({ formula: 'mol-child', dry_run })).error).toMatch(/has a timer gate \(its own or inherited\)/);
+      expect((await tools.beads_pour!.execute({ formula: 'mol-child', dry_run })).error).toMatch(/has a mail gate \(its own or inherited\)/);
     }
     // extends to a formula outside the repository is refused, though bd would pour it.
     expect((await tools.beads_pour!.execute({ formula: 'mol-wrap', dry_run: true })).error).toMatch(/composes with "outside"/);

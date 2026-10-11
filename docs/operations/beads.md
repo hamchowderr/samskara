@@ -1024,7 +1024,8 @@ with an open blocker of its own (added by hand with `bd dep add <gate> <bead>`;
 a formula's gate has none) waits until the blocker closes. It is linked under its molecule's
 overview card and counts as one of its open children, so the molecule's card
 does not reach Done while the gate is open. Timer, `gh:run`, `gh:pr` and
-`bead` gates are not carded: nothing resolves them yet (samskara-l2t.10).
+`bead` gates are not carded: the sweep closes them itself
+([Gates checked on the host](#gates-checked-on-the-host)).
 
 **Title.** bd's own title, `Gate: human`, says nothing about what is being
 approved, so a card for a gate with that title is named after the steps it
@@ -1397,6 +1398,63 @@ bead. bd itself does not reopen a parent when a child reopens. Reopen the
 epic in bd (`bd reopen <epic>`) and its card comes back to Intake as any
 reopened bead's does.
 
+### Gates checked on the host
+
+A gate other than a human one closes when its condition is met, but only
+when something evaluates it: `bd gate check` (bd gate --help: "They must be
+closed (manually or via watchers)"). Each sweep runs it on the host's copy
+when its [refresh read](#refresh-read) holds an open gate that may resolve
+(`checkableGates`, `integration.ts`), and never otherwise:
+
+| Gate | Resolves when (bd gate check --help) | Checked |
+|------|--------------------------------------|---------|
+| `timer` | `created_at + timeout` has passed | once that time is past, from the read (`timeout` is in nanoseconds) |
+| `bead` | its bead (`await_id`) is closed | once that bead reads `closed`, or every sweep for a bead in another rig (`<rig>:<id>`) |
+| `gh:pr` | the pull request (`await_id`) is merged | every 5 minutes while open (`githubGateIntervalMs`) |
+| `gh:run` | the workflow run (`await_id`) completed with success | every 5 minutes while open; never without a run id |
+
+The check is `bd --sandbox --actor factory-beads gate check -l 0 --json`
+(`BdRepo.checkGates`, `repo.ts`), a write under the writer lease the sweep
+already holds. Each GitHub gate costs one gh API call per check, from the App
+installation's hourly rate limit that the Factory's own GitHub calls share,
+so a repository's GitHub gates are checked at most every 5 minutes
+(`githubGateIntervalMs`, about 290 calls a day per open gate), with every
+other type in the same call. Between those, a sweep that finds a timer or
+bead gate due checks only that type (`--type=timer`, `--type=bead`), with no
+token. A gate that will never resolve keeps being checked at that rate until
+a person closes it. `-l 0` lifts the default limit of 100 gates. `--escalate` is
+never passed: it shells out to Gas Town's `gt`. What it closed is published
+with `bd sync` together with any [snooze](#snoozed-beads) woken in the same
+sweep, and the read is taken again before intake, so the step a gate freed is
+carded in the same sweep. Checked on bd 1.3.1: a one-second timer gate and a
+bead gate whose bead closed are both closed by `bd gate check`, and their
+steps are listed by `bd ready`; the command prints a line per gate, then
+the JSON summary (`checked`, `resolved`, `escalated`, `errors`), and exits
+0 when a gate cannot be evaluated, with the reason on stderr.
+
+**GitHub gates.** bd evaluates them with the gh CLI (`gh pr view`,
+`gh run view`). gh finds the repository from the copy's `origin`, and gets
+the same GitHub App installation token the copy's git already uses, as
+`GH_TOKEN`, on the gate check only (`childEnv` with `github: true`,
+`runner.ts`); no other bd or git call gets it. The image ships gh, pinned and
+checksum-verified like bd (`Dockerfile`, stage `gh-cli`). A `gh:pr` gate
+needs the App's **Pull requests** permission, which it has; a `gh:run` gate
+needs **Actions: Read-only**, which the App needs granting
+([GitHub App setup](../setup/github-app.md)). A gate gh cannot evaluate stays
+open, is logged once, and is counted in the repository's diagnostic with
+bd's reason, unless the sweep already set one. gh runs with a config
+directory of its own (`GH_CONFIG_DIR`, under the system temp directory), so
+it never falls back to a login stored under the server user's home.
+
+**A failed run or a closed pull request.** bd counts the gate as escalated
+and leaves it open, so the step stays held, and it is checked again every
+sweep. It is logged once and named in the repository's diagnostic; a person
+decides what follows (close the gate with `bd gate resolve`, or the work).
+
+A gate check that exits non-zero puts the repository in `error` and is
+tried again on the next sweep; as for a failed wake, the copy is read again
+and published on the next sweep in case it committed first.
+
 ### Snoozed beads
 
 A defer with a date is a snooze: "once --until passes, the next ready-front
@@ -1762,9 +1820,14 @@ repositories included. So:
   in `cook`. bd turns a gate into a gate bead that blocks its step until the
   gate is closed (`bd formula schema gate`). A human gate becomes an
   [approval card](#approval-cards) a person moves to Done, so it is allowed
-  (samskara-l2t.9). Timer and GitHub gates are not checked anywhere yet
-  (samskara-l2t.10) and no tool closes beads, so a step behind one would never
-  become ready: the refusal names the gate's type
+  (samskara-l2t.9). A timer gate with a `timeout`, and a `bead`, `gh:pr` or
+  `gh:run` gate with an `await_id`, is closed by the sweep's gate check
+  ([Gates checked on the host](#gates-checked-on-the-host)), so it is allowed
+  too (samskara-l2t.10). Any other gate is refused, because nothing would close
+  it and no tool closes beads: a `mail` gate, a timer with no timeout, and a
+  GitHub or bead gate with no `await_id` (a `gh:run` gate's run id would come
+  from `bd gate discover`, which matches runs by the current branch and time
+  and says nothing on the host's copy). The refusal names the gate
   (`unresolvedGate`, `agent-tools.ts`), and a person pours those formulas.
 - A formula that attaches a formula with such a gate through `compose.hooks[].attach` or
   a step's `on_complete.bond` is refused too (`deferredAttachments`,
@@ -2032,6 +2095,18 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   published web comment's own feed key, as Factory does. In
   `test/real-bd.test.ts`, a card comment reaching origin with its author
   and text, and not coming back after a restart.
+- Gates checked on the host (samskara-l2t.10, `test/gate-check.test.ts`): a
+  timer gate past its time closed by `bd gate check` (never `--escalate`),
+  published, and its step carded in the same sweep; no check while a timer
+  runs or with no gate; a bead gate closed once its bead closes; a `gh:pr`
+  gate checked with the App token as `GH_TOKEN`, which no other call gets,
+  and closed once merged; GitHub gates checked at most every 5 minutes while
+  a due timer is checked by type every sweep, without the token; a gate gh cannot read reported and left
+  open while the rest are checked; `checkableGates` on every gate kind. In
+  `test/real-bd.test.ts`, a real one-second timer gate closed on the host,
+  published to origin, and its step carded. `unresolvedGate` and the pour
+  refusals in `test/agent-tools.test.ts`; `GH_TOKEN` only on request in
+  `test/runner.test.ts`.
 - Approval cards (samskara-l2t.9, `test/gates.test.ts`): an open human gate
   carded in Intake under its molecule, titled after the step it holds, with
   the approval label, counting as an open child; a person's Done closing

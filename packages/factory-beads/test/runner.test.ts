@@ -17,6 +17,18 @@ describe('childEnv', () => {
     for (const [, value] of config) expect(value).not.toContain(TOKEN);
   });
 
+  it('gives gh the token only when asked, and never without credentials (samskara-l2t.10)', () => {
+    expect(childEnv({ actor: 'a', credentials: { token: TOKEN } }).GH_TOKEN).toBeUndefined();
+    const gh = childEnv({ actor: 'a', credentials: { token: TOKEN }, github: true });
+    expect(gh).toMatchObject({ GH_TOKEN: TOKEN, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' });
+    // No token, and gh's own config directory, so it never reads a login stored under the server user's home.
+    const bare = childEnv({ actor: 'a', github: true });
+    expect(bare.GH_TOKEN).toBeUndefined();
+    expect(bare.GH_CONFIG_DIR).toMatch(/factory-beads-gh$/);
+    expect(gh.GH_CONFIG_DIR).toBe(bare.GH_CONFIG_DIR);
+    expect(childEnv({ actor: 'a' }).GH_CONFIG_DIR).toBeUndefined();
+  });
+
   it('blanks DOLT_REMOTE_INFO_BRANCH and sets core.longpaths', () => {
     const env = childEnv({ actor: 'a' });
     expect(env.DOLT_REMOTE_INFO_BRANCH).toBe('');

@@ -262,10 +262,15 @@ export async function repositoryFormulas(repo: BdRepo): Promise<Array<Record<str
 }
 
 /**
- * The first gate type in a cooked formula that nothing here resolves, at any
- * depth: every gate but `human`, whose bead the integration cards for a
- * person to approve (samskara-l2t.9). A gate with no readable type counts as
- * one nothing resolves.
+ * The first gate in a cooked formula that nothing here resolves, at any
+ * depth, described for the refusal; undefined when every gate resolves. A
+ * `human` gate is carded for a person to approve (samskara-l2t.9); the sweep
+ * resolves the rest with `bd gate check` (samskara-l2t.10): a `timer` with a
+ * `timeout`, and a `bead`, `gh:pr` or `gh:run` gate with the thing it waits
+ * on (`await_id`). A `gh:run` gate with no run id would need
+ * `bd gate discover`, which matches runs by the current branch and time and
+ * says nothing on the host's copy; a `mail` gate, or one with no readable
+ * type, has no check at all.
  */
 export function unresolvedGate(value: unknown): string | undefined {
   if (Array.isArray(value)) {
@@ -278,9 +283,18 @@ export function unresolvedGate(value: unknown): string | undefined {
   if (!value || typeof value !== 'object') return undefined;
   for (const [key, inner] of Object.entries(value)) {
     if (key === 'gate' && inner) {
-      const type = (inner as { type?: unknown }).type;
-      if (type !== 'human') return typeof type === 'string' && type ? type : 'untyped';
-      continue;
+      const { type, timeout, await_id } = inner as { type?: unknown; timeout?: unknown; await_id?: unknown };
+      const has = (field: unknown) => typeof field === 'string' && field !== '';
+      if (type === 'human') continue;
+      if (type === 'timer') {
+        if (has(timeout)) continue;
+        return 'timer gate with no timeout';
+      }
+      if (type === 'bead' || type === 'gh:pr' || type === 'gh:run') {
+        if (has(await_id)) continue;
+        return `${type} gate with no await_id`;
+      }
+      return `${typeof type === 'string' && type ? type : 'untyped'} gate`;
     }
     const found = unresolvedGate(inner);
     if (found) return found;
@@ -365,10 +379,11 @@ async function bdJson(repo: BdRepo, args: string[], what: string): Promise<unkno
  *   resolved formula as JSON"), not on `formula show`: an inherited gated
  *   step appears only after `extends` is applied. A gate makes bd create a
  *   gate bead that blocks its step until closed (bd formula schema gate). A
- *   human gate is carded for a person to approve (samskara-l2t.9), so it is
- *   allowed. Timer and GitHub gates are not checked anywhere yet
- *   (samskara-l2t.10), and no tool closes a bead, so a step behind one would
- *   never become ready: those are refused.
+ *   human gate is carded for a person to approve (samskara-l2t.9), and the
+ *   sweep resolves timer, bead and GitHub gates with `bd gate check`
+ *   (samskara-l2t.10), so those are allowed when they carry what the check
+ *   needs (unresolvedGate). Any other gate is refused: no tool closes a bead,
+ *   so a step behind it would never become ready.
  * - Hooks and on_complete bonds are not applied by `bd cook` or `mol pour` in
  *   bd 1.3.0, so their formulas are cooked one by one and refused on the same terms
  *   (deferredAttachments): a later bd that applies them must not bring a gate
@@ -404,7 +419,7 @@ export async function checkPourableFormula(repo: BdRepo, name: string): Promise<
   const gate = unresolvedGate(await bdJson(repo, ['cook', name], 'cook'));
   if (gate) {
     throw new BeadsToolError(
-      `"${name}" has a ${gate} gate (its own or inherited). Only human gates are resolved here, as approval cards; any other gate becomes a bead that only closing can clear, and no tool closes beads, so its step would never become ready. Ask a person to pour it.`,
+      `"${name}" has a ${gate} (its own or inherited). Nothing here resolves it: human gates become approval cards, and timer, bead, gh:pr and gh:run gates with their timeout or await_id are checked every sweep. Any other gate becomes a bead that only closing can clear, and no tool closes beads, so its step would never become ready. Ask a person to pour it.`,
     );
   }
   // Fail closed on what bd would attach later (hooks, on_complete): cook each
@@ -413,7 +428,7 @@ export async function checkPourableFormula(repo: BdRepo, name: string): Promise<
     const gate = unresolvedGate(await bdJson(repo, ['cook', attached], 'cook'));
     if (gate) {
       throw new BeadsToolError(
-        `"${name}" attaches "${attached}" (a hook or on_complete in ${via === name ? 'itself' : `"${via}"`}), which has a ${gate} gate. Only human gates are resolved here; any other gate becomes a bead that only closing can clear, and no tool closes beads. Ask a person to pour it.`,
+        `"${name}" attaches "${attached}" (a hook or on_complete in ${via === name ? 'itself' : `"${via}"`}), which has a ${gate}. Nothing here resolves it, and no tool closes beads. Ask a person to pour it.`,
       );
     }
   }
@@ -641,8 +656,9 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     description:
       `Pour one of the repository's own workflow formulas (bd mol pour): create a molecule (a root bead of type molecule) and its linked, ` +
       `ordered step beads in one go, with the formula's variables filled in. Only formulas from beads_formula_list, and only when every ` +
-      `formula they extend or compose with is one too. A human gate in it becomes an approval card a person moves to Done; a formula with any other ` +
-      `gate (timer, GitHub), its own, inherited or attached by a hook, is refused, because nothing resolves it. Set dry_run to preview without writing. ` +
+      `formula they extend or compose with is one too. A human gate in it becomes an approval card a person moves to Done; timer, bead and GitHub ` +
+      `gates with their timeout or await_id are resolved by the sync. A formula with any other gate, its own, inherited or attached by a hook, is ` +
+      `refused, because nothing resolves it. Set dry_run to preview without writing. ` +
       `Poured steps skip create-time validation, so fill any missing design/acceptance with beads_update before work starts. ${where}`,
     inputSchema: z.object({
       repository: repositoryArg,

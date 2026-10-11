@@ -470,10 +470,20 @@ describe('workflows', () => {
     expect(h.state().beads.filter(b => b.issue_type === 'gate')).toMatchObject([{ title: 'Gate: human', status: 'open' }]);
   });
 
-  it('unresolvedGate: names the first gate type that is not human, at any depth', () => {
-    expect(unresolvedGate({ steps: [{ gate: { type: 'human' } }, { children: [{ gate: { type: 'gh:pr' } }] }] })).toBe('gh:pr');
-    expect(unresolvedGate({ steps: [{ gate: { type: 'human' } }] })).toBeUndefined();
-    expect(unresolvedGate({ steps: [{ gate: {} }] })).toBe('untyped');
+  it('unresolvedGate: names the first gate nothing resolves, at any depth (samskara-l2t.10)', () => {
+    const resolvable = [
+      { type: 'human' },
+      { type: 'timer', timeout: '2h' },
+      { type: 'bead', await_id: 'x-1' },
+      { type: 'gh:pr', await_id: '{{pr}}' },
+      { type: 'gh:run', await_id: '123' },
+    ];
+    expect(unresolvedGate({ steps: resolvable.map(gate => ({ gate })) })).toBeUndefined();
+    expect(unresolvedGate({ steps: [{ gate: { type: 'human' } }, { children: [{ gate: { type: 'gh:pr' } }] }] })).toBe('gh:pr gate with no await_id');
+    expect(unresolvedGate({ steps: [{ gate: { type: 'gh:run', id: 'ci.yml' } }] })).toBe('gh:run gate with no await_id');
+    expect(unresolvedGate({ steps: [{ gate: { type: 'timer' } }] })).toBe('timer gate with no timeout');
+    expect(unresolvedGate({ steps: [{ gate: { type: 'mail' } }] })).toBe('mail gate');
+    expect(unresolvedGate({ steps: [{ gate: {} }] })).toBe('untyped gate');
   });
 
   it('refuses a gate inherited through extends, checked on the cooked formula', async () => {
@@ -489,7 +499,7 @@ describe('workflows', () => {
     const tools = await toolsFor(h.integration());
     for (const dry_run of [false, true]) {
       const result = await tools.beads_pour!.execute({ formula: 'child', vars: { name: 'a', deliverable: 'b' }, dry_run });
-      expect(result.error).toMatch(/has a gh:run gate \(its own or inherited\)/);
+      expect(result.error).toMatch(/has a gh:run gate with no await_id \(its own or inherited\)/);
     }
     expect(callsOf(h, 'cook')).toHaveLength(2);
     expect(callsOf(h, 'pour')).toHaveLength(0);

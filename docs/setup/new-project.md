@@ -108,7 +108,8 @@ The app must be installed on every repository the factory will link.
    repositories**.
 3. **Check the permissions** on the installation: Contents read and write
    (clone, push, and the beads write-back), Issues read and write, Pull requests
-   read and write, Commit statuses read-only. If the app's permissions were
+   read and write, Commit statuses read-only, Actions read-only (beads
+   `gh:run` gates). If the app's permissions were
    changed after installing, accept the pending request on the installation.
 
 **Sign in to the Factory first, in the same browser.** An installation becomes

@@ -42,6 +42,11 @@ export interface FakeBead {
   await_type?: string;
   /** A deferred bead's wake time (bd's `defer_until`). */
   deferUntil?: string;
+  /** A gate's condition (bd's `await_id`) and a timer gate's timeout in ns (bd's `timeout`). */
+  await_id?: string;
+  timeout?: number;
+  /** bd's `created_at`. Default 2026-01-01. */
+  createdAt?: string;
   description?: string;
   blockedBy?: string[];
   /** bd refuses to close a bead held by anyone but the closing actor. */
@@ -71,6 +76,13 @@ export interface FakeState {
   closeFail: string[];
   /** A writable `bd ready` (the snooze wake) commits its wake, then exits 1. */
   wakeFail?: boolean;
+  /** `bd gate check`: GitHub gates whose await_id is merged or passed, and ones gh cannot read. */
+  ghMerged?: string[];
+  ghErrors?: string[];
+  /** GitHub gates whose pull request closed unmerged (escalated, left open). */
+  ghClosed?: string[];
+  /** `bd gate check` exits 1 with no summary. */
+  gateCheckFail?: boolean;
   /** Bead ids whose `--if-assignee` reassign fails as if the holder changed (exit 13). */
   casFail?: string[];
   /** The refresh read (`bd list` without --parent) fails: always (true), or this many more times. */
@@ -80,6 +92,8 @@ export interface FakeState {
     cwd: string;
     env: {
       token: string | null;
+      /** GH_TOKEN, which only a gate check gets (samskara-l2t.10). */
+      ghToken: string | null;
       remoteInfoBranch: string | null;
       /** [BD_DISABLE_METRICS, BD_DISABLE_EVENT_FLUSH] as the fake bd saw them. */
       metrics: [string | null, string | null];

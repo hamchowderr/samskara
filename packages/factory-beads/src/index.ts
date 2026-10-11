@@ -11,6 +11,7 @@ export {
   CARD_LABEL_COLORS_META,
   CARD_LABELS_META,
   cardChips,
+  checkableGates,
   beadsClaimKey,
   closedOutsideOutcome,
   DECISION_TYPE,
