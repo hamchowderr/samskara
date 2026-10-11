@@ -1476,10 +1476,19 @@ and leaves it open, so the step stays held, and it is checked again every
 sweep. It is logged once and named in the repository's diagnostic; a person
 decides what follows (close the gate with `bd gate resolve`, or the work).
 
-A check that resolves nothing writes nothing: checked on bd 1.3.1, the copy's
-head commit (`bd vc status`) is the same before and after a timer check and
-an all-types check that closed no gate (samskara-l2t.20), so the sweep's
-publish runs only when something closed.
+A check that resolves nothing writes nothing (samskara-l2t.20): checked on bd
+1.3.1, after a timer check, an all-types check and a `gh:pr` check that closed
+no gate (with pending and failing gates present), `bd diff HEAD WORKING`
+reports no changes and the head commit is the same. (`bd vc status` alone is
+not evidence: in embedded mode it does not show working-set writes.) So the
+sweep publishes only when something closed.
+
+**A GitHub gate on another host.** bd keeps a poured gate's `repo` in the
+gate's metadata (checked on bd 1.3.1), and the sweep never checks a gate
+whose `repo` names a host other than github.com, or a form bd cannot read
+(`checkableGates`), so the App token is never sent there. It stays open; it
+is logged once and named in the repository's diagnostic, and a person closes
+it in bd when its condition is met (`unreadableGates`).
 
 A gate check that exits non-zero puts the repository in `error` and is
 tried again on the next sweep; as for a failed wake, the copy is read again
@@ -1819,9 +1828,9 @@ library, which must never be listed or poured into another repository, client
 repositories included. So:
 
 - The tools list only formulas whose source file is inside the repository's
-  copy (`agent-tools.ts:235`), and `beads_pour` refuses any other name. bd
+  copy (`repositoryFormulas`, `agent-tools.ts`), and `beads_pour` refuses any other name. bd
   1.3.0 has no built-in formulas to allow. "Inside" compares REAL paths
-  (`isInside`, `agent-tools.ts:217`, `fs.realpathSync.native` on both the
+  (`isInside`, `agent-tools.ts`, `fs.realpathSync.native` on both the
   file and the copy): bd reports `source` as the path it found, so a formula
   committed as a symlink to an absolute path on the server, or a symlinked
   `.beads` or `formulas` directory, would otherwise read as inside. Checked on
@@ -1836,7 +1845,7 @@ repositories included. So:
   `extends = ["outside"]` pours the steps of an `outside` formula from the home
   library. So `beads_pour` follows every composition reference, recursively,
   and refuses the formula if any of them is not one of the repository's own
-  (`agent-tools.ts:269`, `:345-387`). The references are every field bd's
+  (`formulaReferences` and `checkPourableFormula`, `agent-tools.ts`). The references are every field bd's
   formula schema composes with (`bd formula schema Formula`, `ComposeRules`,
   `ExpandRule`, `MapRule`, `Hook`, `Step`, `OnCompleteSpec`): `extends`,
   `compose.aspects`, `compose.expand[].with`, `compose.map[].with`,
@@ -1857,16 +1866,21 @@ repositories included. So:
   it and no tool closes beads: a `mail` gate, a timer with no timeout, and a
   GitHub or bead gate with no `await_id` (a `gh:run` gate's run id would come
   from `bd gate discover`, which matches runs by the current branch and time
-  and says nothing on the host's copy). A GitHub gate whose `repo` names
-  another host (`HOST/OWNER/REPO`) is refused as well (samskara-l2t.20): gh
-  reads `GH_TOKEN` for github.com only, and its own config directory holds no
-  other login, so it could not evaluate it. A gate naming another github.com
-  repository (`OWNER/REPO`) is allowed; if the App installation cannot read
-  it, the check reports it as a gate it cannot evaluate. The refusal names the
+  and says nothing on the host's copy). A GitHub gate whose `repo` names a
+  host other than github.com, or a form bd cannot read, is refused as well
+  (`gateRepoProblem`, `repo.ts`, samskara-l2t.20). gh reads `GH_TOKEN`, the
+  App installation token, for github.com and any `*.ghe.com` tenancy (gh help
+  environment), so a tenancy host would be sent the token, and any other host
+  has none (`GH_ENTERPRISE_TOKEN` is never passed). bd itself rejects every
+  form but `OWNER/REPO` and `HOST/OWNER/REPO` when it checks the gate (checked
+  on bd 1.3.1: a URL, an SSH address, a trailing slash, four parts and
+  surrounding spaces). A gate naming another github.com repository
+  (`OWNER/REPO`) is allowed; if the App installation cannot read it, the check
+  reports it as a gate it cannot evaluate. The refusal names the
   gate (`unresolvedGate`, `agent-tools.ts`), and a person pours those formulas.
 - A formula that attaches a formula with such a gate through `compose.hooks[].attach` or
   a step's `on_complete.bond` is refused too (`deferredAttachments`,
-  `agent-tools.ts:295`, checked at `:379`), though bd 1.3.0 never applies
+  `agent-tools.ts`, checked in `checkPourableFormula`), though bd 1.3.0 never applies
   either: `bd cook` returns `compose.hooks` unexpanded, and a dry-run pour of a
   formula with a hook attaching a gated formula creates only the root and its
   own step. In the bd source (v1.3.0, and `main` at f21e3a8 on 2026-10-09)

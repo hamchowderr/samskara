@@ -50,7 +50,7 @@ import { join } from 'node:path';
 import { createBeadsTools, resolveToolProject } from './agent-tools';
 import type { ToolScope } from './agent-tools';
 import { registerLive } from './done-rule';
-import { BdRepo, cacheDirFor, OVERVIEW_TYPES, RELATED_TYPES, resultTail } from './repo';
+import { BdRepo, cacheDirFor, gateRepoProblem, OVERVIEW_TYPES, RELATED_TYPES, resultTail } from './repo';
 import type { BeadComment, BeadDetails, BeadRow, BeadSnapshot } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
@@ -299,7 +299,10 @@ export function expiredSnoozes(snapshot: BeadSnapshot, now: number): string[] {
  * - a `gh:pr` or `gh:run` gate with an `await_id`, which only GitHub can
  *   answer, so it is checked every sweep while it is open. A `gh:run` gate
  *   with no `await_id` is left alone: `bd gate discover` matches runs by
- *   the current branch and time, which says nothing on the host's copy.
+ *   the current branch and time, which says nothing on the host's copy. One
+ *   whose `repo` (bd keeps it in the gate's metadata) names another host or
+ *   a form bd cannot read is left alone too, so the App token is never sent
+ *   there (gateRepoProblem, samskara-l2t.20); `unreadableGates` names them.
  *
  * A human gate is a person's (approval cards, samskara-l2t.9).
  */
@@ -314,11 +317,22 @@ export function checkableGates(snapshot: BeadSnapshot, now: number): string[] {
     } else if (gate.await_type === 'bead') {
       const target = awaited ? snapshot.get(awaited) : undefined;
       if (awaited && (!target || target.status === 'closed')) ids.push(gate.id);
-    } else if ((gate.await_type === 'gh:pr' || gate.await_type === 'gh:run') && awaited) {
+    } else if ((gate.await_type === 'gh:pr' || gate.await_type === 'gh:run') && awaited && !gateRepoProblem(gate.metadata?.repo)) {
       ids.push(gate.id);
     }
   }
   return ids;
+}
+
+/** Open GitHub gates the sweep will not check because of their `repo` (samskara-l2t.20), with the reason. */
+export function unreadableGates(snapshot: BeadSnapshot): Array<{ id: string; problem: string }> {
+  const out: Array<{ id: string; problem: string }> = [];
+  for (const gate of snapshot.values()) {
+    if (gate.issue_type !== GATE_TYPE || gate.status !== 'open' || (gate.await_type !== 'gh:pr' && gate.await_type !== 'gh:run')) continue;
+    const problem = gateRepoProblem(gate.metadata?.repo);
+    if (problem) out.push({ id: gate.id, problem });
+  }
+  return out;
 }
 
 /** `BEADS_META.cardKind` of an epic's, milestone's or molecule root's card. */
@@ -1394,6 +1408,11 @@ export class BeadsIntegration implements FactoryIntegration {
     // have committed first (a timeout, say): published next sweep, as any
     // write whose sync failed, and read again now.
     const now = Date.now();
+    // A GitHub gate on another host is never checked: it stays open until a person closes it.
+    for (const { id, problem } of snapshot ? unreadableGates(snapshot) : []) {
+      this.#warnOnce(`gate-repo:${slug}:${id}`, `[factory-beads] ${slug}: GitHub gate ${id} names ${problem}; it is not checked (the App token is for github.com), so close it in bd when its condition is met`);
+      report.diagnostic ??= `GitHub gate ${id} names ${problem} and is not checked`;
+    }
     const expired = snapshot ? expiredSnoozes(snapshot, now) : [];
     const dueGates = snapshot ? checkableGates(snapshot, now) : [];
     if (expired.length > 0 || dueGates.length > 0) {

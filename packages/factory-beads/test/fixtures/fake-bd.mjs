@@ -335,6 +335,7 @@ switch (words[0]) {
             issue_type: b.issue_type ?? 'task',
             await_type: b.await_type,
             await_id: b.await_id,
+            metadata: b.metadata,
             timeout: b.timeout,
             defer_until: b.deferUntil,
             assignee: b.assignee,

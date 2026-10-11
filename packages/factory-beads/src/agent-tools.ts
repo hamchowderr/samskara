@@ -30,6 +30,7 @@ import type { FactoryProjectsStorage } from '@mastra/factory/storage/domains/pro
 import { parseSupervisorResourceId } from '@mastra/factory/supervisor/session';
 import { z } from 'zod';
 
+import { gateRepoProblem } from './repo';
 import type { BdRepo } from './repo';
 import { BeadsToolError } from './tool-ops';
 import type { BeadsToolOps, ToolRepo, WriteOutcome } from './tool-ops';
@@ -270,19 +271,10 @@ export async function repositoryFormulas(repo: BdRepo): Promise<Array<Record<str
  * on (`await_id`). A `gh:run` gate with no run id would need
  * `bd gate discover`, which matches runs by the current branch and time and
  * says nothing on the host's copy; a `mail` gate, or one with no readable
- * type, has no check at all. A GitHub gate whose `repo` names another host
- * (`HOST/OWNER/REPO`, bd formula schema gate) is refused too
- * (samskara-l2t.20): gh reads `GH_TOKEN` for github.com only, and its own
- * config directory holds no other login (runner.ts), so it could not read it.
+ * type, has no check at all. A GitHub gate whose `repo` names a host other
+ * than github.com, or a form bd cannot read, is refused too (gateRepoProblem,
+ * samskara-l2t.20).
  */
-/** The host a gate's `repo` names, when it is not github.com: `HOST/OWNER/REPO` (bd formula schema gate). */
-function githubHost(repo: string): string | undefined {
-  const parts = repo.trim().split('/');
-  if (parts.length !== 3) return undefined;
-  const host = parts[0]!.toLowerCase();
-  return host === 'github.com' || host === 'www.github.com' ? undefined : host;
-}
-
 export function unresolvedGate(value: unknown): string | undefined {
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -303,8 +295,8 @@ export function unresolvedGate(value: unknown): string | undefined {
       }
       if (type === 'bead' || type === 'gh:pr' || type === 'gh:run') {
         if (!has(await_id)) return `${type} gate with no await_id`;
-        const host = type !== 'bead' && typeof repo === 'string' ? githubHost(repo) : undefined;
-        if (host) return `${type} gate on ${host}`;
+        const problem = type !== 'bead' ? gateRepoProblem(repo) : undefined;
+        if (problem) return `${type} gate on ${problem}`;
         continue;
       }
       return `${typeof type === 'string' && type ? type : 'untyped'} gate`;

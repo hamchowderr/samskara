@@ -47,6 +47,8 @@ export interface FakeBead {
   timeout?: number;
   /** bd's `created_at`. Default 2026-01-01. */
   createdAt?: string;
+  /** bd's own metadata (a poured GitHub gate keeps its `repo` here). */
+  metadata?: Record<string, unknown>;
   description?: string;
   blockedBy?: string[];
   /** Related edges on this bead's own row, as bd stores them (one side only). */

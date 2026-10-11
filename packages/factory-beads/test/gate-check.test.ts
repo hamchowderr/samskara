@@ -147,6 +147,15 @@ describe('gates checked on the host (samskara-l2t.10)', () => {
     expect(card(h, 'w-step')).toBeDefined();
   });
 
+  it('never checks a GitHub gate on another host, and says so (samskara-l2t.20)', async () => {
+    h = createHarness(held({ await_type: 'gh:pr', await_id: '42', metadata: { repo: 'acme.ghe.com/acme/app' } }));
+    h.setState(s => Object.assign(s, { ghMerged: ['42'] }));
+    const result = await sweep(h.integration({ githubGateIntervalMs: 0 }));
+    expect(checks(h)).toHaveLength(0);
+    expect(result.repos[0]).toMatchObject({ state: 'ok', diagnostic: expect.stringMatching(/w-gate names another host \(acme\.ghe\.com\)/) });
+    expect(h.state().beads.find(b => b.id === 'w-gate')!.status ?? 'open').toBe('open');
+  });
+
   it('checkableGates: due timers, closed or foreign bead targets, GitHub gates with an await_id', () => {
     const now = Date.parse('2026-01-01T02:00:00Z');
     const gate = (id: string, extra: Record<string, unknown>) => ({ id, issue_type: 'gate', status: 'open', created_at: '2026-01-01T00:00:00Z', ...extra });

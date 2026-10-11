@@ -45,6 +45,27 @@ export interface BeadDetails {
   await_type?: string;
 }
 
+/**
+ * Why gh could not, or must not, evaluate a GitHub gate that names this
+ * `repo` (samskara-l2t.20); undefined when it can. bd hands the value to gh
+ * unchanged (`gh pr view <id> --repo <repo>`) and rejects every form but
+ * `OWNER/REPO` and `HOST/OWNER/REPO` (checked on bd 1.3.1: a URL, an SSH
+ * address, a trailing slash, four parts and surrounding spaces are all
+ * refused when the gate is checked). Only github.com is allowed as a host: gh
+ * reads `GH_TOKEN`, the App installation token, for github.com and any
+ * `*.ghe.com` tenancy (gh help environment), so a tenancy host would be sent
+ * the token, and any other host has no token at all (`GH_ENTERPRISE_TOKEN` is
+ * never passed, runner.ts). An empty or absent value is the copy's own origin.
+ */
+export function gateRepoProblem(repo: unknown): string | undefined {
+  if (repo === undefined || repo === null || repo === '') return undefined;
+  if (typeof repo !== 'string' || !/^[^\s/@:]+(\/[^\s/]+){1,2}$/.test(repo)) return `a repo bd cannot read (${JSON.stringify(repo)})`;
+  const parts = repo.split('/');
+  if (parts.length === 2) return undefined;
+  const host = parts[0]!.toLowerCase();
+  return host === 'github.com' ? undefined : `another host (${host})`;
+}
+
 /** The summary `bd gate check --json` prints after its per-gate lines (bd 1.3.1). */
 export interface GateCheckSummary {
   checked?: number;
@@ -100,6 +121,8 @@ export interface BeadRow {
   await_type?: string;
   /** A deferred bead's wake time (`bd defer --until`); absent for one deferred with no date. */
   defer_until?: string;
+  /** bd's own metadata; a GitHub gate poured from a formula keeps the step's `repo` here (checked on bd 1.3.1). */
+  metadata?: { repo?: unknown } & Record<string, unknown>;
   /** A gate's condition: a PR number, a run id, or a bead id (bd gate create --await-id). */
   await_id?: string;
   /** A timer gate's timeout, in nanoseconds (checked on bd 1.3.1: `--timeout=1m` is 60000000000). */
