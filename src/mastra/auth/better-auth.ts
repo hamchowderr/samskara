@@ -85,6 +85,13 @@ export interface BuildBetterAuthOptions {
  * libSQL-only by design (see the Architecture note in CLAUDE.md), so anything
  * else means the entry file changed and this needs revisiting.
  */
+/**
+ * The endpoints whose change of a session's active org is the user's choice,
+ * and so remembered for their next sign-in (better-auth 1.7.5 organization
+ * routes: crud-org.mjs set-active and create, crud-invites.mjs accept).
+ */
+const REMEMBERED_ORG_PATHS = new Set(['/organization/set-active', '/organization/accept-invitation', '/organization/create']);
+
 export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<Auth> {
   const { secret, database, publicUrl, allowedOrigins = [], signUpEnabled = true, sessionCache } = options;
   // Runs after the write commits (with-hooks.mjs queues `*.after` hooks), so a
@@ -127,6 +134,18 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
     basePath: '/auth/api',
     ...(publicUrl ? { baseURL: publicUrl } : {}),
     ...(allowedOrigins.length ? { trustedOrigins: allowedOrigins } : {}),
+
+    // The org the user last acted in, so a new session opens there (see
+    // databaseHooks). Server-owned: `input: false` keeps every API and
+    // provider profile from setting it, and `returned: false` keeps it out of
+    // responses (better-auth.com/docs/concepts/database, additionalFields).
+    // Nullable, so the boot migration adds the column to a populated table
+    // without a backfill (docs/operations/better-auth-migrations.md).
+    user: {
+      additionalFields: {
+        lastActiveOrganizationId: { type: 'string', required: false, input: false, returned: false },
+      },
+    },
 
     emailAndPassword: {
       enabled: true,
@@ -176,23 +195,56 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
     // sign-in, so the provider falls back to the user's OLDEST membership
     // (@mastra/auth-better-auth dist/index.js:546-553). For an invitee that is
     // the personal org the Factory created on their first visit, not the team
-    // they were invited into — they would sign in to an empty org. Pinning the
-    // session to the most recently joined org fixes that. A user in several
-    // orgs lands in the newest one and switches on the team page
-    // (samskara-cai, team/routes.ts), which sets the session's active org.
+    // they were invited into, so they would sign in to an empty org.
+    //
+    // A new session opens in the org the user last chose: a deliberate change
+    // of a session's active org (REMEMBERED_ORG_PATHS: the team page's
+    // switcher, samskara-cai, accepting an invitation, creating an org) is
+    // recorded on the user as lastActiveOrganizationId, and read back here
+    // while the user is still a member of it. Failing that (no record yet, or
+    // they left that org), the most recently joined org. Other session
+    // updates (the daily refresh, session.mjs:199) carry the row too and are
+    // not recorded, so one device's refresh never overwrites another's choice.
     databaseHooks: {
       user: { update: clearSessionCache, delete: clearSessionCache },
       session: {
-        update: clearSessionCache,
+        update: {
+          after: async (session: { userId?: string; activeOrganizationId?: string | null } | null, context?: { path?: string } | null) => {
+            await clearSessionCache.after();
+            // The updated row (with-hooks.mjs passes the adapter's result) and
+            // the endpoint that made the change. An unset org (set-active with
+            // null, a left or deleted org) is not a choice to remember.
+            if (!session?.userId || !session.activeOrganizationId || !REMEMBERED_ORG_PATHS.has(context?.path ?? '')) return;
+            // Best effort: this runs after the endpoint's write has committed,
+            // and Better Auth rethrows an after-hook's error into the request
+            // (@better-auth/core context/transaction.mjs:78-103), which would
+            // fail an invitation that was in fact accepted. A lost record only
+            // means the next sign-in opens in the newest org.
+            try {
+              await client.execute({
+                sql: 'UPDATE "user" SET "lastActiveOrganizationId" = ? WHERE "id" = ? AND ("lastActiveOrganizationId" IS NULL OR "lastActiveOrganizationId" != ?)',
+                args: [session.activeOrganizationId, session.userId, session.activeOrganizationId],
+              });
+            } catch (error) {
+              console.error(`[auth] last active org not recorded: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          },
+        },
         delete: clearSessionCache,
         create: {
           before: async (session: { userId: string; activeOrganizationId?: string | null }) => {
             if (session.activeOrganizationId) return;
-            const { rows } = await client.execute({
-              sql: 'SELECT "organizationId" FROM "member" WHERE "userId" = ? ORDER BY "createdAt" DESC LIMIT 1',
+            const last = await client.execute({
+              sql: 'SELECT u."lastActiveOrganizationId" AS "organizationId" FROM "user" u JOIN "member" m ON m."organizationId" = u."lastActiveOrganizationId" AND m."userId" = u."id" WHERE u."id" = ?',
               args: [session.userId],
             });
-            const organizationId = rows[0]?.organizationId;
+            const newest = last.rows.length
+              ? last
+              : await client.execute({
+                  sql: 'SELECT "organizationId" FROM "member" WHERE "userId" = ? ORDER BY "createdAt" DESC LIMIT 1',
+                  args: [session.userId],
+                });
+            const organizationId = newest.rows[0]?.organizationId;
             if (typeof organizationId !== 'string') return;
             return { data: { ...session, activeOrganizationId: organizationId } };
           },

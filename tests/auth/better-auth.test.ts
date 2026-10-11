@@ -6,6 +6,8 @@
  *   false "Database schema mismatch" error.
  * - samskara-9t9: a new session is pinned to the user's most recently joined
  *   org, so an invitee does not sign back in to their empty personal org.
+ * - A new session opens in the org the user last switched to, while they are
+ *   still a member of it.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -93,6 +95,54 @@ describe('which org a new session acts under (samskara-9t9)', () => {
 
     const headers = await signIn(auth, 'owner@example.test');
     expect(await activeOrgOf(auth, headers)).toBe('solo-org');
+  });
+
+  it('opens a new session in the org the user last switched to, until they leave it', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const auth = await freshAuth();
+    const { userId } = await signUp(auth, 'switcher@example.test');
+    await addMembership(userId, 'personal-org', '2026-09-01T00:00:00.000Z', 'owner');
+    await addMembership(userId, 'team-org', '2026-09-02T00:00:00.000Z');
+
+    const first = await signIn(auth, 'switcher@example.test');
+    expect(await activeOrgOf(auth, first)).toBe('team-org');
+    // The team page's switcher calls Better Auth's set-active.
+    // The organization plugin's endpoint; buildBetterAuth returns the plain Auth type.
+    const api = auth.api as unknown as { setActiveOrganization(input: { headers: Headers; body: { organizationId: string } }): Promise<unknown> };
+    await api.setActiveOrganization({ headers: first, body: { organizationId: 'personal-org' } });
+    await auth.api.signOut({ headers: first });
+
+    const again = await signIn(auth, 'switcher@example.test');
+    expect(await activeOrgOf(auth, again)).toBe('personal-org');
+
+    // Removed from that org: back to the most recently joined one.
+    await db.client.execute({ sql: 'DELETE FROM "member" WHERE "organizationId" = ? AND "userId" = ?', args: ['personal-org', userId] });
+    const removed = await signIn(auth, 'switcher@example.test');
+    expect(await activeOrgOf(auth, removed)).toBe('team-org');
+  });
+
+  it('does not remember an org from a session update that is not a choice (a refresh, another device)', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const auth = await freshAuth();
+    const { userId } = await signUp(auth, 'two-devices@example.test');
+    await addMembership(userId, 'personal-org', '2026-09-01T00:00:00.000Z', 'owner');
+    await addMembership(userId, 'team-org', '2026-09-02T00:00:00.000Z');
+    const headers = await signIn(auth, 'two-devices@example.test');
+    const session = await auth.api.getSession({ headers });
+    // Outside any endpoint, as Better Auth's own refresh updates a session.
+    const ctx = await auth.$context;
+    await ctx.internalAdapter.updateSession(session!.session.token, { activeOrganizationId: 'personal-org' } as never);
+    const { rows } = await db.client.execute({ sql: 'SELECT "lastActiveOrganizationId" FROM "user" WHERE "id" = ?', args: [userId] });
+    expect(rows[0]?.lastActiveOrganizationId ?? null).toBeNull();
+  });
+
+  it('never takes the remembered org from a request', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const auth = await freshAuth();
+    const { headers } = await signUp(auth, 'sneaky@example.test');
+    await auth.api.updateUser({ headers, body: { lastActiveOrganizationId: 'someone-elses-org' } as never }).catch(() => undefined);
+    const { rows } = await db.client.execute({ sql: 'SELECT "lastActiveOrganizationId" FROM "user" WHERE "email" = ?', args: ['sneaky@example.test'] });
+    expect(rows[0]?.lastActiveOrganizationId ?? null).toBeNull();
   });
 
   it('leaves the session without an org when the user has none', async () => {
