@@ -103,7 +103,7 @@ App:
    state from it. It is taken after the copy's last change in the tick, so
    a tick that wrote back reads the copy again after write-back. See
    [Refresh read](#refresh-read).
-4. **Intake.** `bd --readonly ready --brief --json --exclude-type=milestone -n 0`,
+4. **Intake.** `bd --readonly ready --brief --json --exclude-type=milestone,event -n 0`,
    then one card per bead, titled `<bead id>: <bead title>`. Then every card's
    title follows its bead's, and a card whose bead is not ready gets its kind
    and parent link from the refresh read. See
@@ -142,7 +142,11 @@ links still sweep. `connections.list` returns such a connection, but
 applies the same test and returns `null`.
 
 Milestones are excluded from `bd ready` because they are containers, not
-work, and `bd ready` lists them. Epics are containers too, and `bd ready`
+work, and `bd ready` lists them. Event beads are excluded too: an `event` is
+bd's own audit-trail record (`bd types`: "Audit-trail event (bd set-state)"),
+not work, and `bd ready` lists it (owner decision 2026-10-11, samskara-l2t.17;
+checked on bd 1.3.1). Decision beads are not excluded: an open one is a
+[research card](#research-cards). Epics are containers too, and `bd ready`
 lists an open epic whether or not it has open children (checked on bd
 1.3.1), but they are read: intake reads each epic's children and cards it as
 an overview card (children) or a planning card (none, samskara-l2t.2.4).
@@ -1975,9 +1979,12 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
 
 - `packages/factory-beads/test/*.test.ts`, run by `npm test`. A scripted fake bd
   (`test/fixtures/fake-bd.mjs`) and an in-memory work-item store test the
-  following: the token never appears in argv; the server environment does not
+  following. The fake's `bd ready` follows bd 1.3.1 (samskara-l2t.17): only
+  `open` beads, never a molecule root, a gate or a message, and every type in
+  `--exclude-type` left out; its `mol pour` makes a `molecule` root, as bd
+  does: the token never appears in argv; the server environment does not
   reach bd; exit codes 2 and 3; idempotent intake across sweeps and restarts;
-  milestone and pinned exclusion; claim conflicts; ordering (B is carded only after A's card
+  milestone, event and pinned exclusion; claim conflicts; ordering (B is carded only after A's card
   reaches Done and A is closed and synced); the lease; the card's
   `repository` (one repository, two repositories in one project, back-fill),
   checked with `@mastra/factory`'s real `resolveWorkItemRepository`; and, in

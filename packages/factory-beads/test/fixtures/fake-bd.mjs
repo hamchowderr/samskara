@@ -143,12 +143,13 @@ switch (words[0]) {
     const inThisRepo = b => !b.repo || process.cwd().endsWith(b.repo.replace(/[^A-Za-z0-9._-]/g, '__'));
     const ready = state.beads.filter(
       // Like bd 1.3.1: only open beads are ready, so never a pinned
-      // (sqlbuild/ready.go:117) or in_progress one, nor a molecule root or a gate (:16-38).
+      // (sqlbuild/ready.go:117) or in_progress one, nor a molecule root, a gate
+      // or a message (wisp) (:16-38). Event and decision beads it lists
+      // (checked on bd 1.3.1); --exclude-type drops the rest.
       b =>
         inThisRepo(b) &&
         (b.status ?? 'open') === 'open' &&
-        b.issue_type !== 'molecule' &&
-        b.issue_type !== 'gate' &&
+        !['molecule', 'gate', 'message'].includes(b.issue_type) &&
         !blocked(b) &&
         !excluded.includes(b.issue_type),
     );
@@ -497,7 +498,8 @@ switch (words[0]) {
       out = JSON.stringify({ dry_run: true, steps: formula.steps.map(fill) });
       break;
     }
-    const epic = { id: nextId(), title: fill(formula.name), status: 'open', issue_type: 'epic' };
+    // Like bd 1.3.1: the root is a molecule (checked with bd show on a poured root).
+    const epic = { id: nextId(), title: fill(formula.name), status: 'open', issue_type: 'molecule' };
     state.beads.push(epic);
     const mapping = { [formula.name]: epic.id };
     let created = formula.steps.length + 1;

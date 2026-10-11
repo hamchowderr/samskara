@@ -95,6 +95,8 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     ids.epic = run('bd', ['create', 'Epic', '-t', 'epic', '--silent']).split(/\r?\n/)[0]!;
     // Containers and pinned beads must never become cards (samskara-l2t.1).
     run('bd', ['create', 'Milestone', '-t', 'milestone', '--silent']);
+    // bd lists an event (its own audit record) as ready; it is never carded (samskara-l2t.17).
+    run('bd', ['create', 'Event', '-t', 'event', '--silent']);
     const pinned = run('bd', ['create', 'Pinned', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
     run('bd', ['update', pinned, '--status', 'pinned']);
     run('bd', ['dep', 'add', ids.beta, ids.alpha]);

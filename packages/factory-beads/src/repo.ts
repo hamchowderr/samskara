@@ -209,11 +209,14 @@ export const OVERVIEW_TYPES = [...CONTAINER_TYPES, 'molecule'] as const;
 
 /**
  * Issue types `ready` leaves out: a milestone is only ever a parent (an
- * overview card above its children, or no card). An epic is read: one with
- * children becomes an overview card, a childless open one a planning card
- * (samskara-l2t.2.4). A molecule root bd ready never lists.
+ * overview card above its children, or no card), and an `event` is bd's own
+ * audit-trail record (`bd types`: "Audit-trail event (bd set-state)"), never
+ * work (owner decision 2026-10-11, samskara-l2t.17). bd 1.3.1 lists both as
+ * ready otherwise (checked). An epic is read: one with children becomes an
+ * overview card, a childless open one a planning card (samskara-l2t.2.4). A
+ * molecule root, a gate and a message (wisp) bd ready never lists.
  */
-export const NEVER_READY_TYPES = ['milestone'] as const;
+export const NEVER_READY_TYPES = ['milestone', 'event'] as const;
 
 const MARKER = 'factory-beads-bootstrapped';
 const PARKED = 'factory-beads-parked';

@@ -50,11 +50,13 @@ const commands = (harness: Harness) =>
   });
 
 describe('intake', () => {
-  it('cards ready beads only, never milestones or pinned beads, with the claim key and external source', async () => {
+  it('cards ready beads only, never milestones, events or pinned beads, with the claim key and external source', async () => {
     h = createHarness([
       { id: 'w-1', title: 'Epic', issue_type: 'epic' },
       { id: 'w-4', title: 'Milestone', issue_type: 'milestone' },
       { id: 'w-5', title: 'Pinned', issue_type: 'task', status: 'pinned' },
+      // bd's own audit-trail record, never work (owner decision, samskara-l2t.17).
+      { id: 'w-6', title: 'State changed', issue_type: 'event' },
       { id: 'w-2', title: 'First', issue_type: 'task', priority: 1 },
       { id: 'w-3', title: 'Second', issue_type: 'task', blockedBy: ['w-2'] },
     ]);
@@ -116,7 +118,7 @@ describe('intake', () => {
     expect(pull.env.token).toBe(TOKEN);
     // --brief: no free-form text is needed (samskara-l2t.8). Epics are read
     // (samskara-l2t.2.4); milestones never are.
-    expect(ready.argv).toEqual(['--readonly', 'ready', '--brief', '--json', '--exclude-type=milestone', '-n', '0']);
+    expect(ready.argv).toEqual(['--readonly', 'ready', '--brief', '--json', '--exclude-type=milestone,event', '-n', '0']);
     // Reads get no credential at all.
     expect(ready.env.token).toBeNull();
   });
@@ -547,7 +549,7 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     }
     // Milestones are never read as ready; an epic is, and is sorted by its children.
     const ready = h.state().calls.find(c => c.argv.includes('ready'))!;
-    expect(ready.argv).toContain('--exclude-type=milestone');
+    expect(ready.argv).toContain('--exclude-type=milestone,event');
     // One refresh read answers the epic and its children (samskara-l2t.15).
     const lists = h.state().calls.filter(c => c.argv.includes('list'));
     expect(lists.map(c => c.argv)).toEqual([['--readonly', 'list', '--all', '--brief', '--include-gates', '--json', '-n', '0']]);
