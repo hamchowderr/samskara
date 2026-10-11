@@ -270,8 +270,19 @@ export async function repositoryFormulas(repo: BdRepo): Promise<Array<Record<str
  * on (`await_id`). A `gh:run` gate with no run id would need
  * `bd gate discover`, which matches runs by the current branch and time and
  * says nothing on the host's copy; a `mail` gate, or one with no readable
- * type, has no check at all.
+ * type, has no check at all. A GitHub gate whose `repo` names another host
+ * (`HOST/OWNER/REPO`, bd formula schema gate) is refused too
+ * (samskara-l2t.20): gh reads `GH_TOKEN` for github.com only, and its own
+ * config directory holds no other login (runner.ts), so it could not read it.
  */
+/** The host a gate's `repo` names, when it is not github.com: `HOST/OWNER/REPO` (bd formula schema gate). */
+function githubHost(repo: string): string | undefined {
+  const parts = repo.trim().split('/');
+  if (parts.length !== 3) return undefined;
+  const host = parts[0]!.toLowerCase();
+  return host === 'github.com' || host === 'www.github.com' ? undefined : host;
+}
+
 export function unresolvedGate(value: unknown): string | undefined {
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -283,7 +294,7 @@ export function unresolvedGate(value: unknown): string | undefined {
   if (!value || typeof value !== 'object') return undefined;
   for (const [key, inner] of Object.entries(value)) {
     if (key === 'gate' && inner) {
-      const { type, timeout, await_id } = inner as { type?: unknown; timeout?: unknown; await_id?: unknown };
+      const { type, timeout, await_id, repo } = inner as { type?: unknown; timeout?: unknown; await_id?: unknown; repo?: unknown };
       const has = (field: unknown) => typeof field === 'string' && field !== '';
       if (type === 'human') continue;
       if (type === 'timer') {
@@ -291,8 +302,10 @@ export function unresolvedGate(value: unknown): string | undefined {
         return 'timer gate with no timeout';
       }
       if (type === 'bead' || type === 'gh:pr' || type === 'gh:run') {
-        if (has(await_id)) continue;
-        return `${type} gate with no await_id`;
+        if (!has(await_id)) return `${type} gate with no await_id`;
+        const host = type !== 'bead' && typeof repo === 'string' ? githubHost(repo) : undefined;
+        if (host) return `${type} gate on ${host}`;
+        continue;
       }
       return `${typeof type === 'string' && type ? type : 'untyped'} gate`;
     }

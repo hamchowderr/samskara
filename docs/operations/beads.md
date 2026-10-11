@@ -1476,6 +1476,11 @@ and leaves it open, so the step stays held, and it is checked again every
 sweep. It is logged once and named in the repository's diagnostic; a person
 decides what follows (close the gate with `bd gate resolve`, or the work).
 
+A check that resolves nothing writes nothing: checked on bd 1.3.1, the copy's
+head commit (`bd vc status`) is the same before and after a timer check and
+an all-types check that closed no gate (samskara-l2t.20), so the sweep's
+publish runs only when something closed.
+
 A gate check that exits non-zero puts the repository in `error` and is
 tried again on the next sweep; as for a failed wake, the copy is read again
 and published on the next sweep in case it committed first.
@@ -1852,8 +1857,13 @@ repositories included. So:
   it and no tool closes beads: a `mail` gate, a timer with no timeout, and a
   GitHub or bead gate with no `await_id` (a `gh:run` gate's run id would come
   from `bd gate discover`, which matches runs by the current branch and time
-  and says nothing on the host's copy). The refusal names the gate
-  (`unresolvedGate`, `agent-tools.ts`), and a person pours those formulas.
+  and says nothing on the host's copy). A GitHub gate whose `repo` names
+  another host (`HOST/OWNER/REPO`) is refused as well (samskara-l2t.20): gh
+  reads `GH_TOKEN` for github.com only, and its own config directory holds no
+  other login, so it could not evaluate it. A gate naming another github.com
+  repository (`OWNER/REPO`) is allowed; if the App installation cannot read
+  it, the check reports it as a gate it cannot evaluate. The refusal names the
+  gate (`unresolvedGate`, `agent-tools.ts`), and a person pours those formulas.
 - A formula that attaches a formula with such a gate through `compose.hooks[].attach` or
   a step's `on_complete.bond` is refused too (`deferredAttachments`,
   `agent-tools.ts:295`, checked at `:379`), though bd 1.3.0 never applies

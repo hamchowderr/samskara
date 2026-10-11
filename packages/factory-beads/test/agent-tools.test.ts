@@ -483,6 +483,10 @@ describe('workflows', () => {
     expect(unresolvedGate({ steps: [{ gate: { type: 'gh:run', id: 'ci.yml' } }] })).toBe('gh:run gate with no await_id');
     expect(unresolvedGate({ steps: [{ gate: { type: 'timer' } }] })).toBe('timer gate with no timeout');
     expect(unresolvedGate({ steps: [{ gate: { type: 'mail' } }] })).toBe('mail gate');
+    // A GitHub gate on another host: gh has no token for it (samskara-l2t.20).
+    expect(unresolvedGate({ steps: [{ gate: { type: 'gh:pr', await_id: '4', repo: 'ghe.example.com/acme/app' } }] })).toBe('gh:pr gate on ghe.example.com');
+    expect(unresolvedGate({ steps: [{ gate: { type: 'gh:run', await_id: '9', repo: 'GitHub.com/acme/app' } }] })).toBeUndefined();
+    expect(unresolvedGate({ steps: [{ gate: { type: 'gh:pr', await_id: '4', repo: 'acme/other' } }] })).toBeUndefined();
     expect(unresolvedGate({ steps: [{ gate: {} }] })).toBe('untyped gate');
   });
 
