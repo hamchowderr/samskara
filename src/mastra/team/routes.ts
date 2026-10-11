@@ -1,5 +1,6 @@
 /**
- * Team pages: invite teammates into the org, and accept an invitation.
+ * Team pages: invite teammates into the org, switch between orgs, and accept
+ * an invitation.
  *
  * WHY THESE EXIST. Better Auth's organization plugin already provides every
  * endpoint (invite-member, accept-invitation, list-members, update-member-role,
@@ -134,6 +135,44 @@ function say(text, isError) {
 
 const TEAM_SCRIPT = `
 const ROLES = ['member', 'admin', 'owner'];
+// The org switcher (samskara-cai). Better Auth's organization plugin lists the
+// user's orgs (GET /organization/list) and sets the session's active org
+// (POST /organization/set-active, which checks membership); the Factory reads
+// session.activeOrganizationId on every request (@mastra/auth-better-auth
+// dist/index.js:541-575), and the session update clears Samskara's session
+// cache (auth/better-auth.ts databaseHooks). Shown only to a user in more
+// than one org.
+async function loadOrgs() {
+  const orgs = await api('list');
+  const list = document.getElementById('orgs');
+  const show = Array.isArray(orgs) && orgs.length > 1;
+  list.hidden = !show;
+  document.getElementById('orgs-head').hidden = !show;
+  if (!show) return;
+  const rows = [...orgs].sort((a, b) => String(a.name).localeCompare(String(b.name))).map(o => {
+    const current = o.id === CTX.organizationId;
+    const row = el('div', { className: 'row' }, el('div', { className: 'grow', textContent: o.name }));
+    if (current) {
+      row.append(el('span', { className: 'muted', textContent: 'current' }));
+    } else {
+      const go = el('button', { textContent: 'Switch' });
+      go.onclick = async () => {
+        go.disabled = true;
+        say('');
+        try {
+          await api('set-active', { organizationId: o.id });
+          window.location.assign('/');
+        } catch (e) {
+          say(e.message, true);
+          go.disabled = false;
+        }
+      };
+      row.append(go);
+    }
+    return row;
+  });
+  list.replaceChildren(...rows);
+}
 async function load() {
   const [{ members }, invitations, org] = await Promise.all([
     api('list-members?organizationId=' + encodeURIComponent(CTX.organizationId)),
@@ -242,6 +281,7 @@ document.getElementById('org-form').onsubmit = async (event) => {
   button.disabled = false;
 };
 load().catch(e => say(e.message, true));
+loadOrgs().catch(e => say(e.message, true));
 `;
 
 const INVITATION_SCRIPT = `
@@ -300,6 +340,8 @@ export const createTeamRoutes = (routeAuth: RouteAuth) => [
 <p class="muted"><a href="/">← Back to Samskara</a></p>
 <h1>Team</h1>
 <p class="sub">Everyone here sees the same projects and work.</p>
+<h2 id="orgs-head" hidden>Your organizations</h2>
+<div class="panel" id="orgs" hidden></div>
 <h2>Organization</h2>
 <div class="panel">
   <form class="invite" id="org-form">
