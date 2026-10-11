@@ -261,14 +261,31 @@ export async function repositoryFormulas(repo: BdRepo): Promise<Array<Record<str
   );
 }
 
-function hasGate(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasGate);
-  if (!value || typeof value !== 'object') return false;
-  for (const [key, inner] of Object.entries(value)) {
-    if (key === 'gate' && inner) return true;
-    if (hasGate(inner)) return true;
+/**
+ * The first gate type in a cooked formula that nothing here resolves, at any
+ * depth: every gate but `human`, whose bead the integration cards for a
+ * person to approve (samskara-l2t.9). A gate with no readable type counts as
+ * one nothing resolves.
+ */
+export function unresolvedGate(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = unresolvedGate(item);
+      if (found) return found;
+    }
+    return undefined;
   }
-  return false;
+  if (!value || typeof value !== 'object') return undefined;
+  for (const [key, inner] of Object.entries(value)) {
+    if (key === 'gate' && inner) {
+      const type = (inner as { type?: unknown }).type;
+      if (type !== 'human') return typeof type === 'string' && type ? type : 'untyped';
+      continue;
+    }
+    const found = unresolvedGate(inner);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 /**
@@ -303,7 +320,7 @@ export function formulaReferences(value: unknown, out: string[] = []): string[] 
  * `mol pour` creates no bead for them), so `bd cook <name>` cannot show their
  * gates. They are declared "automatic attachments" (internal/formula/types.go
  * Hook) and wiring on_complete is an open bd issue (gastownhall/beads#3782),
- * so each one is cooked on its own and refused if gated.
+ * so each one is cooked on its own and refused if it has a gate nothing resolves.
  */
 export function deferredAttachments(value: unknown, out: string[] = []): string[] {
   if (Array.isArray(value)) {
@@ -338,7 +355,7 @@ async function bdJson(repo: BdRepo, args: string[], what: string): Promise<unkno
 
 /**
  * Refuse a formula unless it, and every formula it composes with, is the
- * repository's own, and its RESOLVED form has no gate.
+ * repository's own, and its RESOLVED form has no gate but human ones.
  *
  * - Composition is followed recursively through `bd formula show`, which
  *   gives each formula as written. `extends`, an expansion or an aspect can
@@ -347,11 +364,13 @@ async function bdJson(repo: BdRepo, args: string[], what: string): Promise<unkno
  * - Gates are checked on `bd cook <name>` (bd cook --help: "outputs the
  *   resolved formula as JSON"), not on `formula show`: an inherited gated
  *   step appears only after `extends` is applied. A gate makes bd create a
- *   gate bead that blocks its step until closed (bd formula schema gate); no
- *   tool closes a bead and the integration never cards a gate, so a gated
- *   step would never become ready.
+ *   gate bead that blocks its step until closed (bd formula schema gate). A
+ *   human gate is carded for a person to approve (samskara-l2t.9), so it is
+ *   allowed. Timer and GitHub gates are not checked anywhere yet
+ *   (samskara-l2t.10), and no tool closes a bead, so a step behind one would
+ *   never become ready: those are refused.
  * - Hooks and on_complete bonds are not applied by `bd cook` or `mol pour` in
- *   bd 1.3.0, so their formulas are cooked one by one and refused if gated
+ *   bd 1.3.0, so their formulas are cooked one by one and refused on the same terms
  *   (deferredAttachments): a later bd that applies them must not bring a gate
  *   into a molecule these tools poured.
  */
@@ -382,17 +401,19 @@ export async function checkPourableFormula(repo: BdRepo, name: string): Promise<
       }
     }
   }
-  if (hasGate(await bdJson(repo, ['cook', name], 'cook'))) {
+  const gate = unresolvedGate(await bdJson(repo, ['cook', name], 'cook'));
+  if (gate) {
     throw new BeadsToolError(
-      `"${name}" has gated steps (its own or inherited). A gate becomes a bead that only closing can clear, and no tool closes beads, so its steps would never become ready. Ask a person to pour it.`,
+      `"${name}" has a ${gate} gate (its own or inherited). Only human gates are resolved here, as approval cards; any other gate becomes a bead that only closing can clear, and no tool closes beads, so its step would never become ready. Ask a person to pour it.`,
     );
   }
   // Fail closed on what bd would attach later (hooks, on_complete): cook each
   // one alone. A formula that cannot be cooked alone is refused too.
   for (const [attached, via] of deferred) {
-    if (hasGate(await bdJson(repo, ['cook', attached], 'cook'))) {
+    const gate = unresolvedGate(await bdJson(repo, ['cook', attached], 'cook'));
+    if (gate) {
       throw new BeadsToolError(
-        `"${name}" attaches "${attached}" (a hook or on_complete in ${via === name ? 'itself' : `"${via}"`}), which has gated steps. A gate becomes a bead that only closing can clear, and no tool closes beads. Ask a person to pour it.`,
+        `"${name}" attaches "${attached}" (a hook or on_complete in ${via === name ? 'itself' : `"${via}"`}), which has a ${gate} gate. Only human gates are resolved here; any other gate becomes a bead that only closing can clear, and no tool closes beads. Ask a person to pour it.`,
       );
     }
   }
@@ -620,8 +641,8 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     description:
       `Pour one of the repository's own workflow formulas (bd mol pour): create a molecule (a root bead of type molecule) and its linked, ` +
       `ordered step beads in one go, with the formula's variables filled in. Only formulas from beads_formula_list, and only when every ` +
-      `formula they extend or compose with is one too. A formula with gated steps, its own, inherited or attached by a hook, is refused, because a gate is a ` +
-      `bead only closing clears and no tool closes beads. Set dry_run to preview without writing. ` +
+      `formula they extend or compose with is one too. A human gate in it becomes an approval card a person moves to Done; a formula with any other ` +
+      `gate (timer, GitHub), its own, inherited or attached by a hook, is refused, because nothing resolves it. Set dry_run to preview without writing. ` +
       `Poured steps skip create-time validation, so fill any missing design/acceptance with beads_update before work starts. ${where}`,
     inputSchema: z.object({
       repository: repositoryArg,

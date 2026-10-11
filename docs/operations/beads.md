@@ -84,8 +84,8 @@ App:
      `--force`. This is the owner's decision (2026-10-09): a card reaching
      Done closes its bead even while someone holds a claim.
    - **Every other refusal does.** The integration never passes `--force`, so
-     bd still refuses to close a pinned bead, an open gate, a bead with open
-     children or open blockers. When it does, the bead is swapped back to its
+     bd still refuses to close a pinned bead, a bead held by an open gate, a
+     bead with open children or open blockers. When it does, the bead is swapped back to its
      holder, and the card's diagnostic says so. A claim comes back without
      its lease: a live holder restores it on its next `bd heartbeat`, but an
      abandoned claim then has no stale lease for `bd reclaim` to find.
@@ -149,14 +149,20 @@ an overview card (children) or a planning card (none, samskara-l2t.2.4).
 Pinned beads, gates and workflow roots (`molecule`) bd ready already leaves
 out (bd v1.3.1 `internal/storage/sqlbuild/ready.go`: types at `:16-38`, the
 status filter at `:113`, the pinned flag at `:117`). A milestone or molecule
-root is carded only as the parent of a ready child, as an overview card.
+root is carded only as the parent of a ready child, as an overview card. An
+open human gate is carded from the refresh read instead
+([Approval cards](#approval-cards)).
 
 ### Refresh read
 
 One bd call per repository per tick reads every bead the tick needs
-(samskara-l2t.15): `bd --readonly list --all --brief --json -n 0`
+(samskara-l2t.15): `bd --readonly list --all --brief --include-gates --json -n 0`
 (`repo.ts`, `BdRepo.refresh`), held as a `BeadSnapshot`: each bead by id,
-and each bead's direct children. Write-back's status and holder checks (up
+each bead's direct children, and the beads each one blocks. `--include-gates`
+adds the gate beads `bd list` hides by default (`bd list --help`), each with
+its `await_type` and parent (checked on bd 1.3.1), so a human gate can be
+carded ([Approval cards](#approval-cards)) and an open gate counts as an open
+child of its molecule. Write-back's status and holder checks (up
 to the first close of the tick), the overview and planning classification, the open-children counts, the
 overview move's closed check and the re-arm check all read it. Before, each
 container cost a `bd show` and a `bd list --parent`, each other overview
@@ -458,7 +464,7 @@ the source the publisher returns on the comment (`@mastra/factory` 0.20.0
 
 ### Card kinds
 
-Every beads card is one of four kinds, set in `beadsCardKind` from the bead
+Every beads card is one of five kinds, set in `beadsCardKind` from the bead
 (samskara-l2t.2). The kind decides what runs on the card, which moves the
 board allows, and who approves. The sections below give the detail; this is
 the summary.
@@ -469,6 +475,7 @@ the summary.
 | [Overview](#overview-cards) | an epic, milestone or molecule root with children | `overview` | nothing | rests in Intake; the worker commits it to Done when its last child closes; never into a working phase | nobody: the last child's close is the signal |
 | [Planning](#planning-cards) | an open epic with no children | `plan` | Planning: `factory-beads-epic` propose mode; Building: file mode | a person moves it to Planning, then to Building; the file run moves it back to Intake; it becomes an overview card | a person, by moving it to Building (never the system or an agent, whatever auto-approve says) |
 | [Research](#research-cards) | an open `decision` | `research` | Planning: `factory-beads-decision` | a person moves it to Planning; it never enters Triage, Building or Review | a person, by moving it to Done, which closes the bead |
+| [Approval](#approval-cards) | an open human gate | `gate` | nothing | rests in Intake; never into a working phase | a person, by moving it to Done, which closes the gate |
 
 A bead whose parent is not a container (a task with subtasks) is linked under
 its parent's card, which stays a work card (samskara-l2t.2.5): see
@@ -552,7 +559,7 @@ container and its children from the tick's [refresh read](#refresh-read);
 `bd --readonly list --parent=<id> --all --json -n 0` would. Checked on bd
 1.3.1: `--parent` lists direct children only, so a grandchild is counted
 under its own parent; `--all` adds closed children. A container the list
-leaves out (bd hides gates, templates and wisps by default) is read with
+leaves out (bd hides templates and wisps by default) is read with
 `bd show`. A poured molecule's
 steps have parent-child edges to the root (bd v1.3.1 `cmd/bd/cook.go:643-649`),
 so a molecule root is handled like an epic.
@@ -996,6 +1003,61 @@ card turned into the epic's overview card with the child linked under it.
 
 The build phase is Work's `execute`, passed as `buildPhase`: Review shares
 its `work` role, so the role alone does not name it.
+
+### Approval cards
+
+An open human gate gets an **approval card** (samskara-l2t.9). A formula step
+with `gate: { type: "human" }` makes bd create a gate bead, titled
+`Gate: human`, under the molecule root, that blocks the step until it is
+closed (`bd formula schema gate`; `bd gate --help`: "human - Requires
+manual bd close"). A person approves by moving the card to Done, which
+closes the gate through the normal write-back. The step it held then becomes
+ready and is carded as usual, as soon as nothing else blocks it.
+
+**Intake.** `bd ready` never lists a gate (bd v1.3.1
+`internal/storage/sqlbuild/ready.go:16-38`), so intake takes every open bead
+of type `gate` with `await_type: "human"` from the
+[refresh read](#refresh-read) and cards it with the ready beads, plus
+`beadsCardKind: 'gate'` (`integration.ts`, `isHumanGate`,
+`readyCardKind` and the intake loop). As `bd ready` does for any bead, a gate
+with an open blocker of its own (added by hand with `bd dep add <gate> <bead>`;
+a formula's gate has none) waits until the blocker closes. It is linked under its molecule's
+overview card and counts as one of its open children, so the molecule's card
+does not reach Done while the gate is open. Timer, `gh:run`, `gh:pr` and
+`bead` gates are not carded: nothing resolves them yet (samskara-l2t.10).
+
+**Title.** bd's own title, `Gate: human`, says nothing about what is being
+approved, so a card for a gate with that title is named after the steps it
+blocks, from the refresh read: `<gate id>: Approve: <step title>`
+(`beadCardTitle`). It follows the step: a step retitled in bd retitles the
+card on the next tick, as any card follows its bead (samskara-l2t.8). A gate
+titled by hand (`bd gate create --title`) keeps its own title.
+
+**Chips.** The card carries the `gate` type chip and Factory's approval
+label, `status: needs approval` (`cardChips`), which Factory's `needsApproval`
+reads (`@mastra/factory` 0.20.0 `dist/rules/types.js:12-18`). The board
+hides that chip itself, so the visible cue is the `gate` chip and the
+title. The card never enters a working phase, so Factory never accepts it and
+the label stays.
+
+**The board policy.** `createBeadsTransitionPolicy` (`board-rules.ts`):
+
+| Move of an approval card | Result |
+|--------------------------|--------|
+| Into Triage, Planning, Building (`execute`) or Review, by anyone | Rejected, `forbidden`: "An approval card holds no work: a person approves it by moving it to Done, which resolves the gate and lets the step it holds start". No run ever starts on it. |
+| Into Done by an agent, the system, or any other actor that is not a person | Rejected, `approval_required`. The one exception is the system move of a card whose gate was already closed in bd ([Beads closed outside the Factory](#beads-closed-outside-the-factory)), for a gate resolved with `bd gate resolve` or `bd close`. |
+| Into Done or Canceled by a person | Allowed (then Work's own policy decides). Canceled leaves the gate open, so the step stays held. |
+
+**The close.** Write-back closes the gate with `bd close` as any card's bead
+(`BdRepo.close`). `bd gate resolve` is the same command under another name
+(`bd gate resolve --help`: "equivalent to 'bd close <gate-id>'"). Checked on
+bd 1.3.1: closing a poured formula's human gate as `factory-beads` succeeds,
+and its step is listed by `bd ready` once its other blockers close.
+
+A gate opens when the formula is poured, not when the steps before it finish:
+bd gives a formula gate no `needs` edge (checked on bd 1.3.1, `bd show` on
+the gate lists only its parent). So a card can be approved before the work
+ahead of the gated step is done; the step still waits for that work.
 
 ### Multi-repository factories: the card names its repository
 
@@ -1629,7 +1691,7 @@ time, the tool is absent.
   and wait there for a person (the owner's 2026-10-09 decision); nothing
   starts work on them automatically.
 
-**Formulas: the repository's own, all the way down, and no gates.** bd
+**Formulas: the repository's own, all the way down, and only human gates.** bd
 searches the repository's `.beads/formulas/`, then `~/.beads/formulas/` of the
 user the server runs as, then `$GT_ROOT/.beads/formulas/` (`bd formula list
 --help`). Under `npm run dev` the home path is the owner's personal formula
@@ -1660,16 +1722,19 @@ repositories included. So:
   `compose.aspects`, `compose.expand[].with`, `compose.map[].with`,
   `compose.hooks[].attach`, and a step's `expand` and `on_complete.bond`, at
   any depth. Each formula is read as written with `bd formula show --json`.
-- A formula with a gate, its own or inherited, is refused. The gate check runs
+- A formula with any gate but a human one, its own or inherited, is refused. The gate check runs
   on `bd cook <name> --json`, the resolved formula (bd cook --help: "outputs
   the resolved formula as JSON"), not on `formula show`: checked on bd 1.3.0,
   a repository formula `mol-child` with `extends = ["mol-demo"]`, where
   `mol-demo` has a gated step, shows no gate in `formula show` but carries it
   in `cook`. bd turns a gate into a gate bead that blocks its step until the
-  gate is closed (`bd formula schema gate`); no tool closes beads and the
-  integration never cards a gate, so a poured gated step would never become
-  ready. A person pours those formulas.
-- A formula that attaches a gated formula through `compose.hooks[].attach` or
+  gate is closed (`bd formula schema gate`). A human gate becomes an
+  [approval card](#approval-cards) a person moves to Done, so it is allowed
+  (samskara-l2t.9). Timer and GitHub gates are not checked anywhere yet
+  (samskara-l2t.10) and no tool closes beads, so a step behind one would never
+  become ready: the refusal names the gate's type
+  (`unresolvedGate`, `agent-tools.ts`), and a person pours those formulas.
+- A formula that attaches a formula with such a gate through `compose.hooks[].attach` or
   a step's `on_complete.bond` is refused too (`deferredAttachments`,
   `agent-tools.ts:295`, checked at `:379`), though bd 1.3.0 never applies
   either: `bd cook` returns `compose.hooks` unexpanded, and a dry-run pour of a
@@ -1681,7 +1746,7 @@ repositories included. So:
   or bond time; `on_complete` is a runtime no-op with an open p1 bug to wire
   it (gastownhall/beads#3782). Because a later bd may apply them to molecules
   these tools poured, each attached formula is cooked on its own and refused
-  if gated; one that cannot be cooked alone is refused as well.
+  on the same terms; one that cannot be cooked alone is refused as well.
 
 The formulas are read from the copy's checkout, taken when the copy was
 bootstrapped: a formula committed later is offered after the copy is next
@@ -1719,8 +1784,9 @@ and custom types, no close, no edit of a closed bead, notes appended,
 dependencies, a failed publish picked up by the next sweep, a parked
 repository, a sync conflict after a tool write parking the repository until
 reset, the repository argument, the init flow, formula list and pour, the dry
-run's mode, server-user formulas hidden and refused, gated formulas refused
-(own and inherited, checked on `cook`), a hook attaching a gated formula
+run's mode, server-user formulas hidden and refused, formulas with a timer or
+GitHub gate refused (own and inherited, checked on `cook`) while one with a
+human gate pours and leaves a gate bead, a hook attaching a timer-gated formula
 refused (directly and through `extends`) while one attaching an ungated formula
 pours, composition with an outside formula refused at any depth, every
 composition field and every deferred attachment found, `isInside` on real paths
@@ -1929,6 +1995,14 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   published web comment's own feed key, as Factory does. In
   `test/real-bd.test.ts`, a card comment reaching origin with its author
   and text, and not coming back after a restart.
+- Approval cards (samskara-l2t.9, `test/gates.test.ts`): an open human gate
+  carded in Intake under its molecule, titled after the step it holds, with
+  the approval label, counting as an open child; a person's Done closing
+  the gate and the step carded next; a gate closed in bd moving its card to
+  Done; timer, GitHub and closed gates never carded; a retitled step
+  retitling the card, and a hand-titled gate keeping its title. In
+  `test/real-bd.test.ts`, a real poured human gate carded, approved, and its
+  step carded in the same sweep, with the gate closed on origin.
 - `test/real-bd.test.ts` runs a **real** bd and git end to end against a bare
   repository in a temp directory, through a `git+file://` Dolt remote, including
   an epic with two children and a nested epic, and a real `bd mol pour` whose
@@ -1974,8 +2048,11 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   agent and the system moving an overview card out of Building to Intake
   allowed, and into Review refused with the reason that names Intake; the epic
   skill started in propose and file mode, the decision skill and Work's
-  decisions unchanged for every other card) are covered by
-  `tests/boards/requests-board.test.ts`.
+  decisions unchanged for every other card), and the approval card policy
+  (every working phase refused for every actor; Done refused with
+  `approval_required` for agents and the system, allowed for a person and for
+  the system move of a gate closed in bd; Canceled allowed for a person) are
+  covered by `tests/boards/requests-board.test.ts`.
 
 ## Build note
 

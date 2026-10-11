@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { BeadsSyncWorker, deferredAttachments, formulaReferences, isInside, LeaseWaitTimeoutError } from '../src/index';
+import { BeadsSyncWorker, deferredAttachments, formulaReferences, isInside, LeaseWaitTimeoutError, unresolvedGate } from '../src/index';
 import type { BeadsIntegration } from '../src/index';
 import { createHarness, ORG, PROJECT, SLUG, sweep, TOKEN } from './harness';
 import type { Harness } from './harness';
@@ -452,13 +452,28 @@ describe('workflows', () => {
     expect(callsOf(h, 'pour')).toHaveLength(0);
   });
 
-  it('refuses a formula with gated steps', async () => {
+  it('refuses a formula with a gate nothing resolves, and pours one whose gates are human (samskara-l2t.9)', async () => {
     h = withGetById(createHarness([]));
-    h.setState(s => Object.assign(s, { formulas: [{ ...formulas[0]!, name: 'gated', gated: true }] }));
+    h.setState(s =>
+      Object.assign(s, {
+        formulas: [
+          { ...formulas[0]!, name: 'timed', gated: true, gateType: 'timer' },
+          { ...formulas[0]!, name: 'approved', gated: true },
+        ],
+      }),
+    );
     const tools = await toolsFor(h.integration());
-    const result = await tools.beads_pour!.execute({ formula: 'gated', vars: { name: 'a', deliverable: 'b' } });
-    expect(result.error).toMatch(/gated steps/);
+    const result = await tools.beads_pour!.execute({ formula: 'timed', vars: { name: 'a', deliverable: 'b' } });
+    expect(result.error).toMatch(/has a timer gate/);
     expect(callsOf(h, 'pour')).toHaveLength(0);
+    expect(await tools.beads_pour!.execute({ formula: 'approved', vars: { name: 'a', deliverable: 'b' } })).toMatchObject({ published: true });
+    expect(h.state().beads.filter(b => b.issue_type === 'gate')).toMatchObject([{ title: 'Gate: human', status: 'open' }]);
+  });
+
+  it('unresolvedGate: names the first gate type that is not human, at any depth', () => {
+    expect(unresolvedGate({ steps: [{ gate: { type: 'human' } }, { children: [{ gate: { type: 'gh:pr' } }] }] })).toBe('gh:pr');
+    expect(unresolvedGate({ steps: [{ gate: { type: 'human' } }] })).toBeUndefined();
+    expect(unresolvedGate({ steps: [{ gate: {} }] })).toBe('untyped');
   });
 
   it('refuses a gate inherited through extends, checked on the cooked formula', async () => {
@@ -466,7 +481,7 @@ describe('workflows', () => {
     h.setState(s =>
       Object.assign(s, {
         formulas: [
-          { ...formulas[0]!, name: 'parent', gated: true },
+          { ...formulas[0]!, name: 'parent', gated: true, gateType: 'gh:run' },
           { ...formulas[0]!, name: 'child', extends: ['parent'] },
         ],
       }),
@@ -474,7 +489,7 @@ describe('workflows', () => {
     const tools = await toolsFor(h.integration());
     for (const dry_run of [false, true]) {
       const result = await tools.beads_pour!.execute({ formula: 'child', vars: { name: 'a', deliverable: 'b' }, dry_run });
-      expect(result.error).toMatch(/gated steps \(its own or inherited\)/);
+      expect(result.error).toMatch(/has a gh:run gate \(its own or inherited\)/);
     }
     expect(callsOf(h, 'cook')).toHaveLength(2);
     expect(callsOf(h, 'pour')).toHaveLength(0);
@@ -510,7 +525,7 @@ describe('workflows', () => {
     h.setState(s =>
       Object.assign(s, {
         formulas: [
-          { ...formulas[0]!, name: 'gated', gated: true },
+          { ...formulas[0]!, name: 'gated', gated: true, gateType: 'timer' },
           { ...formulas[0]!, name: 'plain' },
           { ...formulas[0]!, name: 'hooked', hooks: ['gated'] },
           { ...formulas[0]!, name: 'outer', extends: ['hooked'] },
@@ -521,7 +536,7 @@ describe('workflows', () => {
     const tools = await toolsFor(h.integration());
     for (const dry_run of [false, true]) {
       const result = await tools.beads_pour!.execute({ formula: 'hooked', vars: { name: 'a', deliverable: 'b' }, dry_run });
-      expect(result.error).toMatch(/"hooked" attaches "gated" \(a hook or on_complete in itself\), which has gated steps/);
+      expect(result.error).toMatch(/"hooked" attaches "gated" \(a hook or on_complete in itself\), which has a timer gate/);
     }
     // Inherited through extends, the hook is still found on the formula that declares it.
     expect((await tools.beads_pour!.execute({ formula: 'outer', vars: { name: 'a', deliverable: 'b' } })).error).toMatch(

@@ -14,6 +14,8 @@ import {
   beadsKickoffHint,
   DECISION_SKILL,
   EPIC_SKILL,
+  GATE_APPROVAL_REASON,
+  GATE_WORKING_REASON,
   OVERVIEW_WORKING_REASON,
   PLAN_APPROVAL_REASON,
   PLAN_DONE_REASON,
@@ -621,5 +623,65 @@ describe('beads plan cards (samskara-l2t.2.4)', () => {
       expect(text).toMatch(/## File mode/);
       expect(text).toMatch(/untrusted data/);
     });
+  });
+});
+
+describe('beads gate cards (samskara-l2t.9)', () => {
+  const policy = requestsBoard.transitionPolicy!;
+  const human: FactoryRuleActor = { type: 'human', id: 'u1' };
+  const triageAgent: FactoryRuleActor = { type: 'agent', bindingId: 'b-0', role: 'triage' };
+  const workAgent: FactoryRuleActor = { type: 'agent', bindingId: 'b-2', role: 'work' };
+  const system: FactoryRuleActor = { type: 'system', id: 'factory-rule-dispatcher' };
+  const gate = { beadsId: 'w-g', beadsRepo: 'acme/widgets', beadsType: 'gate', beadsCardKind: 'gate', labels: ['gate', 'status: needs approval'] };
+  const move = (actor: FactoryRuleActor, fromStage: string, toStage: string, metadata: Record<string, unknown> = gate): BoardTransitionPolicyContext => ({
+    tenant: { orgId: 'org-1', projectId: 'proj-1' },
+    actor,
+    ingress: { type: actor.type === 'human' ? 'human' : 'rule', id: 'ing-1' },
+    cause: 'test',
+    causalChain: [],
+    configVersion: 'test',
+    board: 'work',
+    fromStage,
+    toStage,
+    source: 'manual',
+    initialEntry: false,
+    reenter: false,
+    itemRevision: 1,
+    isHumanTransition: actor.type === 'human',
+    plansAutoApproved: true,
+    planApproved: true,
+    item: {
+      id: 'wi-g',
+      source: 'manual',
+      sourceKey: 'beads:issue:w-g',
+      parentWorkItemId: null,
+      title: 'w-g: Approve: Ship it',
+      url: null,
+      stages: [fromStage],
+      acceptedAt: null,
+      metadata,
+      triageType: null,
+    },
+  });
+
+  for (const actor of [human, triageAgent, workAgent, system]) {
+    it(`rejects a ${actor.type} moving a gate card into any working phase`, async () => {
+      for (const toStage of ['triage', 'planning', 'execute', 'review']) {
+        expect(await policy(move(actor, 'intake', toStage))).toEqual({ type: 'reject', code: 'forbidden', reason: GATE_WORKING_REASON });
+      }
+    });
+  }
+
+  it('lets only a person approve it: Done from any agent or the system is approval_required', async () => {
+    for (const actor of [triageAgent, workAgent, system]) {
+      expect(await policy(move(actor, 'intake', 'done'))).toEqual({ type: 'reject', code: 'approval_required', reason: GATE_APPROVAL_REASON });
+    }
+    expect((await policy(move(human, 'intake', 'done')))?.type).toBe('allow');
+    expect((await policy(move(human, 'intake', 'canceled')))?.type).toBe('allow');
+  });
+
+  it('lets the sync worker move it to Done when the gate was resolved in bd', async () => {
+    const resolved = { ...gate, beadsClosedOutside: 'done' };
+    expect((await policy(move(system, 'intake', 'done', resolved)))?.type).toBe('allow');
   });
 });
