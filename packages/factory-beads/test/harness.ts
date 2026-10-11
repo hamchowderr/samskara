@@ -49,6 +49,8 @@ export interface FakeBead {
   createdAt?: string;
   description?: string;
   blockedBy?: string[];
+  /** Related edges on this bead's own row, as bd stores them (one side only). */
+  related?: string[];
   /** bd refuses to close a bead held by anyone but the closing actor. */
   assignee?: string;
   closeReason?: string | null;

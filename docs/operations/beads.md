@@ -305,7 +305,22 @@ card's chips from the refresh read, writing only on change
 | each bd label | the bead's `labels` |
 | `P0` to `P4` | the bead's priority; `P0` red, `P1` orange |
 | the type (`task`, `bug`, `epic`, ...) | the bead's `issue_type` |
-| `status: needs approval` (not drawn) | a bead labelled `human`, until a person accepts its card |
+| `blocked by <id>`, dot amber | each bead this one depends on with a `blocks` edge that is not closed (samskara-l2t.11) |
+| `related <id>` | each bead linked to this one as `related` or `relates-to`, from either side, that is not closed (samskara-l2t.11) |
+| `status: needs approval` (not drawn) | a bead labelled `human`, or a human gate, until a person accepts its card |
+
+**Dependencies** (samskara-l2t.11). Factory's work item has no dependency
+edge besides the parent link, so a bead's blockers and related beads are
+shown as chips (`dependencyChips`, `integration.ts`). Both come from the
+refresh read: a bead's `blocks` edges are on its own row, and a related link
+is on the row of the bead it was added from only (checked on bd 1.3.1:
+`bd dep add a b --type related` lists the edge on a's row, none on b's), so
+`BeadSnapshot.relatedFrom` finds the other side and both cards show it. A
+closed blocker or related bead drops off on the next tick. A bead the list
+does not hold (an external reference, a bead in another rig) counts as open.
+A ready bead has no open blocker, so the chip shows on a card whose bead was
+blocked after it was carded. An agent reads the full list with
+`beads_show`.
 
 `beadsPriority` and `beadsType` follow the bead too. Factory has no sort
 field for cards, so priority cannot order a column; it is a chip only until
@@ -2095,6 +2110,12 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   published web comment's own feed key, as Factory does. In
   `test/real-bd.test.ts`, a card comment reaching origin with its author
   and text, and not coming back after a restart.
+- Dependency chips (samskara-l2t.11, `test/chips.test.ts`): an open
+  blocker added after carding shown amber and dropped once it closes; a
+  related link shown on both cards though bd stores it on one; closed, self,
+  duplicate and parent edges left out, an external blocker kept. In
+  `test/real-bd.test.ts`, a real `bd dep add` blocker and related link on
+  the cards after the next sweep.
 - Gates checked on the host (samskara-l2t.10, `test/gate-check.test.ts`): a
   timer gate past its time closed by `bd gate check` (never `--escalate`),
   published, and its step carded in the same sweep; no check while a timer

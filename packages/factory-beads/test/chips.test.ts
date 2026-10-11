@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
 
 import { requestsBoard } from '../../../src/mastra/boards/requests-board';
-import { BEADS_META, CARD_LABEL_COLORS_META, CARD_LABELS_META, cardChips, NEEDS_APPROVAL_LABEL } from '../src/index';
+import { BeadSnapshot, BEADS_META, CARD_LABEL_COLORS_META, CARD_LABELS_META, cardChips, dependencyChips, NEEDS_APPROVAL_LABEL } from '../src/index';
 import { createHarness, sweep } from './harness';
 import type { Harness } from './harness';
 
@@ -86,5 +86,54 @@ describe('card chips (samskara-l2t.5)', () => {
     h.workItems.items.find(i => i.id === card(h!, 'w-1').id)!.acceptedAt = new Date() as never;
     await sweep(integration);
     expect(card(h, 'w-1').metadata?.[CARD_LABELS_META]).toEqual(['human', 'P2', 'task']);
+  });
+});
+
+describe('dependency chips (samskara-l2t.11)', () => {
+  it('shows each open blocker as an amber chip, and drops it once the blocker closes', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }, { id: 'w-2', title: 'Two' }, { id: 'w-3', title: 'Three', status: 'closed' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    // Blocked in bd after it was carded: the card stays, and shows why it is stuck.
+    h.setState(s => Object.assign(s.beads[0]!, { blockedBy: ['w-2', 'w-3'] }));
+    await sweep(integration);
+    expect(card(h, 'w-1').metadata?.[CARD_LABELS_META]).toEqual(['P2', 'task', 'blocked by w-2']);
+    expect(card(h, 'w-1').metadata?.[CARD_LABEL_COLORS_META]).toEqual({ 'blocked by w-2': '#d97706' });
+    h.bd('close', 'w-2', '--reason', 'done');
+    await sweep(integration);
+    expect(card(h, 'w-1').metadata?.[CARD_LABELS_META]).toEqual(['P2', 'task']);
+  });
+
+  it('shows a related bead on both cards, though bd stores the link on one side', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One', related: ['w-2'] }, { id: 'w-2', title: 'Two' }]);
+    await sweep(h.integration());
+    expect(card(h, 'w-1').metadata?.[CARD_LABELS_META]).toEqual(['P2', 'task', 'related w-2']);
+    expect(card(h, 'w-2').metadata?.[CARD_LABELS_META]).toEqual(['P2', 'task', 'related w-1']);
+  });
+
+  it('dependencyChips: open blockers, then related beads from either side; closed, self and duplicates left out', () => {
+    const snapshot = new BeadSnapshot([
+      {
+        id: 'a',
+        dependencies: [
+          { issue_id: 'a', depends_on_id: 'b', type: 'blocks' },
+          { issue_id: 'a', depends_on_id: 'b', type: 'blocks' },
+          { issue_id: 'a', depends_on_id: 'done', type: 'blocks' },
+          { issue_id: 'a', depends_on_id: 'external:other:x', type: 'blocks' },
+          { issue_id: 'a', depends_on_id: 'p', type: 'parent-child' },
+          { issue_id: 'a', depends_on_id: 'c', type: 'relates-to' },
+        ],
+      },
+      { id: 'b', status: 'open' },
+      { id: 'c', status: 'open' },
+      { id: 'd', status: 'open', dependencies: [{ issue_id: 'd', depends_on_id: 'a', type: 'related' }] },
+      { id: 'old', status: 'closed', dependencies: [{ issue_id: 'old', depends_on_id: 'a', type: 'related' }] },
+      { id: 'done', status: 'closed' },
+      { id: 'p', status: 'open' },
+    ]);
+    expect(dependencyChips(snapshot.get('a')!, snapshot)).toEqual(['blocked by b', 'blocked by external:other:x', 'related c', 'related d']);
+    expect(dependencyChips(snapshot.get('a')!, undefined)).toEqual([]);
+    // Without an id (a caller that passes none), cardChips adds none.
+    expect(cardChips({ priority: 2, issue_type: 'task' }, false, snapshot).labels).toEqual(['P2', 'task']);
   });
 });
