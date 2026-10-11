@@ -110,6 +110,7 @@ Fill in the URLs from the table above, then:
 | Issues | Read and write | issue intake, posting comments |
 | Pull requests | Read and write | open pull requests, read reviews |
 | Commit statuses | Read-only | report check state on a work item |
+| Actions | Read-only | beads `gh:run` gates: `bd gate check` reads the workflow run (docs/operations/beads.md) |
 | Metadata | Read-only | mandatory, granted automatically |
 
 **Account permissions:** none required.

@@ -17,6 +17,13 @@ describe('childEnv', () => {
     for (const [, value] of config) expect(value).not.toContain(TOKEN);
   });
 
+  it('gives gh the token only when asked, and never without credentials (samskara-l2t.10)', () => {
+    expect(childEnv({ actor: 'a', credentials: { token: TOKEN } }).GH_TOKEN).toBeUndefined();
+    const gh = childEnv({ actor: 'a', credentials: { token: TOKEN }, github: true });
+    expect(gh).toMatchObject({ GH_TOKEN: TOKEN, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' });
+    expect(childEnv({ actor: 'a', github: true }).GH_TOKEN).toBeUndefined();
+  });
+
   it('blanks DOLT_REMOTE_INFO_BRANCH and sets core.longpaths', () => {
     const env = childEnv({ actor: 'a' });
     expect(env.DOLT_REMOTE_INFO_BRANCH).toBe('');

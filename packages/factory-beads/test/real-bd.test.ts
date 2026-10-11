@@ -428,6 +428,31 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown.map(b => b.status)).toEqual(['open', 'deferred']);
   }, 300_000);
 
+  it('closes a timer gate after its time with bd gate check on the host, publishes it, and cards the step (samskara-l2t.10)', async () => {
+    const step = run('bd', ['create', 'Timed step', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    const gate = (JSON.parse(run('bd', ['gate', 'create', '--type=timer', '--timeout=1s', '--blocks', step, '--json'])) as { id: string }).id;
+    run('bd', ['dolt', 'push']);
+    // Past its time before the sweep reads it.
+    await new Promise(resolve => setTimeout(resolve, 1_500));
+
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id);
+    const result = await sweep(integration);
+    expect(result.repos[0], JSON.stringify(result)).toMatchObject({ state: 'ok' });
+    expect(card(step)?.stages).toEqual(['intake']);
+    expect(card(gate)).toBeUndefined();
+    run('bd', ['dolt', 'pull']);
+    const shown = JSON.parse(run('bd', ['--readonly', 'show', gate, '--json'])) as Array<{ status: string }>;
+    expect(shown[0]?.status).toBe('closed');
+  }, 300_000);
+
   it('cards a childless epic as a planning card; children filed through the beads tools make it an overview card (samskara-l2t.2.4)', async () => {
     const make = (title: string, type: string, parent?: string) =>
       run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])]).split(/\r?\n/)[0]!;

@@ -288,6 +288,39 @@ export function expiredSnoozes(snapshot: BeadSnapshot, now: number): string[] {
   return ids;
 }
 
+/**
+ * The open gates bd's own check can resolve now or may (samskara-l2t.10),
+ * from the refresh read, so a sweep with none runs no check:
+ *
+ * - a timer whose `created_at + timeout` has passed (bd gate check --help:
+ *   "current time > created_at + timeout"; `timeout` is in nanoseconds);
+ * - a bead gate whose bead is closed, or names one this copy does not hold
+ *   (the cross-rig `<rig>:<id>` form), which only bd can resolve;
+ * - a `gh:pr` or `gh:run` gate with an `await_id`, which only GitHub can
+ *   answer, so it is checked every sweep while it is open. A `gh:run` gate
+ *   with no `await_id` is left alone: `bd gate discover` matches runs by
+ *   the current branch and time, which says nothing on the host's copy.
+ *
+ * A human gate is a person's (approval cards, samskara-l2t.9).
+ */
+export function checkableGates(snapshot: BeadSnapshot, now: number): string[] {
+  const ids: string[] = [];
+  for (const gate of snapshot.values()) {
+    if (gate.issue_type !== GATE_TYPE || gate.status !== 'open') continue;
+    const awaited = gate.await_id;
+    if (gate.await_type === 'timer') {
+      const created = Date.parse(gate.created_at ?? '');
+      if (typeof gate.timeout === 'number' && Number.isFinite(created) && created + gate.timeout / 1e6 <= now) ids.push(gate.id);
+    } else if (gate.await_type === 'bead') {
+      const target = awaited ? snapshot.get(awaited) : undefined;
+      if (awaited && (!target || target.status === 'closed')) ids.push(gate.id);
+    } else if ((gate.await_type === 'gh:pr' || gate.await_type === 'gh:run') && awaited) {
+      ids.push(gate.id);
+    }
+  }
+  return ids;
+}
+
 /** `BEADS_META.cardKind` of an epic's, milestone's or molecule root's card. */
 export const OVERVIEW_CARD_KIND = 'overview';
 
@@ -327,8 +360,9 @@ export const EPIC_TYPE = 'epic';
  * read. Its card never runs: a person approves by moving it to Done, which
  * closes the gate as any card's bead is closed (`bd gate resolve` is
  * `bd close` under another name, bd gate resolve --help), and the step it
- * held becomes ready once nothing else blocks it. Timer and GitHub gates are
- * not carded (samskara-l2t.10).
+ * held becomes ready once nothing else blocks it. Timer, bead and GitHub
+ * gates are not carded: the sweep resolves them with `bd gate check`
+ * (checkableGates, samskara-l2t.10).
  */
 export const GATE_CARD_KIND = 'gate';
 
@@ -1280,26 +1314,63 @@ export class BeadsIntegration implements FactoryIntegration {
     //    close's handover and back, or the sync (which pulls) may have changed
     //    the copy.
     let snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
-    // Snoozes (samskara-l2t.14): a bead deferred until a date that has passed
-    // is woken with bd's own wake, published, and read again, before intake
-    // reads bd ready, so it is carded this sweep and never taken for held.
-    const expired = snapshot ? expiredSnoozes(snapshot, Date.now()) : [];
-    if (expired.length > 0) {
-      const woke = await repo.wake();
-      if (woke.code !== 0) {
-        // It may have committed before it failed (a timeout, say): published
-        // next sweep, as any write whose sync failed, and read again now.
-        this.#unpublished.add(slug);
-        this.#warnOnce(`wake:${slug}:${woke.code}`, `[factory-beads] ${slug}: snoozed beads past their date not woken (bd ready exit ${woke.code}), retried every sweep: ${resultTail(woke, 300)}`);
-        report.state = 'error';
-        report.diagnostic = `snoozes past their date not woken: bd ready exit ${woke.code}: ${resultTail(woke, 300)}`;
-        snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
-      } else {
-        this.#log.info(`[factory-beads] ${slug}: woke ${expired.length} snoozed bead(s) whose date passed: ${expired.join(', ')}`);
-        await this.#publish(repo, credentials, report, 'publishing woken snoozes');
-        if (report.state === 'parked') return;
-        snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
+    // Snoozes (samskara-l2t.14) and gates (samskara-l2t.10): a bead deferred
+    // until a date that has passed is woken with bd's own wake, and timer,
+    // bead and GitHub gates are resolved with bd's own gate check. Both are
+    // writes under the lease this sweep holds; what they changed is published
+    // once and read again before intake reads bd ready, so a bead they free
+    // is carded this sweep and never taken for held. A write that fails may
+    // have committed first (a timeout, say): published next sweep, as any
+    // write whose sync failed, and read again now.
+    const now = Date.now();
+    const expired = snapshot ? expiredSnoozes(snapshot, now) : [];
+    const dueGates = snapshot ? checkableGates(snapshot, now) : [];
+    if (expired.length > 0 || dueGates.length > 0) {
+      let wrote = false;
+      let failed = false;
+      if (expired.length > 0) {
+        const woke = await repo.wake();
+        if (woke.code !== 0) {
+          failed = true;
+          this.#warnOnce(`wake:${slug}:${woke.code}`, `[factory-beads] ${slug}: snoozed beads past their date not woken (bd ready exit ${woke.code}), retried every sweep: ${resultTail(woke, 300)}`);
+          report.state = 'error';
+          report.diagnostic = `snoozes past their date not woken: bd ready exit ${woke.code}: ${resultTail(woke, 300)}`;
+        } else {
+          wrote = true;
+          this.#log.info(`[factory-beads] ${slug}: woke ${expired.length} snoozed bead(s) whose date passed: ${expired.join(', ')}`);
+        }
       }
+      if (dueGates.length > 0) {
+        const { res, summary } = await repo.checkGates(credentials);
+        if (res.code !== 0 || !summary) {
+          failed = true;
+          this.#warnOnce(`gates:${slug}:${res.code}`, `[factory-beads] ${slug}: gates not checked (bd gate check exit ${res.code}), retried every sweep: ${resultTail(res, 300)}`);
+          report.state = 'error';
+          report.diagnostic = `gates not checked: bd gate check exit ${res.code}: ${resultTail(res, 300)}`;
+        } else {
+          if ((summary.resolved ?? 0) > 0) {
+            wrote = true;
+            this.#log.info(`[factory-beads] ${slug}: bd gate check closed ${summary.resolved} of ${summary.checked ?? dueGates.length} gate(s)`);
+          }
+          // A gate bd could not evaluate (gh missing, no access to the run or
+          // pull request) stays open and is tried again every sweep.
+          if ((summary.errors ?? 0) > 0) {
+            this.#warnOnce(`gate-errors:${slug}`, `[factory-beads] ${slug}: bd gate check could not evaluate ${summary.errors} gate(s), retried every sweep: ${resultTail(res, 600)}`);
+            report.diagnostic ??= `bd gate check could not evaluate ${summary.errors} gate(s)`;
+          }
+          // A failed run or a closed pull request: bd reports it and leaves
+          // the gate open. Only a person decides what follows.
+          if ((summary.escalated ?? 0) > 0) {
+            this.#warnOnce(`gate-escalated:${slug}:${summary.escalated}`, `[factory-beads] ${slug}: ${summary.escalated} gate(s) will not resolve (a failed run or a closed pull request); close or reopen the work in bd: ${resultTail(res, 600)}`);
+          }
+        }
+      }
+      if (failed) this.#unpublished.add(slug);
+      if (wrote) {
+        await this.#publish(repo, credentials, report, 'publishing woken snoozes and resolved gates');
+        if (report.state === 'parked') return;
+      }
+      if (wrote || failed) snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
     }
     const scope: IntakeScope = {
       orgId,

@@ -25,6 +25,7 @@ state.calls.push({
   cwd: process.cwd(),
   env: {
     token: process.env.BEADS_GIT_TOKEN ?? null,
+    ghToken: process.env.GH_TOKEN ?? null,
     remoteInfoBranch: process.env.DOLT_REMOTE_INFO_BRANCH ?? null,
     // bd's usage-metrics switches, as runner.ts sets them.
     metrics: [process.env.BD_DISABLE_METRICS ?? null, process.env.BD_DISABLE_EVENT_FLUSH ?? null],
@@ -322,9 +323,11 @@ switch (words[0]) {
             priority: b.priority ?? 2,
             issue_type: b.issue_type ?? 'task',
             await_type: b.await_type,
+            await_id: b.await_id,
+            timeout: b.timeout,
             defer_until: b.deferUntil,
             assignee: b.assignee,
-            created_at: '2026-01-01T00:00:00Z',
+            created_at: b.createdAt ?? '2026-01-01T00:00:00Z',
             updated_at: b.updatedAt ?? '2026-01-01T00:00:00Z',
             closed_at: closed ? (b.updatedAt ?? '2026-01-01T00:00:00Z') : undefined,
             close_reason: closed ? b.closeReason : undefined,
@@ -513,6 +516,47 @@ switch (words[0]) {
       mapping[`${formula.name}.${step}`] = bead.id;
     }
     out = JSON.stringify({ created, id_mapping: mapping, new_epic_id: epic.id, phase: 'liquid' });
+    break;
+  }
+  case 'gate': {
+    // Like bd 1.3.1 gate check (bd gate check --help): a timer resolves once
+    // created_at + timeout (ns) has passed, a bead gate once its bead is
+    // closed, a GitHub gate when `ghMerged` names its await_id; `ghErrors`
+    // names await_ids gh cannot read. A line per gate, then the JSON summary;
+    // errors on stderr; exit 0.
+    if (words[1] !== 'check') {
+      code = 1;
+      err = `fake bd: gate ${words[1]} not supported`;
+      break;
+    }
+    const lines = [];
+    const errors = [];
+    const summary = { checked: 0, dry_run: false, errors: 0, escalated: 0, resolved: 0, schema_version: 1 };
+    for (const g of state.beads.filter(b => b.issue_type === 'gate' && (b.status ?? 'open') === 'open' && b.await_type !== 'human')) {
+      summary.checked++;
+      let resolved = false;
+      if (g.await_type === 'timer') {
+        resolved = Date.parse(g.createdAt ?? '2026-01-01T00:00:00Z') + (g.timeout ?? 0) / 1e6 < Date.now();
+      } else if (g.await_type === 'bead') {
+        resolved = state.beads.find(b => b.id === g.await_id)?.status === 'closed';
+      } else if (g.await_type === 'gh:pr' || g.await_type === 'gh:run') {
+        if (!process.env.GH_TOKEN || (state.ghErrors ?? []).includes(g.await_id)) {
+          summary.errors++;
+          errors.push(`✗ ${g.id}: error checking - gh pr view failed`);
+          continue;
+        }
+        resolved = (state.ghMerged ?? []).includes(g.await_id);
+      }
+      if (resolved) {
+        g.status = 'closed';
+        summary.resolved++;
+        lines.push(`✓ ${g.id}: resolved`);
+      } else {
+        lines.push(`○ ${g.id}: pending`);
+      }
+    }
+    out = [...lines, '', `Checked ${summary.checked} gates`, JSON.stringify(summary, null, 2)].join('\n');
+    err = errors.join('\n');
     break;
   }
   case 'comments': {

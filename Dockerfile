@@ -70,6 +70,28 @@ RUN apt-get update \
  && tar -xzf /tmp/bd.tar.gz -C /usr/local/bin bd \
  && /usr/local/bin/bd --version
 
+# ── gh (GitHub CLI) ──────────────────────────────────────────────────────────
+# bd checks GitHub gates (a formula step waiting on a pull request merge or a
+# workflow run) by shelling out to `gh` (bd gate check --help); the beads sync
+# runs that check every sweep with the App token as GH_TOKEN (samskara-l2t.10).
+# Pinned release binary from the official cli/cli releases, verified against
+# the release's gh_<version>_checksums.txt; bumping GH_VERSION without the
+# matching checksums fails the build.
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS gh-cli
+ARG GH_VERSION=2.101.0
+ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+ARG GH_SHA256_ARM64=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
+ARG TARGETARCH
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && arch="${TARGETARCH:-amd64}" \
+ && case "$arch" in amd64) sum="$GH_SHA256_AMD64" ;; arm64) sum="$GH_SHA256_ARM64" ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac \
+ && curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" \
+ && echo "${sum}  /tmp/gh.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/gh.tar.gz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${arch}/bin/gh" \
+ && /usr/local/bin/gh --version
+
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
 
@@ -81,6 +103,7 @@ RUN apt-get update \
 
 COPY --from=infisical-cli /usr/bin/infisical /usr/local/bin/infisical
 COPY --from=bd-cli /usr/local/bin/bd /usr/local/bin/bd
+COPY --from=gh-cli /usr/local/bin/gh /usr/local/bin/gh
 # bd sends anonymous usage metrics unless told not to. The integration's runner
 # already turns them off for every bd call it makes; these cover a bd started by
 # hand in the container (docker exec). See docs/operations/beads.md.

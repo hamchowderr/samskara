@@ -7,7 +7,9 @@
  * `GIT_CONFIG_*` prints it when git asks. It is never in argv, a remote URL, a
  * config file, or a log line; surfaced output is passed through `redact()`.
  * The helper list is reset first, so the host's own credential manager can
- * never silently stand in for the App.
+ * never silently stand in for the App. A gate check (`github: true`) also
+ * gets the same token as `GH_TOKEN`: bd checks GitHub gates with the gh CLI
+ * (bd gate check --help), and gh reads its token from there.
  *
  * Environment. The child gets an allowlisted environment, not the server's: the
  * server process holds every application secret, and bd has no use for them.
@@ -90,6 +92,8 @@ export interface RunOptions {
   cwd: string;
   credentials?: RepoCredentials;
   timeoutMs?: number;
+  /** Give the credentials' token to the gh CLI too (`GH_TOKEN`), for `bd gate check` (samskara-l2t.10). */
+  github?: boolean;
 }
 
 /** Remove a token, and the encodings git could echo it in, from text. */
@@ -103,7 +107,7 @@ export function redact(text: string, token: string | undefined): string {
 }
 
 /** The child environment for one command. Exported for tests. */
-export function childEnv(options: { actor: string; extra?: NodeJS.ProcessEnv; credentials?: RepoCredentials }): NodeJS.ProcessEnv {
+export function childEnv(options: { actor: string; extra?: NodeJS.ProcessEnv; credentials?: RepoCredentials; github?: boolean }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of ENV_ALLOWLIST) {
     const value = process.env[key];
@@ -153,6 +157,13 @@ export function childEnv(options: { actor: string; extra?: NodeJS.ProcessEnv; cr
   if (options.credentials) {
     env[TOKEN_ENV] = options.credentials.token;
     if (options.credentials.username) env[TOKEN_USER_ENV] = options.credentials.username;
+    if (options.github) {
+      // gh's own variables (gh help environment): the token, no prompts, no
+      // update check.
+      env.GH_TOKEN = options.credentials.token;
+      env.GH_PROMPT_DISABLED = '1';
+      env.GH_NO_UPDATE_NOTIFIER = '1';
+    }
   }
   return env;
 }
@@ -188,7 +199,7 @@ export class BdRunner {
       // A programming error, caught before anything can log the argv.
       throw new Error('factory-beads: refusing to pass a credential in argv');
     }
-    const env = childEnv({ actor: this.actor, extra: this.#extraEnv, credentials: options.credentials });
+    const env = childEnv({ actor: this.actor, extra: this.#extraEnv, credentials: options.credentials, github: options.github });
     const started = Date.now();
     return new Promise(resolve => {
       execFile(

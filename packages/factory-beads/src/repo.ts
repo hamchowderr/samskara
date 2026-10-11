@@ -45,6 +45,14 @@ export interface BeadDetails {
   await_type?: string;
 }
 
+/** The summary `bd gate check --json` prints after its per-gate lines (bd 1.3.1). */
+export interface GateCheckSummary {
+  checked?: number;
+  resolved?: number;
+  escalated?: number;
+  errors?: number;
+}
+
 /** One comment as `bd comments <id> --json` prints it (bd 1.3.1). */
 export interface BeadComment {
   id: string;
@@ -89,6 +97,11 @@ export interface BeadRow {
   await_type?: string;
   /** A deferred bead's wake time (`bd defer --until`); absent for one deferred with no date. */
   defer_until?: string;
+  /** A gate's condition: a PR number, a run id, or a bead id (bd gate create --await-id). */
+  await_id?: string;
+  /** A timer gate's timeout, in nanoseconds (checked on bd 1.3.1: `--timeout=1m` is 60000000000). */
+  timeout?: number;
+  created_at?: string;
   /** Every dependency edge of the bead, parent-child included. */
   dependencies?: Array<{ issue_id?: string; depends_on_id?: string; type?: string }>;
 }
@@ -435,6 +448,30 @@ export class BdRepo {
     return this.runner.bd(['--sandbox', '--actor', actor, 'ready', '--brief', '--json', `--exclude-type=${NEVER_READY_TYPES.join(',')}`, '-n', '0'], {
       cwd: this.dir,
     });
+  }
+
+  /**
+   * Evaluate the open gates and close the resolved ones, with bd's own check
+   * (samskara-l2t.10): a timer once `created_at + timeout` has passed, a bead
+   * gate once its bead is closed, a `gh:pr` gate once the PR is merged and a
+   * `gh:run` gate once the run completed with success (bd gate check --help,
+   * v1.3.1). GitHub gates are checked through the gh CLI, which gets the App
+   * token as `GH_TOKEN` and finds the repository from the copy's origin.
+   * Never `--escalate`: it shells out to Gas Town's `gt`. `-l 0` lifts the
+   * default limit of 100 (checked on bd 1.3.1). bd prints a line per gate and
+   * then the JSON summary; the summary is returned, or undefined when the
+   * output has none.
+   */
+  async checkGates(credentials: RepoCredentials | undefined): Promise<{ res: BdResult; summary?: GateCheckSummary }> {
+    const actor = this.runner.actor;
+    const res = await this.runner.bd(['--sandbox', '--actor', actor, 'gate', 'check', '-l', '0', '--json'], { cwd: this.dir, credentials, github: true });
+    const start = res.stdout.search(/^\{/m);
+    if (start < 0) return { res };
+    try {
+      return { res, summary: JSON.parse(res.stdout.slice(start)) as GateCheckSummary };
+    } catch {
+      return { res };
+    }
   }
 
   sync(credentials: RepoCredentials | undefined): Promise<BdResult> {
