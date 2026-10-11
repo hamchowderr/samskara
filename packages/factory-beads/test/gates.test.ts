@@ -77,6 +77,19 @@ describe('human gates as approval cards (samskara-l2t.9)', () => {
     for (const id of ['w-gate', 'w-pr', 'w-done', 'w-ship']) expect(card(h, id), id).toBeUndefined();
   });
 
+  it('waits to card a gate while a blocker of its own is open, as bd ready waits for any bead', async () => {
+    h = createHarness([
+      { id: 'w-first', title: 'First' },
+      { id: 'w-held', title: 'Gate: human', issue_type: 'gate', await_type: 'human', blockedBy: ['w-first'] },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    expect(card(h, 'w-held')).toBeUndefined();
+    h.bd('close', 'w-first', '--reason', 'done');
+    await sweep(integration);
+    expect(card(h, 'w-held')?.metadata?.[BEADS_META.cardKind]).toBe(GATE_CARD_KIND);
+  });
+
   it('follows the step it holds: a renamed step renames the card, and a gate titled by hand keeps its title', async () => {
     h = createHarness([...molecule(), { id: 'w-own', title: 'Owner signs off', issue_type: 'gate', await_type: 'human' }]);
     const integration = h.integration();

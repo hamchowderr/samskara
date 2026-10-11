@@ -1277,8 +1277,18 @@ export class BeadsIntegration implements FactoryIntegration {
       snapshot: await this.#readSnapshot(repo, report, 'the overview steps skipped'),
     };
     // Human gates (samskara-l2t.9): bd ready never lists a gate, so an open
-    // one is taken from the refresh read and carded for approval.
-    const gates = scope.snapshot ? [...scope.snapshot.values()].filter(bead => isHumanGate(bead) && bead.status === 'open') : [];
+    // one is taken from the refresh read and carded for approval. Like bd
+    // ready, not while one of its own blockers is open (a gate made with
+    // `bd dep add <gate> <bead>`; a formula's gate has no such edge).
+    const snapshot = scope.snapshot;
+    const gates = snapshot
+      ? [...snapshot.values()].filter(
+          bead =>
+            isHumanGate(bead) &&
+            bead.status === 'open' &&
+            !(bead.dependencies ?? []).some(dep => dep?.type === 'blocks' && dep.depends_on_id && snapshot.get(dep.depends_on_id)?.status !== 'closed'),
+        )
+      : [];
     const ready = parentsFirst([...(await repo.ready()), ...gates.map(gate => ({ ...gate, title: gate.title ?? '' }))]);
     // The beads intake handles this sweep: step 2b leaves their kind and parent to it.
     const readyIds = new Set(ready.map(bead => bead.id));
@@ -2181,7 +2191,11 @@ export class BeadsIntegration implements FactoryIntegration {
           });
           if (updated) {
             if (card.title !== title && recorded !== undefined) {
-              this.#log.info(`[factory-beads] ${slug}: ${beadId} was retitled in bd; its card follows`);
+              this.#log.info(
+                named === bead.title
+                  ? `[factory-beads] ${slug}: ${beadId} was retitled in bd; its card follows`
+                  : `[factory-beads] ${slug}: a step gate ${beadId} holds was retitled in bd; its approval card follows`,
+              );
             }
             card = updated.item;
           }

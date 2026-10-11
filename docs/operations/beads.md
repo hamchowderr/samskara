@@ -84,8 +84,8 @@ App:
      `--force`. This is the owner's decision (2026-10-09): a card reaching
      Done closes its bead even while someone holds a claim.
    - **Every other refusal does.** The integration never passes `--force`, so
-     bd still refuses to close a pinned bead, an open gate, a bead with open
-     children or open blockers. When it does, the bead is swapped back to its
+     bd still refuses to close a pinned bead, a bead held by an open gate, a
+     bead with open children or open blockers. When it does, the bead is swapped back to its
      holder, and the card's diagnostic says so. A claim comes back without
      its lease: a live holder restores it on its next `bd heartbeat`, but an
      abandoned claim then has no stale lease for `bd reclaim` to find.
@@ -1019,7 +1019,9 @@ ready and is carded as usual, as soon as nothing else blocks it.
 of type `gate` with `await_type: "human"` from the
 [refresh read](#refresh-read) and cards it with the ready beads, plus
 `beadsCardKind: 'gate'` (`integration.ts`, `isHumanGate`,
-`readyCardKind` and the intake loop). It is linked under its molecule's
+`readyCardKind` and the intake loop). As `bd ready` does for any bead, a gate
+with an open blocker of its own (added by hand with `bd dep add <gate> <bead>`;
+a formula's gate has none) waits until the blocker closes. It is linked under its molecule's
 overview card and counts as one of its open children, so the molecule's card
 does not reach Done while the gate is open. Timer, `gh:run`, `gh:pr` and
 `bead` gates are not carded: nothing resolves them yet (samskara-l2t.10).
