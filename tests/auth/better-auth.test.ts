@@ -121,6 +121,21 @@ describe('which org a new session acts under (samskara-9t9)', () => {
     expect(await activeOrgOf(auth, removed)).toBe('team-org');
   });
 
+  it('does not remember an org from a session update that is not a choice (a refresh, another device)', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const auth = await freshAuth();
+    const { userId } = await signUp(auth, 'two-devices@example.test');
+    await addMembership(userId, 'personal-org', '2026-09-01T00:00:00.000Z', 'owner');
+    await addMembership(userId, 'team-org', '2026-09-02T00:00:00.000Z');
+    const headers = await signIn(auth, 'two-devices@example.test');
+    const session = await auth.api.getSession({ headers });
+    // Outside any endpoint, as Better Auth's own refresh updates a session.
+    const ctx = await auth.$context;
+    await ctx.internalAdapter.updateSession(session!.session.token, { activeOrganizationId: 'personal-org' } as never);
+    const { rows } = await db.client.execute({ sql: 'SELECT "lastActiveOrganizationId" FROM "user" WHERE "id" = ?', args: [userId] });
+    expect(rows[0]?.lastActiveOrganizationId ?? null).toBeNull();
+  });
+
   it('never takes the remembered org from a request', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const auth = await freshAuth();

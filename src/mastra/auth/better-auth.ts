@@ -85,6 +85,13 @@ export interface BuildBetterAuthOptions {
  * libSQL-only by design (see the Architecture note in CLAUDE.md), so anything
  * else means the entry file changed and this needs revisiting.
  */
+/**
+ * The endpoints whose change of a session's active org is the user's choice,
+ * and so remembered for their next sign-in (better-auth 1.7.5 organization
+ * routes: crud-org.mjs set-active and create, crud-invites.mjs accept).
+ */
+const REMEMBERED_ORG_PATHS = new Set(['/organization/set-active', '/organization/accept-invitation', '/organization/create']);
+
 export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<Auth> {
   const { secret, database, publicUrl, allowedOrigins = [], signUpEnabled = true, sessionCache } = options;
   // Runs after the write commits (with-hooks.mjs queues `*.after` hooks), so a
@@ -190,26 +197,37 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
     // the personal org the Factory created on their first visit, not the team
     // they were invited into, so they would sign in to an empty org.
     //
-    // A new session opens in the org the user last acted in: every change of
-    // a session's active org (the team page's switcher, samskara-cai, or
-    // accepting an invitation) is recorded on the user as
-    // lastActiveOrganizationId, and read back here while the user is still a
-    // member of it. Failing that (no record yet, or they left that org), the
-    // most recently joined org.
+    // A new session opens in the org the user last chose: a deliberate change
+    // of a session's active org (REMEMBERED_ORG_PATHS: the team page's
+    // switcher, samskara-cai, accepting an invitation, creating an org) is
+    // recorded on the user as lastActiveOrganizationId, and read back here
+    // while the user is still a member of it. Failing that (no record yet, or
+    // they left that org), the most recently joined org. Other session
+    // updates (the daily refresh, session.mjs:199) carry the row too and are
+    // not recorded, so one device's refresh never overwrites another's choice.
     databaseHooks: {
       user: { update: clearSessionCache, delete: clearSessionCache },
       session: {
         update: {
-          after: async (session: { userId?: string; activeOrganizationId?: string | null } | null) => {
+          after: async (session: { userId?: string; activeOrganizationId?: string | null } | null, context?: { path?: string } | null) => {
             await clearSessionCache.after();
-            // The updated row (with-hooks.mjs passes the adapter's result).
-            // An unset org (set-active with null, or a refused one) is not a
-            // choice to remember.
-            if (!session?.userId || !session.activeOrganizationId) return;
-            await client.execute({
-              sql: 'UPDATE "user" SET "lastActiveOrganizationId" = ? WHERE "id" = ? AND ("lastActiveOrganizationId" IS NULL OR "lastActiveOrganizationId" != ?)',
-              args: [session.activeOrganizationId, session.userId, session.activeOrganizationId],
-            });
+            // The updated row (with-hooks.mjs passes the adapter's result) and
+            // the endpoint that made the change. An unset org (set-active with
+            // null, a left or deleted org) is not a choice to remember.
+            if (!session?.userId || !session.activeOrganizationId || !REMEMBERED_ORG_PATHS.has(context?.path ?? '')) return;
+            // Best effort: this runs after the endpoint's write has committed,
+            // and Better Auth rethrows an after-hook's error into the request
+            // (@better-auth/core context/transaction.mjs:78-103), which would
+            // fail an invitation that was in fact accepted. A lost record only
+            // means the next sign-in opens in the newest org.
+            try {
+              await client.execute({
+                sql: 'UPDATE "user" SET "lastActiveOrganizationId" = ? WHERE "id" = ? AND ("lastActiveOrganizationId" IS NULL OR "lastActiveOrganizationId" != ?)',
+                args: [session.activeOrganizationId, session.userId, session.activeOrganizationId],
+              });
+            } catch (error) {
+              console.error(`[auth] last active org not recorded: ${error instanceof Error ? error.message : String(error)}`);
+            }
           },
         },
         delete: clearSessionCache,

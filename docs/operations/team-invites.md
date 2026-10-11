@@ -46,10 +46,13 @@ join.
 each new session to the org the user **was last in**, and the first time (or
 after they leave that org) to the **most recently joined** one:
 
-- Every change of a session's active org, from the switcher below or from
-  accepting an invitation, is recorded on the user as
-  `lastActiveOrganizationId` (`databaseHooks.session.update.after`). A user
-  who signs out in one org signs back in to it. The field is a Better Auth
+- A deliberate change of a session's active org, from the switcher below,
+  accepting an invitation or creating an org, is recorded on the user as
+  `lastActiveOrganizationId` (`databaseHooks.session.update.after`, keyed on
+  the endpoint). A user who signs out in one org signs back in to it. Other
+  session updates, such as the daily refresh, are not recorded, so a second
+  device's session never overwrites the choice. Recording is best effort: a
+  failure is logged and never fails the request. The field is a Better Auth
   `user.additionalFields` entry with `input: false` and `returned: false`, so no
   request can set it and no response carries it; it is nullable, so the boot
   migration adds the column with no backfill.
