@@ -225,7 +225,7 @@ for (const file of bundles) {
   const ours =
     `${name}=e=>${jsx}.jsxs("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 21 21",fill:"none",...e,children:[` +
     `${jsx}.jsx("rect",{x:"0.75",y:"0.75",width:"19.5",height:"19.5",rx:"5",stroke:"currentColor",strokeWidth:"1.5"}),` +
-    `${jsx}.jsx("text",{x:"10.5",y:"15",textAnchor:"middle",fontFamily:"system-ui,sans-serif",fontSize:"13",fontWeight:"600",fill:"currentColor",children:"${BRAND.short.slice(0, 1)}"})]}),` +
+    `${jsx}.jsx("text",{x:"10.5",y:"15",textAnchor:"middle",fontFamily:"system-ui,sans-serif",fontSize:"13",fontWeight:"600",fill:"currentColor",children:"${BRAND.short.slice(0, 1).toUpperCase()}"})]}),` +
     `${name}__mastra=e=>`;
   const patched = js.slice(0, found[0].index) + ours + js.slice(found[0].index + match.indexOf('=e=>') + 4);
   writeFileSync(p, patched.split(markLabel).join(`"aria-label":"${BRAND.name}",role:"img"`));
@@ -235,6 +235,98 @@ for (const file of bundles) {
 if (marks !== 1) {
   console.error(`[brand-ui] Mastra mark: found the mark component in ${marks} bundles, expected 1.`);
   process.exit(1);
+}
+
+// --- the JS bundle: Mastra's logo and loader components (samskara-jja) -------
+// Two more components draw Mastra's mark: the brand loader (the "Checking
+// sign-in" and "Loading factories" screens, shown before sign-in too) and the
+// "Mastra Code" logo (the supervisor and empty-thread pages). Each is a
+// function declaration; a new declaration of the same name is inserted before
+// it, drawing the brand monogram with the original's classes and size map, and
+// the original is renamed so nothing calls it. The loader pulses with an SVG
+// <animate>, so it needs no stylesheet. Anchored on each function's signature,
+// asserted to match exactly once.
+const monogram = (jsx, extra = '') =>
+  `${jsx}.jsxs("svg",{xmlns:"http://www.w3.org/2000/svg",viewBox:"0 0 21 21",fill:"none",width:"100%",height:"100%","aria-hidden":"true",children:[` +
+  `${jsx}.jsx("rect",{x:"0.75",y:"0.75",width:"19.5",height:"19.5",rx:"5",stroke:"currentColor",strokeWidth:"1.5"}),` +
+  `${jsx}.jsx("text",{x:"10.5",y:"15",textAnchor:"middle",fontFamily:"system-ui,sans-serif",fontSize:"13",fontWeight:"600",fill:"currentColor",children:"${BRAND.short.slice(0, 1).toUpperCase()}"})${extra}]})`;
+const components = [
+  {
+    what: 'brand loader',
+    signature: /function ([\w$]+)\(\{className:[\w$]+,size:[\w$]+="md","aria-label":[\w$]+="Loading"\}\)\{const [\w$]+=`brand-loader-/g,
+    classes: /className:([\w$]+)\("brand-loader inline-block text-foreground",([\w$]+)\[/,
+    body: (name, jsx, cx, sizes) =>
+      `function ${name}({className:e,size:t="md","aria-label":n="Loading"}){return ${jsx}.jsx("div",{role:"status","aria-label":n,` +
+      `className:${cx}("inline-block text-foreground",${sizes}[t],e),children:` +
+      monogram(jsx, `,${jsx}.jsx("animate",{attributeName:"opacity",values:"1;0.35;1",dur:"1.4s",repeatCount:"indefinite"})`) +
+      `})}`,
+  },
+  {
+    what: 'logo',
+    signature: /function ([\w$]+)\(\{className:[\w$]+,size:[\w$]+="md",animateOnHover:[\w$]+=!1,"aria-label":[\w$]+="Mastra"\}\)\{/g,
+    classes: /className:([\w$]+)\("logo inline-block text-foreground",([\w$]+)\[/,
+    body: (name, jsx, cx, sizes) =>
+      `function ${name}({className:e,size:t="md","aria-label":r="${BRAND.name}"}){return ${jsx}.jsx("div",{role:"img","aria-label":r,` +
+      `className:${cx}("inline-block text-foreground",${sizes}[t],e),children:${monogram(jsx)}})}`,
+  },
+];
+for (const component of components) {
+  let done = 0;
+  for (const file of bundles) {
+    const p = join(assetsDir, file);
+    const js = readFileSync(p, 'utf8');
+    const found = [...js.matchAll(component.signature)];
+    if (!found.length) continue;
+    const classes = found.length === 1 ? component.classes.exec(js.slice(found[0].index, found[0].index + 1500)) : null;
+    const jsx = /return ([\w$]+)\.jsx\("div"/.exec(js.slice(found[0].index, found[0].index + 1500))?.[1];
+    if (found.length !== 1 || !classes || !jsx) {
+      console.error(
+        `[brand-ui] Mastra ${component.what}: expected 1 component with its classes in assets/${file}, found ${found.length}.\n` +
+          '           The SPA bundle changed shape. Re-derive the anchor before trusting this script:\n' +
+          `             grep -o '.\\{20\\}${component.what === 'logo' ? '"aria-label":r="Mastra"' : 'brand-loader-'}.\\{200\\}' .branded-ui/assets/*.js\n` +
+          '           See docs/operations/white-label-ui.md.',
+      );
+      process.exit(1);
+    }
+    const name = found[0][1];
+    const head = `function ${name}(`;
+    const at = found[0].index;
+    writeFileSync(p, js.slice(0, at) + component.body(name, jsx, classes[1], classes[2]) + `function ${name}__mastra(` + js.slice(at + head.length));
+    done += 1;
+    changes.push(`assets/${file} Mastra's ${component.what} (${name}) -> "${BRAND.short.slice(0, 1).toUpperCase()}" monogram`);
+  }
+  if (done !== 1) {
+    console.error(`[brand-ui] Mastra ${component.what}: found it in ${done} bundles, expected 1.`);
+    process.exit(1);
+  }
+}
+
+// --- the session favicons (samskara-jja) --------------------------------------
+// During a session the SPA swaps the tab icon for favicon-session-<state>.svg:
+// Mastra's mark with a coloured status dot. The mark's path is replaced with
+// the monogram, drawn with the file's own light/dark colours; the dot and its
+// colours stay. Each file must hold exactly one "logo" path, or the build fails.
+for (const file of readdirSync(DEST).filter(f => /^favicon-session-.+\.svg$/.test(f))) {
+  const p = join(DEST, file);
+  const svg = readFileSync(p, 'utf8');
+  const paths = svg.match(/<path class="logo" d="[^"]*"\s*\/>/g) ?? [];
+  if (paths.length !== 1 || !svg.includes('.logo { fill: white; }') || !svg.includes('.logo { fill: black; }')) {
+    console.error(`[brand-ui] ${file}: expected one Mastra "logo" path and its light/dark fills. The favicon changed shape; see docs/operations/white-label-ui.md.`);
+    process.exit(1);
+  }
+  const letter = BRAND.short.slice(0, 1).toUpperCase();
+  writeFileSync(
+    p,
+    svg
+      .replace('.logo { fill: white; }', '.logo { fill: white; } .frame { fill: none; stroke: white; }')
+      .replace('.logo { fill: black; }', '.logo { fill: black; } .frame { fill: none; stroke: black; }')
+      .replace(
+        paths[0],
+        `<rect class="frame" x="8.5" y="0.75" width="19.5" height="19.5" rx="5" stroke-width="1.5"/>` +
+          `<text class="logo" x="18.25" y="15" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600">${letter}</text>`,
+      ),
+  );
+  changes.push(`${file} Mastra's mark -> "${letter}" monogram (status dot kept)`);
 }
 
 // --- icons: real brand files when present, neutral placeholder otherwise ---
