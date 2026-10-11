@@ -57,11 +57,20 @@ let err = '';
 const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2));
 
 const isOpen = bead => bead.status !== 'closed';
-const blocked = bead =>
-  (bead.blockedBy ?? []).some(id => {
+// Like bd 1.3.1 (checked): a bead is blocked by an open blocker of its own,
+// and by one of any parent above it (an epic that depends on an unfinished
+// task keeps its open child out of ready too).
+const blocked = (bead, seen = new Set()) => {
+  if (seen.has(bead.id)) return false;
+  seen.add(bead.id);
+  const own = (bead.blockedBy ?? []).some(id => {
     const blocker = state.beads.find(b => b.id === id);
     return blocker && isOpen(blocker);
   });
+  if (own) return true;
+  const parent = bead.parent ? state.beads.find(b => b.id === bead.parent) : undefined;
+  return parent ? blocked(parent, seen) : false;
+};
 
 if (words.length === 0 && flags.includes('--version')) words.push('version');
 if (words[0] === 'dolt' && words[1] === 'push') words[0] = 'dolt-push';
@@ -143,12 +152,13 @@ switch (words[0]) {
     const inThisRepo = b => !b.repo || process.cwd().endsWith(b.repo.replace(/[^A-Za-z0-9._-]/g, '__'));
     const ready = state.beads.filter(
       // Like bd 1.3.1: only open beads are ready, so never a pinned
-      // (sqlbuild/ready.go:117) or in_progress one, nor a molecule root or a gate (:16-38).
+      // (sqlbuild/ready.go:117) or in_progress one, nor a molecule root, a gate
+      // or a message (wisp) (:16-38). Event and decision beads it lists
+      // (checked on bd 1.3.1); --exclude-type drops the rest.
       b =>
         inThisRepo(b) &&
         (b.status ?? 'open') === 'open' &&
-        b.issue_type !== 'molecule' &&
-        b.issue_type !== 'gate' &&
+        !['molecule', 'gate', 'message'].includes(b.issue_type) &&
         !blocked(b) &&
         !excluded.includes(b.issue_type),
     );
@@ -440,6 +450,11 @@ switch (words[0]) {
       break;
     }
     state.deps = [...(state.deps ?? []), { issue: words[2], dependsOn: words[3], type: flagValue('type') ?? 'blocks' }];
+    // A blocks edge (the default) keeps the issue out of ready, as in bd.
+    if ((flagValue('type') ?? 'blocks') === 'blocks') {
+      const issue = state.beads.find(b => b.id === words[2]);
+      if (issue) issue.blockedBy = [...new Set([...(issue.blockedBy ?? []), words[3]])];
+    }
     out = JSON.stringify({ issue_id: words[2], depends_on_id: words[3], status: 'added', type: flagValue('type') ?? 'blocks' });
     break;
   case 'cook': {
@@ -497,7 +512,8 @@ switch (words[0]) {
       out = JSON.stringify({ dry_run: true, steps: formula.steps.map(fill) });
       break;
     }
-    const epic = { id: nextId(), title: fill(formula.name), status: 'open', issue_type: 'epic' };
+    // Like bd 1.3.1: the root is a molecule (checked with bd show on a poured root).
+    const epic = { id: nextId(), title: fill(formula.name), status: 'open', issue_type: 'molecule' };
     state.beads.push(epic);
     const mapping = { [formula.name]: epic.id };
     let created = formula.steps.length + 1;

@@ -209,11 +209,14 @@ export const OVERVIEW_TYPES = [...CONTAINER_TYPES, 'molecule'] as const;
 
 /**
  * Issue types `ready` leaves out: a milestone is only ever a parent (an
- * overview card above its children, or no card). An epic is read: one with
- * children becomes an overview card, a childless open one a planning card
- * (samskara-l2t.2.4). A molecule root bd ready never lists.
+ * overview card above its children, or no card), and an `event` is bd's own
+ * audit-trail record (`bd types`: "Audit-trail event (bd set-state)"), never
+ * work (owner decision 2026-10-11, samskara-l2t.17). bd 1.3.1 lists both as
+ * ready otherwise (checked). An epic is read: one with children becomes an
+ * overview card, a childless open one a planning card (samskara-l2t.2.4). A
+ * molecule root, a gate and a message (wisp) bd ready never lists.
  */
-export const NEVER_READY_TYPES = ['milestone'] as const;
+export const NEVER_READY_TYPES = ['milestone', 'event'] as const;
 
 const MARKER = 'factory-beads-bootstrapped';
 const PARKED = 'factory-beads-parked';
@@ -288,7 +291,7 @@ export class BdRepo {
   }
 
   /**
-   * Ready beads, milestones left out. Epics and milestones are containers ("contains no work itself",
+   * Ready beads, milestones and events left out (NEVER_READY_TYPES). Epics and milestones are containers ("contains no work itself",
    * `bd types`), and bd ready returns both (bd v1.3.1 internal/storage/sqlbuild/ready.go:16-38 excludes
    * neither; an epic with open children is listed too, checked on bd 1.3.1). Epics are read so that a
    * childless one can be carded for planning; the caller tells the two kinds of epic apart. Pinned beads,
@@ -305,7 +308,7 @@ export class BdRepo {
     if (res.code !== 0) throw new Error(`bd ready failed (exit ${res.code}): ${tail(res)}`);
     const parsed = JSON.parse(res.stdout.trim() || '[]') as unknown;
     if (!Array.isArray(parsed)) return [];
-    // Belt and braces: never read a milestone even if a bd version ignores the flag.
+    // Belt and braces: never read a milestone or an event even if a bd version ignores the flag.
     return (parsed as ReadyBead[]).filter(
       bead => typeof bead?.id === 'string' && !(NEVER_READY_TYPES as readonly string[]).includes(bead.issue_type ?? ''),
     );

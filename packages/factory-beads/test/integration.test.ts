@@ -50,11 +50,26 @@ const commands = (harness: Harness) =>
   });
 
 describe('intake', () => {
-  it('cards ready beads only, never milestones or pinned beads, with the claim key and external source', async () => {
+  it('never cards a bead under a blocked parent, as bd ready leaves it out (samskara-l2t.17)', async () => {
+    h = createHarness([
+      { id: 'w-t', title: 'Unfinished task', status: 'in_progress' },
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', blockedBy: ['w-t'] },
+      { id: 'w-e.1', title: 'Child', parent: 'w-e' },
+    ]);
+    await sweep(h.integration());
+    expect(cardFor(h, 'w-e.1')).toBeUndefined();
+    h.bd('close', 'w-t', '--reason', 'done');
+    await sweep(h.integration());
+    expect(cardFor(h, 'w-e.1')).toBeDefined();
+  });
+
+  it('cards ready beads only, never milestones, events or pinned beads, with the claim key and external source', async () => {
     h = createHarness([
       { id: 'w-1', title: 'Epic', issue_type: 'epic' },
       { id: 'w-4', title: 'Milestone', issue_type: 'milestone' },
       { id: 'w-5', title: 'Pinned', issue_type: 'task', status: 'pinned' },
+      // bd's own audit-trail record, never work (owner decision, samskara-l2t.17).
+      { id: 'w-6', title: 'State changed', issue_type: 'event' },
       { id: 'w-2', title: 'First', issue_type: 'task', priority: 1 },
       { id: 'w-3', title: 'Second', issue_type: 'task', blockedBy: ['w-2'] },
     ]);
@@ -116,7 +131,7 @@ describe('intake', () => {
     expect(pull.env.token).toBe(TOKEN);
     // --brief: no free-form text is needed (samskara-l2t.8). Epics are read
     // (samskara-l2t.2.4); milestones never are.
-    expect(ready.argv).toEqual(['--readonly', 'ready', '--brief', '--json', '--exclude-type=milestone', '-n', '0']);
+    expect(ready.argv).toEqual(['--readonly', 'ready', '--brief', '--json', '--exclude-type=milestone,event', '-n', '0']);
     // Reads get no credential at all.
     expect(ready.env.token).toBeNull();
   });
@@ -547,7 +562,7 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     }
     // Milestones are never read as ready; an epic is, and is sorted by its children.
     const ready = h.state().calls.find(c => c.argv.includes('ready'))!;
-    expect(ready.argv).toContain('--exclude-type=milestone');
+    expect(ready.argv).toContain('--exclude-type=milestone,event');
     // One refresh read answers the epic and its children (samskara-l2t.15).
     const lists = h.state().calls.filter(c => c.argv.includes('list'));
     expect(lists.map(c => c.argv)).toEqual([['--readonly', 'list', '--all', '--brief', '--include-gates', '--json', '-n', '0']]);
@@ -684,9 +699,9 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
 
   it('makes no overview card for a container whose child is carded in another project, and says so once', async () => {
     h = createHarness([
-      // Blocked, so it is not ready itself and is reached only through its child.
-      { id: 'w-e', title: 'Epic', issue_type: 'epic', blockedBy: ['w-x'] },
-      { id: 'w-x', title: 'Blocker', issue_type: 'task', status: 'in_progress' },
+      // In progress, so it is not ready itself and is reached only through its
+      // child. Not blocked: bd ready leaves out the child of a blocked parent too.
+      { id: 'w-e', title: 'Epic', issue_type: 'epic', status: 'in_progress' },
       { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e' },
     ]);
     await h.workItems.upsert({
