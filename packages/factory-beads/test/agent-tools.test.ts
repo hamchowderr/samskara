@@ -483,6 +483,17 @@ describe('workflows', () => {
     expect(unresolvedGate({ steps: [{ gate: { type: 'gh:run', id: 'ci.yml' } }] })).toBe('gh:run gate with no await_id');
     expect(unresolvedGate({ steps: [{ gate: { type: 'timer' } }] })).toBe('timer gate with no timeout');
     expect(unresolvedGate({ steps: [{ gate: { type: 'mail' } }] })).toBe('mail gate');
+    // A GitHub gate on another host: gh has no token for it (samskara-l2t.20).
+    const gh = (repo: unknown) => unresolvedGate({ steps: [{ gate: { type: 'gh:pr', await_id: '4', repo } }] });
+    expect(gh('ghe.example.com/acme/app')).toBe('gh:pr gate on another host (ghe.example.com)');
+    expect(gh('acme.ghe.com/acme/app')).toBe('gh:pr gate on another host (acme.ghe.com)');
+    expect(gh('GitHub.com/acme/app')).toBeUndefined();
+    expect(gh('acme/other')).toBeUndefined();
+    expect(gh('')).toBeUndefined();
+    // Forms bd 1.3.1 rejects when it checks the gate.
+    for (const bad of ['https://github.com/acme/app', 'git@github.com:acme/app.git', 'acme/app/', 'a/b/c/d', ' acme/app']) {
+      expect(gh(bad), bad).toMatch(/^gh:pr gate on a repo bd cannot read/);
+    }
     expect(unresolvedGate({ steps: [{ gate: {} }] })).toBe('untyped gate');
   });
 
