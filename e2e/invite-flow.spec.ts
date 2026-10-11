@@ -113,6 +113,31 @@ test('owner invites a teammate who joins the same org and sees its projects', as
   await expect(againPage).toHaveURL(/\/web\/samskara\/team$/);
   expect((await me(againPage)).organizationId).toBe(ownerOrg);
 
+  // --- The org switcher (samskara-cai) ---
+  // The invitee belongs to two orgs: the personal one the Factory made on their
+  // first visit, and the owner's. The team page lists both and switches.
+  const orgRows = againPage.locator('#orgs .row');
+  await expect(againPage.getByRole('heading', { name: 'Your organizations' })).toBeVisible();
+  await expect(orgRows).toHaveCount(2);
+  await expect(orgRows.filter({ hasText: companyName })).toContainText('current');
+  await orgRows.filter({ hasNotText: companyName }).getByRole('button', { name: 'Switch' }).click();
+  await expect(againPage).not.toHaveURL(/\/web\/samskara\/team/);
+  const personalOrg = (await me(againPage)).organizationId;
+  expect(personalOrg).toBeTruthy();
+  expect(personalOrg).not.toBe(ownerOrg);
+  await againPage.goto('/web/samskara/team');
+  await orgRows.filter({ hasText: companyName }).getByRole('button', { name: 'Switch' }).click();
+  await expect(againPage).not.toHaveURL(/\/web\/samskara\/team/);
+  expect((await me(againPage)).organizationId).toBe(ownerOrg);
+  await againPage.goto('/web/samskara/team');
+  // The owner is in one org: no switcher. Wait for the org list itself, not
+  // just the page: the panel starts hidden, so an early check proves nothing.
+  const orgList = ownerPage.waitForResponse(r => r.url().includes('/auth/api/organization/list') && r.ok());
+  await ownerPage.goto('/web/samskara/team');
+  await orgList;
+  await expect(ownerPage.locator('#members')).toContainText(owner.email);
+  await expect(ownerPage.getByRole('heading', { name: 'Your organizations' })).toBeHidden();
+
   // A member sees the team but not the invite form.
   await expect(againPage.getByText('Only an owner or admin can invite teammates.')).toBeVisible();
   await expect(againPage.getByRole('button', { name: 'Send invite' })).toBeHidden();

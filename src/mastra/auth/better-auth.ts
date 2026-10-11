@@ -178,7 +178,8 @@ export async function buildBetterAuth(options: BuildBetterAuthOptions): Promise<
     // the personal org the Factory created on their first visit, not the team
     // they were invited into — they would sign in to an empty org. Pinning the
     // session to the most recently joined org fixes that. A user in several
-    // orgs always lands in the newest one; there is no org switcher yet.
+    // orgs lands in the newest one and switches on the team page
+    // (samskara-cai, team/routes.ts), which sets the session's active org.
     databaseHooks: {
       user: { update: clearSessionCache, delete: clearSessionCache },
       session: {

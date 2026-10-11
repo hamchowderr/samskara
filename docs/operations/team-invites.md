@@ -45,9 +45,19 @@ join.
 `databaseHooks.session.create.before` in `src/mastra/auth/better-auth.ts` sets
 each new session to the **most recently joined** org. Two consequences:
 
-- The personal org created for an invitee stays in the database, unused.
-- A user in more than one org always lands in the newest one. There is no org
-  switcher.
+- A user in more than one org lands in the newest one at every sign-in,
+  including an invitee, whose personal org the Factory created on their first
+  visit.
+- The team page switches between them (samskara-cai). A user in two or more
+  orgs sees **Your organizations** there, listed with Better Auth's
+  `GET /organization/list`; **Switch** calls `POST /organization/set-active`,
+  which checks membership and updates the session, then opens the Factory in
+  that org. The Factory reads `session.activeOrganizationId` on each request
+  (`@mastra/auth-better-auth` 1.1.5 `dist/index.js:819-828`; the oldest
+  membership is only the fallback when it is unset, `:541-575`), and the
+  session update clears Samskara's session cache through the
+  `databaseHooks.session.update` hook before set-active returns. The choice
+  lasts for that session: the next sign-in lands in the newest org again.
 
 ## Invitation links
 
