@@ -67,7 +67,8 @@ export interface BeadComment {
  * close_reason for the inbound close (l2t.3) and two-way status sync (l2t.4),
  * comment_count for bd comments on the feed (l2t.6), title for the card title
  * (l2t.8), labels and assignee for label chips (l2t.5), updated_at to tell a
- * changed bead, await_type for approval cards (l2t.9).
+ * changed bead, await_type for approval cards (l2t.9), defer_until to wake
+ * a snoozed bead (l2t.14).
  */
 export interface BeadRow {
   id: string;
@@ -86,6 +87,8 @@ export interface BeadRow {
   updated_at?: string;
   /** A gate's condition type: `human`, `timer`, `gh:run`, `gh:pr` or `bead` (bd gate --help). */
   await_type?: string;
+  /** A deferred bead's wake time (`bd defer --until`); absent for one deferred with no date. */
+  defer_until?: string;
   /** Every dependency edge of the bead, parent-child included. */
   dependencies?: Array<{ issue_id?: string; depends_on_id?: string; type?: string }>;
 }
@@ -410,6 +413,26 @@ export class BdRepo {
   setStatus(id: string, status: string, expected: string): Promise<BdResult> {
     const actor = this.runner.actor;
     return this.runner.bd(['--sandbox', '--actor', actor, 'update', id, `--status=${status}`, `--if-status=${expected}`], {
+      cwd: this.dir,
+    });
+  }
+
+  /**
+   * Wake every snoozed bead whose date has passed, with bd's own wake: a
+   * writable `bd ready`. A defer with a date is a snooze, and "once --until
+   * passes, the next ready-front read returns the issue to open
+   * automatically (same shape as 'bd undefer')" (bd defer --help, v1.3.1);
+   * a `--readonly` read never does, and every
+   * read the sweep makes is read-only. Checked on bd 1.3.1: a bead deferred
+   * until a past date reads `deferred` through `bd --readonly ready` and
+   * `list`, and `open` after one writable `bd ready`; one deferred to a
+   * future date, or with no date, stays deferred. bd decides what has
+   * expired, on its own clock. Run as the integration's actor, the caller
+   * holding the writer lease; the output is not read.
+   */
+  wake(): Promise<BdResult> {
+    const actor = this.runner.actor;
+    return this.runner.bd(['--sandbox', '--actor', actor, 'ready', '--brief', '--json', `--exclude-type=${NEVER_READY_TYPES.join(',')}`, '-n', '0'], {
       cwd: this.dir,
     });
   }

@@ -400,6 +400,34 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown[0]?.status).toBe('closed');
   }, 300_000);
 
+  it('wakes a bead snoozed until a past date on the host copy, publishes it, and cards it; a future snooze stays deferred (samskara-l2t.14)', async () => {
+    const snoozed = run('bd', ['create', 'Snoozed past', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    const later = run('bd', ['create', 'Snoozed ahead', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    // bd warns about a past date and defers anyway (checked on bd 1.3.1).
+    run('bd', ['defer', snoozed, '--until=2025-01-15']);
+    run('bd', ['defer', later, '--until=+1d']);
+    run('bd', ['dolt', 'push']);
+
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id);
+    const result = await sweep(integration);
+    expect(result.repos[0], JSON.stringify(result)).toMatchObject({ state: 'ok' });
+    expect(card(snoozed)?.stages).toEqual(['intake']);
+    expect(card(snoozed)!.metadata?.[BEADS_META.held]).toBeUndefined();
+    expect(card(later)).toBeUndefined();
+    // The wake reached origin.
+    run('bd', ['dolt', 'pull']);
+    const shown = JSON.parse(run('bd', ['--readonly', 'show', snoozed, later, '--json'])) as Array<{ id: string; status: string }>;
+    expect(shown.map(b => b.status)).toEqual(['open', 'deferred']);
+  }, 300_000);
+
   it('cards a childless epic as a planning card; children filed through the beads tools make it an overview card (samskara-l2t.2.4)', async () => {
     const make = (title: string, type: string, parent?: string) =>
       run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])]).split(/\r?\n/)[0]!;

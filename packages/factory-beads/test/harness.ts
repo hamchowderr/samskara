@@ -40,6 +40,8 @@ export interface FakeBead {
   issue_type?: string;
   /** A gate bead's condition type (bd's `await_type`). */
   await_type?: string;
+  /** A deferred bead's wake time (bd's `defer_until`). */
+  deferUntil?: string;
   description?: string;
   blockedBy?: string[];
   /** bd refuses to close a bead held by anyone but the closing actor. */

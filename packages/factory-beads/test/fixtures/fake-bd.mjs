@@ -107,6 +107,18 @@ const nextId = () => {
   return `${state.prefix ?? 'fake'}-${state.seq}`;
 };
 
+// Like bd 1.3.1: a writable ready read wakes every bead snoozed until a
+// date that has passed (bd defer --help); a --readonly one never does.
+if (words[0] === 'ready' && !flags.includes('--readonly')) {
+  for (const b of state.beads) {
+    if (b.status === 'deferred' && b.deferUntil && Date.parse(b.deferUntil) <= Date.now()) {
+      b.status = 'open';
+      delete b.deferUntil;
+    }
+  }
+  save();
+}
+
 switch (words[0]) {
   case 'version':
     out = 'bd version 0.0.0-fake';
@@ -305,6 +317,7 @@ switch (words[0]) {
             priority: b.priority ?? 2,
             issue_type: b.issue_type ?? 'task',
             await_type: b.await_type,
+            defer_until: b.deferUntil,
             assignee: b.assignee,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: b.updatedAt ?? '2026-01-01T00:00:00Z',
