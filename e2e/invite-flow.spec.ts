@@ -130,8 +130,11 @@ test('owner invites a teammate who joins the same org and sees its projects', as
   await expect(againPage).not.toHaveURL(/\/web\/samskara\/team/);
   expect((await me(againPage)).organizationId).toBe(ownerOrg);
   await againPage.goto('/web/samskara/team');
-  // The owner is in one org: no switcher.
+  // The owner is in one org: no switcher. Wait for the org list itself, not
+  // just the page: the panel starts hidden, so an early check proves nothing.
+  const orgList = ownerPage.waitForResponse(r => r.url().includes('/auth/api/organization/list') && r.ok());
   await ownerPage.goto('/web/samskara/team');
+  await orgList;
   await expect(ownerPage.locator('#members')).toContainText(owner.email);
   await expect(ownerPage.getByRole('heading', { name: 'Your organizations' })).toBeHidden();
 

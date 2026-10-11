@@ -139,7 +139,7 @@ const ROLES = ['member', 'admin', 'owner'];
 // user's orgs (GET /organization/list) and sets the session's active org
 // (POST /organization/set-active, which checks membership); the Factory reads
 // session.activeOrganizationId on every request (@mastra/auth-better-auth
-// dist/index.js:541-575), and the session update clears Samskara's session
+// 1.1.5 dist/index.js:819-828), and the session update clears Samskara's session
 // cache (auth/better-auth.ts databaseHooks). Shown only to a user in more
 // than one org.
 async function loadOrgs() {
