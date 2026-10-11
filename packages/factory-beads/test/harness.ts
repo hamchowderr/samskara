@@ -38,6 +38,8 @@ export interface FakeBead {
   status?: string;
   priority?: number;
   issue_type?: string;
+  /** A gate bead's condition type (bd's `await_type`). */
+  await_type?: string;
   description?: string;
   blockedBy?: string[];
   /** bd refuses to close a bead held by anyone but the closing actor. */

@@ -209,8 +209,9 @@ export const BEADS_META = {
    */
   held: 'beadsHeld',
   /**
-   * The bead title the card's title was last set from (samskara-l2t.8). A
-   * bead whose title differs from it was retitled in bd, and the card follows.
+   * The title the card's title was last set from (samskara-l2t.8): the
+   * bead's, or a human gate's approval title (beadCardTitle, samskara-l2t.9).
+   * A bead whose title differs from it was retitled in bd, and the card follows.
    */
   title: 'beadsTitle',
 } as const;
@@ -303,11 +304,56 @@ export const PLAN_CARD_KIND = 'plan';
 export const EPIC_TYPE = 'epic';
 
 /**
- * The card kind intake gives a ready bead that is not an epic: `research` for
- * a decision, none for work. Epics are sorted in the intake loop, and
- * overview kinds are set by #resolveOverview.
+ * `BEADS_META.cardKind` of an open human gate's card: an approval card
+ * (samskara-l2t.9). A formula step with `gate: { type: 'human' }` makes bd
+ * create a gate bead that blocks the step until it is closed (bd formula
+ * schema gate; bd gate --help: "human - Requires manual bd close"). bd ready
+ * never lists a gate, so intake cards an open human gate from the refresh
+ * read. Its card never runs: a person approves by moving it to Done, which
+ * closes the gate as any card's bead is closed (`bd gate resolve` is
+ * `bd close` under another name, bd gate resolve --help), and the step it
+ * held becomes ready once nothing else blocks it. Timer and GitHub gates are
+ * not carded (samskara-l2t.10).
  */
-function readyCardKind(bead: Pick<BeadDetails, 'issue_type'>): string | undefined {
+export const GATE_CARD_KIND = 'gate';
+
+/** The bd issue type of a gate bead, and the `await_type` a person resolves. */
+export const GATE_TYPE = 'gate';
+export const HUMAN_GATE = 'human';
+
+/** Whether the bead is a human gate, the one gate a person resolves. */
+export function isHumanGate(bead: { issue_type?: string; await_type?: string }): boolean {
+  return bead.issue_type === GATE_TYPE && bead.await_type === HUMAN_GATE;
+}
+
+/** bd's own title for a gate: `Gate: <type>` (bd gate create --help; a formula's gate gets it too, checked on bd 1.3.1). */
+const DEFAULT_GATE_TITLE = /^Gate: \S+$/;
+
+/**
+ * The title a bead's card is named after (`<id>: <title>`). A human gate
+ * with bd's own title says nothing about what it holds, so its card is named
+ * after the steps it blocks, `Approve: <step title>`, from the refresh
+ * read. A gate titled by hand (`bd gate create --title`) keeps its title.
+ */
+export function beadCardTitle(
+  bead: { id: string; title?: string; issue_type?: string; await_type?: string },
+  snapshot: BeadSnapshot | undefined,
+): string | undefined {
+  if (!isHumanGate(bead) || !snapshot || !DEFAULT_GATE_TITLE.test(bead.title ?? '')) return bead.title;
+  const steps = snapshot
+    .blocks(bead.id)
+    .map(step => step.title)
+    .filter((title): title is string => typeof title === 'string' && title !== '');
+  return steps.length > 0 ? `Approve: ${steps.join(', ')}` : bead.title;
+}
+
+/**
+ * The card kind intake gives a ready bead that is not an epic: `research` for
+ * a decision, `gate` for a human gate, none for work. Epics are sorted in the
+ * intake loop, and overview kinds are set by #resolveOverview.
+ */
+function readyCardKind(bead: { issue_type?: string; await_type?: string }): string | undefined {
+  if (isHumanGate(bead)) return GATE_CARD_KIND;
   return bead.issue_type === DECISION_TYPE ? RESEARCH_CARD_KIND : undefined;
 }
 
@@ -359,15 +405,16 @@ const PRIORITY_COLORS: Readonly<Record<number, string>> = { 0: '#dc2626', 1: '#e
 /**
  * A card's chips (samskara-l2t.5): the bead's own bd labels, its priority as
  * `P0`-`P4`, its issue type, and Factory's approval label for a bead labelled
- * `human` (matched exactly, as `bd human list` does) whose card a person
- * has not accepted yet. Once accepted, the label would no longer gate
+ * `human` (matched exactly, as `bd human list` does) or a human gate
+ * (samskara-l2t.9) whose card a person has not accepted yet. A gate card
+ * never enters a working phase (board-rules.ts), so it is never accepted. Once accepted, the label would no longer gate
  * anything (`needsApproval` ignores an accepted card, @mastra/factory 0.20.0
  * dist/rules/types.js:14-18), and Factory's supervisor would report it as
  * label drift on a card in a working phase (dist/supervisor/health.js:177-187).
  * Factory has no sort field for cards, so priority is a chip only (Mastra
  * feature request 31596da1).
  */
-export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_type'>, accepted = false): {
+export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_type' | 'await_type'>, accepted = false): {
   labels: string[];
   labelColors: Record<string, string>;
 } {
@@ -381,7 +428,7 @@ export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_typ
     if (color) labelColors[chip] = color;
   }
   if (bead.issue_type) labels.push(bead.issue_type);
-  if (!accepted && own.includes(HUMAN_LABEL)) labels.push(NEEDS_APPROVAL_LABEL);
+  if (!accepted && (own.includes(HUMAN_LABEL) || isHumanGate(bead))) labels.push(NEEDS_APPROVAL_LABEL);
   return { labels: [...new Set(labels)], labelColors };
 }
 
@@ -1091,7 +1138,7 @@ export class BeadsIntegration implements FactoryIntegration {
       const closed: WorkItemRow[] = [];
       for (const item of pending) {
         const beadId = String(item.metadata?.[BEADS_META.id]);
-        // A bead the list leaves out (a gate, a wisp) is read with bd show, as before.
+        // A bead the list leaves out (a wisp, a template) is read with bd show, as before.
         const bead = before?.get(beadId) ?? (await repo.show(beadId));
         // Out of Done with a close made here that never reached the remote:
         // published with this tick's sync, never closed again. If the bead is
@@ -1229,7 +1276,10 @@ export class BeadsIntegration implements FactoryIntegration {
       // the copy.
       snapshot: await this.#readSnapshot(repo, report, 'the overview steps skipped'),
     };
-    const ready = parentsFirst(await repo.ready());
+    // Human gates (samskara-l2t.9): bd ready never lists a gate, so an open
+    // one is taken from the refresh read and carded for approval.
+    const gates = scope.snapshot ? [...scope.snapshot.values()].filter(bead => isHumanGate(bead) && bead.status === 'open') : [];
+    const ready = parentsFirst([...(await repo.ready()), ...gates.map(gate => ({ ...gate, title: gate.title ?? '' }))]);
     // The beads intake handles this sweep: step 2b leaves their kind and parent to it.
     const readyIds = new Set(ready.map(bead => bead.id));
     for (const bead of ready) {
@@ -1647,7 +1697,7 @@ export class BeadsIntegration implements FactoryIntegration {
       const beadId = card.metadata?.[BEADS_META.id];
       if (typeof beadId !== 'string' || card.board !== this.board || card.stages.length !== 1) continue;
       const bead = snapshot.get(beadId);
-      // Not in the list (bd leaves gates, templates and wisps out): unknown, so left alone.
+      // Not in the list (bd leaves templates and wisps out): unknown, so left alone.
       if (!bead?.status) continue;
       const stage = card.stages[0]!;
       const terminal = board.phaseKind(stage) === 'terminal';
@@ -2022,7 +2072,7 @@ export class BeadsIntegration implements FactoryIntegration {
     // for it, and its children are carded without a parent.
     if (!snapshot) return undefined;
     // The container from the refresh read; bd show only for a bead the list
-    // leaves out (bd list hides gates, templates and wisps by default).
+    // leaves out (bd list hides templates and wisps by default).
     const row = snapshot.get(id);
     const shown = row ? undefined : await scope.repo.show(id);
     const bead: BeadRow | BeadDetails | undefined = row ?? shown;
@@ -2119,14 +2169,15 @@ export class BeadsIntegration implements FactoryIntegration {
             [BEADS_META.type]: bead.issue_type ?? null,
           });
         }
-        if (typeof bead.title === 'string' && card.metadata?.[BEADS_META.title] !== bead.title) {
-          const title = `${beadId}: ${bead.title}`;
+        const named = beadCardTitle(bead, snapshot);
+        if (typeof named === 'string' && card.metadata?.[BEADS_META.title] !== named) {
+          const title = `${beadId}: ${named}`;
           const recorded = card.metadata?.[BEADS_META.title];
           const updated = await runtime.workItems.update({
             orgId,
             id: card.id,
             userId: `integration:${BEADS_INTEGRATION_ID}`,
-            patch: { ...(card.title !== title ? { title } : {}), metadata: { [BEADS_META.title]: bead.title } },
+            patch: { ...(card.title !== title ? { title } : {}), metadata: { [BEADS_META.title]: named } },
           });
           if (updated) {
             if (card.title !== title && recorded !== undefined) {
@@ -2291,11 +2342,12 @@ export class BeadsIntegration implements FactoryIntegration {
   /** A new card for `bead`, under `parent` when given. Undefined when another project in the org holds its claim. */
   async #createCard(
     scope: IntakeScope,
-    bead: Pick<BeadDetails, 'id' | 'title' | 'issue_type' | 'priority'>,
+    bead: Pick<BeadDetails, 'id' | 'title' | 'issue_type' | 'priority' | 'await_type'>,
     parent: WorkItemRow | undefined,
     metadata: Record<string, unknown>,
   ): Promise<WorkItemRow | undefined> {
     const { orgId, projectId, slug } = scope;
+    const named = beadCardTitle(bead, scope.snapshot);
     try {
       const result = await this.#ctx!.runtime!.workItems.upsert({
         orgId,
@@ -2306,7 +2358,7 @@ export class BeadsIntegration implements FactoryIntegration {
           board: this.board,
           externalSource: beadSource(bead.id),
           claimKey: beadsClaimKey(slug, bead.id),
-          title: `${bead.id}: ${bead.title ?? ''}`,
+          title: `${bead.id}: ${named ?? ''}`,
           stages: [scope.initialPhase],
           ...(parent ? { parentWorkItemId: parent.id } : {}),
           metadata: {
@@ -2315,7 +2367,7 @@ export class BeadsIntegration implements FactoryIntegration {
             [FACTORY_REPOSITORY_META]: slug,
             [BEADS_META.type]: bead.issue_type ?? null,
             [BEADS_META.priority]: bead.priority ?? null,
-            [BEADS_META.title]: bead.title ?? null,
+            [BEADS_META.title]: named ?? null,
             ...metadata,
           },
         },

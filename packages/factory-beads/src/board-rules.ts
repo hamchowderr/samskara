@@ -41,6 +41,14 @@
  * apart from a person's approval, and is refused too. Only a person moves a
  * plan card to Done, which would close the epic without children.
  *
+ * A gate card stands for an open human gate (samskara-l2t.9): a bead bd
+ * made from a formula step's `gate`, which holds that step until it is
+ * closed. It holds no work, so it enters no working phase, whoever moves it,
+ * and no run starts on it. Approval is a person moving it to Done, which
+ * closes the gate; every other actor's move there is refused with
+ * `approval_required`. A person who moves it to Canceled leaves the gate
+ * open, and the step stays held.
+ *
  * A held card (samskara-l2t.4) stands for a bead blocked, deferred, pinned,
  * hooked or set to a custom status in bd: the sync worker marks it
  * `beadsHeld`. No move from a resting or terminal phase into a working
@@ -48,7 +56,7 @@
  * starts on a bead nobody may work. Moves between working phases pass: the
  * sync worker moves such a card to Intake once its run has finished.
  *
- * One exception to both Done gates (samskara-l2t.3): when the bead was
+ * One exception to the Done gates (samskara-l2t.3): when the bead was
  * already closed outside the Factory, the sync worker marks the card
  * `beadsClosedOutside: <phase>` and commits the move as a rule decision.
  * While the marker names the target phase, any system move there is
@@ -58,7 +66,7 @@
  */
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
-import { BEADS_META, OVERVIEW_CARD_KIND, PLAN_CARD_KIND, RESEARCH_CARD_KIND } from './integration';
+import { BEADS_META, GATE_CARD_KIND, OVERVIEW_CARD_KIND, PLAN_CARD_KIND, RESEARCH_CARD_KIND } from './integration';
 
 export interface BeadsTransitionPolicyOptions {
   /**
@@ -101,6 +109,9 @@ export const PLAN_APPROVAL_REASON =
   "A person approves an epic's proposed children by moving its card to Building; agents and automation never do, even when plans auto-approve";
 export const PLAN_DONE_REASON =
   "Only a person moves an epic's planning card to Done, which closes the epic with no children";
+export const GATE_WORKING_REASON =
+  'An approval card holds no work: a person approves it by moving it to Done, which resolves the gate and lets the step it holds start';
+export const GATE_APPROVAL_REASON = 'A person approves a gate by moving its card to Done; agents and automation never do';
 /** Why work does not start on a card whose bead is held in bd (samskara-l2t.4). */
 export function heldReason(status: string): string {
   return `This card's bead is ${status} in bd; work starts on it once the bead is open or in_progress again`;
@@ -120,7 +131,7 @@ export function heldReason(status: string): string {
  * once the bead is open again; a deleted bead is no longer in bd's list, so
  * the worker never reads it again and its card's marker is never cleared.
  *
- * A research or plan card's Done gate exists so that a person approves the
+ * A research, plan or gate card's Done gate exists so that a person approves the
  * close; a bead closed in bd has nothing left to approve, and refusing the
  * move would leave the card in a working phase, or Intake, for a closed
  * bead. An agent's own move does not get this: the actor must be the
@@ -143,6 +154,11 @@ export function isResearchCard(metadata: Readonly<Record<string, unknown>> | nul
   return metadata?.[BEADS_META.cardKind] === RESEARCH_CARD_KIND;
 }
 
+/** Whether a card's metadata marks it as a beads gate card (an open human gate). */
+export function isGateCard(metadata: Readonly<Record<string, unknown>> | null | undefined): boolean {
+  return metadata?.[BEADS_META.cardKind] === GATE_CARD_KIND;
+}
+
 /** Whether a card's metadata marks it as a beads plan card (a childless open epic). */
 export function isPlanCard(metadata: Readonly<Record<string, unknown>> | null | undefined): boolean {
   return metadata?.[BEADS_META.cardKind] === PLAN_CARD_KIND;
@@ -153,7 +169,8 @@ export function isPlanCard(metadata: Readonly<Record<string, unknown>> | null | 
  * never reach Done with open children, whoever moves them. Research cards
  * enter no working phase but Planning, whoever moves them, and only a person
  * moves one to Done. Plan cards enter no working phase but Planning and
- * Building, and only a person moves one into Building or Done. Every other
+ * Building, and only a person moves one into Building or Done. Gate cards
+ * enter no working phase, and only a person moves one to Done. Every other
  * card, and every other move of these cards, gets `workPolicy`'s answer
  * unchanged.
  */
@@ -203,6 +220,14 @@ export function createBeadsTransitionPolicy(
       }
       if (context.toStage === donePhase && context.actor.type !== 'human' && !isClosedOutsideMove(context)) {
         return { type: 'reject', code: 'approval_required', reason: PLAN_DONE_REASON };
+      }
+    }
+    if (isGateCard(metadata)) {
+      if (working.has(context.toStage)) {
+        return { type: 'reject', code: 'forbidden', reason: GATE_WORKING_REASON };
+      }
+      if (context.toStage === donePhase && context.actor.type !== 'human' && !isClosedOutsideMove(context)) {
+        return { type: 'reject', code: 'approval_required', reason: GATE_APPROVAL_REASON };
       }
     }
     return workPolicy?.(context);

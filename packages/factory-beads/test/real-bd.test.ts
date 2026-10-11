@@ -42,6 +42,21 @@ description = "do second"
 needs = ["first"]
 `;
 
+/** One step held by a human gate (samskara-l2t.9). */
+const GATED_FORMULA = `formula = "signoff"
+description = "Gated workflow"
+version = 1
+type = "workflow"
+
+[[steps]]
+id = "ship"
+title = "Ship the release"
+description = "ship it"
+
+[steps.gate]
+type = "human"
+`;
+
 const bdAvailable = process.env.FACTORY_BEADS_REAL_BD !== '0' && spawnSync('bd', ['--version']).status === 0;
 
 describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
@@ -350,6 +365,39 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     const shown = JSON.parse(run('bd', ['--readonly', 'show', open, '--json'])) as Array<{ status: string }>;
     expect(shown[0]?.status).toBe('closed');
     expect(card(settled)).toBeUndefined();
+  }, 300_000);
+
+  it('cards a poured human gate for approval; a person moving it to Done closes the gate and the step becomes ready (samskara-l2t.9)', async () => {
+    mkdirSync(join(seed, '.beads', 'formulas'), { recursive: true });
+    writeFileSync(join(seed, '.beads', 'formulas', 'signoff.formula.toml'), GATED_FORMULA);
+    const poured = JSON.parse(run('bd', ['mol', 'pour', 'signoff', '--json'])) as { new_epic_id: string; id_mapping: Record<string, string> };
+    const gate = poured.id_mapping['signoff.gate-ship']!;
+    const step = poured.id_mapping['signoff.ship']!;
+    expect(gate, JSON.stringify(poured)).toBeTruthy();
+    run('bd', ['dolt', 'push']);
+
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id);
+    const first = await sweep(integration);
+    expect(first.repos[0], JSON.stringify(first)).toMatchObject({ state: 'ok' });
+    expect(card(gate)).toMatchObject({ title: `${gate}: Approve: Ship the release`, parentWorkItemId: card(poured.new_epic_id)!.id });
+    expect(card(gate)!.metadata).toMatchObject({ beadsCardKind: 'gate', beadsType: 'gate', labels: expect.arrayContaining(['status: needs approval']) });
+    expect(card(step)).toBeUndefined();
+
+    h.workItems.move(card(gate)!.id, 'done');
+    const approved = await sweep(integration);
+    expect(approved.repos[0], JSON.stringify(approved)).toMatchObject({ state: 'ok', closed: 1 });
+    expect(card(step)?.stages).toEqual(['intake']);
+    run('bd', ['dolt', 'pull']);
+    const shown = JSON.parse(run('bd', ['--readonly', 'show', gate, '--json'])) as Array<{ status: string }>;
+    expect(shown[0]?.status).toBe('closed');
   }, 300_000);
 
   it('cards a childless epic as a planning card; children filed through the beads tools make it an overview card (samskara-l2t.2.4)', async () => {

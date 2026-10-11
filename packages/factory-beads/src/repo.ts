@@ -28,6 +28,8 @@ export interface ReadyBead {
   issue_type?: string;
   /** The parent bead's id, from its parent-child edge; absent for a top-level bead. */
   parent?: string;
+  /** A gate's condition type (BeadRow.await_type); intake adds human gates from the refresh read. */
+  await_type?: string;
 }
 
 /** One bead as `bd show --json` returns it: the fields the integration reads. */
@@ -40,6 +42,7 @@ export interface BeadDetails {
   issue_type?: string;
   parent?: string;
   description?: string;
+  await_type?: string;
 }
 
 /** One comment as `bd comments <id> --json` prints it (bd 1.3.1). */
@@ -64,7 +67,7 @@ export interface BeadComment {
  * close_reason for the inbound close (l2t.3) and two-way status sync (l2t.4),
  * comment_count for bd comments on the feed (l2t.6), title for the card title
  * (l2t.8), labels and assignee for label chips (l2t.5), updated_at to tell a
- * changed bead.
+ * changed bead, await_type for approval cards (l2t.9).
  */
 export interface BeadRow {
   id: string;
@@ -81,6 +84,8 @@ export interface BeadRow {
   parent?: string;
   comment_count?: number;
   updated_at?: string;
+  /** A gate's condition type: `human`, `timer`, `gh:run`, `gh:pr` or `bead` (bd gate --help). */
+  await_type?: string;
   /** Every dependency edge of the bead, parent-child included. */
   dependencies?: Array<{ issue_id?: string; depends_on_id?: string; type?: string }>;
 }
@@ -105,6 +110,7 @@ export interface BeadRow {
 export class BeadSnapshot {
   readonly #rows = new Map<string, BeadRow>();
   readonly #children = new Map<string, BeadRow[]>();
+  readonly #blocking = new Map<string, BeadRow[]>();
 
   constructor(rows: readonly BeadRow[]) {
     for (const row of rows) this.#rows.set(row.id, row);
@@ -123,10 +129,16 @@ export class BeadSnapshot {
         if (list) list.push(row);
         else this.#children.set(parent, [row]);
       }
+      for (const dep of row.dependencies ?? []) {
+        if (dep?.type !== 'blocks' || typeof dep.depends_on_id !== 'string') continue;
+        const list = this.#blocking.get(dep.depends_on_id);
+        if (list) list.push(row);
+        else this.#blocking.set(dep.depends_on_id, [row]);
+      }
     }
   }
 
-  /** The bead, or undefined when the list does not have it (bd leaves gates, templates and wisps out). */
+  /** The bead, or undefined when the list does not have it (bd leaves templates and wisps out). */
   get(id: string): BeadRow | undefined {
     return this.#rows.get(id);
   }
@@ -134,6 +146,16 @@ export class BeadSnapshot {
   /** The bead's direct children, closed ones included. */
   children(id: string): readonly BeadRow[] {
     return this.#children.get(id) ?? [];
+  }
+
+  /** The beads this bead blocks: each one with a `blocks` edge to it. */
+  blocks(id: string): readonly BeadRow[] {
+    return this.#blocking.get(id) ?? [];
+  }
+
+  /** Every bead the list returned. */
+  values(): IterableIterator<BeadRow> {
+    return this.#rows.values();
   }
 
   get size(): number {
@@ -323,12 +345,16 @@ export class BdRepo {
    * under the runner's 32 MB buffer on a large repository. `--flat` is not
    * passed: with `--json` the tree is never built (bd v1.3.1
    * cmd/bd/list.go:265-285 returns before it), and both forms print the same
-   * bytes. `-n 0` lifts the default limit of 50. The row cap
+   * bytes. `-n 0` lifts the default limit of 50. `--include-gates` adds the
+   * gate beads bd list otherwise hides (`bd list --help`), with their
+   * `await_type` and parent (checked on bd 1.3.1), so a human gate is carded
+   * for approval (samskara-l2t.9) and an open gate counts as an open child of
+   * its molecule. The row cap
    * (`BEADS_MAX_ROWS`) cannot apply: the runner passes bd an allowlisted
    * environment without it (runner.ts).
    */
   async refresh(): Promise<BeadSnapshot> {
-    const res = await this.runner.bd(['--readonly', 'list', '--all', '--brief', '--json', '-n', '0'], { cwd: this.dir });
+    const res = await this.runner.bd(['--readonly', 'list', '--all', '--brief', '--include-gates', '--json', '-n', '0'], { cwd: this.dir });
     if (res.code !== 0) throw new Error(`bd list --all failed (exit ${res.code}): ${tail(res)}`);
     let parsed: unknown;
     try {

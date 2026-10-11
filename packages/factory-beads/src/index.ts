@@ -2,6 +2,7 @@ export {
   BeadsIntegration,
   BEADS_DATA_REF,
   BEADS_COMMENT_SOURCE,
+  beadCardTitle,
   bdAuthorName,
   bdCommentText,
   fitFeedComment,
@@ -16,7 +17,11 @@ export {
   DISMISSED_REASON,
   EPIC_TYPE,
   FACTORY_REPOSITORY_META,
+  GATE_CARD_KIND,
+  GATE_TYPE,
+  HUMAN_GATE,
   HUMAN_LABEL,
+  isHumanGate,
   NEEDS_APPROVAL_LABEL,
   NOT_COMPLETED_EDGES,
   OVERVIEW_CARD_KIND,
@@ -42,8 +47,11 @@ export { createBeadsEpicBuildRule, createBeadsEpicPlanningRule, EPIC_SKILL } fro
 export type { EpicSkillMode } from './epic-rule';
 export {
   createBeadsTransitionPolicy,
+  GATE_APPROVAL_REASON,
+  GATE_WORKING_REASON,
   heldReason,
   isClosedOutsideMove,
+  isGateCard,
   isOverviewCard,
   isPlanCard,
   isResearchCard,
@@ -78,6 +86,7 @@ export {
   isInside,
   pickRepository,
   resolveToolProject,
+  unresolvedGate,
 } from './agent-tools';
 export type { ToolScope } from './agent-tools';
 export { BeadsToolError, BeadsToolOps } from './tool-ops';

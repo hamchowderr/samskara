@@ -550,7 +550,7 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
     expect(ready.argv).toContain('--exclude-type=milestone');
     // One refresh read answers the epic and its children (samskara-l2t.15).
     const lists = h.state().calls.filter(c => c.argv.includes('list'));
-    expect(lists.map(c => c.argv)).toEqual([['--readonly', 'list', '--all', '--brief', '--json', '-n', '0']]);
+    expect(lists.map(c => c.argv)).toEqual([['--readonly', 'list', '--all', '--brief', '--include-gates', '--json', '-n', '0']]);
   });
 
   it('walks nested containers top-down and resolves each container once per sweep', async () => {

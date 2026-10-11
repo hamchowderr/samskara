@@ -143,7 +143,7 @@ A `decision` bead records a choice and why it was made. File one when the projec
 
 `beads_formula_list` lists the repository's own workflow formulas (its `.beads/formulas`); nothing from elsewhere on the server is offered. `beads_pour` turns one into a molecule: a root bead of type `molecule` with linked, ordered step beads under it, its variables filled in. Preview with `dry_run` first. Poured steps skip the create-time check, so before work starts on a step, fill any missing design or acceptance with `beads_update`.
 
-A formula is refused when it extends or composes with a formula that is not one of the repository's own, at any depth, and when it has gated steps, its own, inherited through `extends`, or in a formula it attaches through a hook or `on_complete`. A gate becomes a bead that only closing clears, and no tool closes beads, so its steps would never become ready. Ask a person to pour such a formula.
+A formula is refused when it extends or composes with a formula that is not one of the repository's own, at any depth, and when it has a gate other than a human one (a timer or GitHub gate), its own, inherited through `extends`, or in a formula it attaches through a hook or `on_complete`. Nothing resolves those gates yet, and no tool closes beads, so the step would never become ready. Ask a person to pour such a formula. A human gate is fine: it becomes an approval card, and the step it holds becomes ready once a person moves that card to Done. Never try to resolve a gate yourself.
 
 ## No private data in beads
 

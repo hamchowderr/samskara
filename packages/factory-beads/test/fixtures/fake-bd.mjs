@@ -90,10 +90,11 @@ const SECTIONS = {
   spike: ['## Goal', '## Findings'],
   story: ['## Acceptance Criteria'],
 };
-// Fake formulas: { name, steps: [title], vars: [name], gated?, extends?: [name], hooks?: [name], user? }.
+// Fake formulas: { name, steps: [title], vars: [name], gated?, gateType? (default human), extends?: [name], hooks?: [name], user? }.
+// A gated formula's first step carries the gate.
 // `hooks` are kept as written, never applied: bd 1.3.0 cook and pour leave compose.hooks alone.
 const composeOf = f => (f.hooks ? { compose: { hooks: f.hooks.map(attach => ({ trigger: 'label:security', attach })) } } : {});
-const ownSteps = f => f.steps.map((title, i) => ({ id: `${f.name}.s${i}`, title, ...(f.gated && i === 0 ? { gate: { type: 'human' } } : {}) }));
+const ownSteps = f => f.steps.map((title, i) => ({ id: `${f.name}.s${i}`, title, ...(f.gated && i === 0 ? { gate: { type: f.gateType ?? 'human' } } : {}) }));
 const resolvedSteps = (f, seen = new Set()) => {
   seen.add(f.name);
   const parents = (f.extends ?? [])
@@ -124,11 +125,12 @@ switch (words[0]) {
     const inThisRepo = b => !b.repo || process.cwd().endsWith(b.repo.replace(/[^A-Za-z0-9._-]/g, '__'));
     const ready = state.beads.filter(
       // Like bd 1.3.1: only open beads are ready, so never a pinned
-      // (sqlbuild/ready.go:117) or in_progress one, nor a molecule root (:16-38).
+      // (sqlbuild/ready.go:117) or in_progress one, nor a molecule root or a gate (:16-38).
       b =>
         inThisRepo(b) &&
         (b.status ?? 'open') === 'open' &&
         b.issue_type !== 'molecule' &&
+        b.issue_type !== 'gate' &&
         !blocked(b) &&
         !excluded.includes(b.issue_type),
     );
@@ -156,9 +158,11 @@ switch (words[0]) {
       err = 'not found';
     } else {
       // As bd 1.3.1 shows it: empty fields are omitted.
-      const { id, title, status, priority, issue_type, assignee, parent, description } = bead;
+      const { id, title, status, priority, issue_type, assignee, parent, description, await_type } = bead;
       out = JSON.stringify([
-        Object.fromEntries(Object.entries({ id, title, status, priority, issue_type, assignee, parent, description }).filter(([, v]) => v !== undefined && v !== '')),
+        Object.fromEntries(
+          Object.entries({ id, title, status, priority, issue_type, assignee, parent, description, await_type }).filter(([, v]) => v !== undefined && v !== ''),
+        ),
       ]);
     }
     break;
@@ -260,6 +264,8 @@ switch (words[0]) {
     // Like bd 1.3.1: --parent lists direct children only, --all adds closed ones.
     const parent = flagValue('parent');
     const all = flags.includes('--all');
+    // Like bd 1.3.1: gates are hidden unless --include-gates (bd list --help).
+    const gates = flags.includes('--include-gates');
     // listFail: every list without --parent fails (the refresh read), as many times as given (true: until cleared).
     if (parent === undefined && state.listFail) {
       if (typeof state.listFail === 'number') state.listFail--;
@@ -270,6 +276,7 @@ switch (words[0]) {
     const rows = state.beads.filter(
       b =>
         (statuses ? statuses.includes(b.status ?? 'open') : all || (b.status ?? 'open') !== 'closed') &&
+        (gates || b.issue_type !== 'gate') &&
         // Like bd 1.3.1 (sqlbuild/filter.go:174-178): a dotted id with no parent-child edge is a child of each dotted prefix.
         (parent === undefined || b.parent === parent || (!b.parent && b.id.startsWith(`${parent}.`))) &&
         (!title || b.title.toLowerCase().includes(title)),
@@ -297,6 +304,7 @@ switch (words[0]) {
             status: b.status ?? 'open',
             priority: b.priority ?? 2,
             issue_type: b.issue_type ?? 'task',
+            await_type: b.await_type,
             assignee: b.assignee,
             created_at: '2026-01-01T00:00:00Z',
             updated_at: b.updatedAt ?? '2026-01-01T00:00:00Z',
@@ -470,12 +478,23 @@ switch (words[0]) {
     const epic = { id: nextId(), title: fill(formula.name), status: 'open', issue_type: 'epic' };
     state.beads.push(epic);
     const mapping = { [formula.name]: epic.id };
-    for (const step of formula.steps) {
+    let created = formula.steps.length + 1;
+    for (const [i, step] of formula.steps.entries()) {
       const bead = { id: nextId(), title: fill(step), status: 'open', issue_type: 'task', parent: epic.id };
+      // Like bd 1.3.1: a gated step gets a gate bead, titled `Gate: <type>`
+      // under the root, that blocks it until closed.
+      if (formula.gated && i === 0) {
+        const type = formula.gateType ?? 'human';
+        const gate = { id: nextId(), title: `Gate: ${type}`, status: 'open', issue_type: 'gate', await_type: type, parent: epic.id };
+        state.beads.push(gate);
+        mapping[`${formula.name}.gate-${step}`] = gate.id;
+        bead.blockedBy = [gate.id];
+        created++;
+      }
       state.beads.push(bead);
       mapping[`${formula.name}.${step}`] = bead.id;
     }
-    out = JSON.stringify({ created: formula.steps.length + 1, id_mapping: mapping, new_epic_id: epic.id, phase: 'liquid' });
+    out = JSON.stringify({ created, id_mapping: mapping, new_epic_id: epic.id, phase: 'liquid' });
     break;
   }
   case 'comments': {
