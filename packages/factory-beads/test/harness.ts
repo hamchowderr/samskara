@@ -40,6 +40,8 @@ export interface FakeBead {
   issue_type?: string;
   /** A gate bead's condition type (bd's `await_type`). */
   await_type?: string;
+  /** A deferred bead's wake time (bd's `defer_until`). */
+  deferUntil?: string;
   description?: string;
   blockedBy?: string[];
   /** bd refuses to close a bead held by anyone but the closing actor. */
@@ -67,6 +69,8 @@ export interface FakeState {
   syncExits: number[];
   pullExits: number[];
   closeFail: string[];
+  /** A writable `bd ready` (the snooze wake) commits its wake, then exits 1. */
+  wakeFail?: boolean;
   /** Bead ids whose `--if-assignee` reassign fails as if the holder changed (exit 13). */
   casFail?: string[];
   /** The refresh read (`bd list` without --parent) fails: always (true), or this many more times. */

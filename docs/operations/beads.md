@@ -1307,6 +1307,7 @@ the other and the two never ping-pong:
 | A bead is set `open` or `in_progress` in bd | nothing moves; the card's next move is written |
 | A bead is set `blocked`, `deferred`, `pinned`, `hooked` or a custom status in bd | the card is held: from a working phase it moves to Intake once no run on it is in flight, and no work starts on it |
 | A held bead is set `open` or `in_progress` again | the hold is lifted; the card waits in Intake for a person to start it |
+| A bead snoozed with `bd defer --until` reaches its date | the sweep wakes it to `open` ([Snoozed beads](#snoozed-beads)); the hold is lifted, or a bead with no card yet is carded |
 
 **Card to bead.** The sweep records the bead's status and the card's phase
 on the card (`beadsStatus`, `beadsStatusStage`). A card in another phase than
@@ -1395,6 +1396,37 @@ its open-children count at 0: its bead is closed, and the card follows the
 bead. bd itself does not reopen a parent when a child reopens. Reopen the
 epic in bd (`bd reopen <epic>`) and its card comes back to Intake as any
 reopened bead's does.
+
+### Snoozed beads
+
+A defer with a date is a snooze: "once --until passes, the next ready-front
+read returns the issue to open automatically (same shape as 'bd undefer')"
+(`bd defer --help`, bd 1.3.1). A defer with no date is the icebox and stays
+deferred until someone runs `bd undefer`. The wake happens only on a
+writable read: `bd --readonly ready` skips it, and every read the sweep
+makes is read-only. Checked on bd 1.3.1: a bead deferred until a past date reads
+`deferred` through `bd --readonly ready` and `bd --readonly list`, and
+`open` after one writable `bd ready`; a future snooze and an icebox defer
+stay deferred.
+
+So each sweep looks in its [refresh read](#refresh-read) for a `deferred`
+bead whose `defer_until` is at or before now (`expiredSnoozes`,
+`integration.ts`). When there is one, it runs bd's own wake, a writable
+`bd ready` as the integration's actor (`BdRepo.wake`, `repo.ts`), under
+the writer lease the sweep already holds; bd decides what has expired, on
+its own clock. The wake is published with `bd sync` like any other write
+(a failed sync is retried on the next tick), and the refresh read is taken
+again before intake, so a woken bead is carded in the same sweep and a card
+that was held for it is released. A wake that fails is logged once, puts
+the repository in `error` with the exit in its diagnostic, and is tried
+again on the next sweep. It may have committed before it failed (a timeout,
+say), so the copy is read again and the next sweep publishes it, as for any
+write whose sync failed. A sweep with no expired snooze writes
+nothing.
+
+A snoozed bead's card, if it had one, was held while the date was ahead
+([Status sync](#status-sync)); once woken it waits in Intake for a person
+to start it, as any released card does.
 
 ### The Done rule
 
@@ -1943,7 +1975,12 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   writing nothing and retried next tick; a blocked bead's card held while
   its run's decision is leased, moved to Intake once it settles, the move
   not written back, work refused until the bead is open; deferred, pinned,
-  hooked and custom statuses held; a session running a turn, then parked
+  hooked and custom statuses held; a bead snoozed until a past date woken
+  with a writable `bd ready` as the integration's actor, published and
+  carded in the same sweep, a held card released when its snooze runs out,
+  and a future snooze and the icebox left deferred with no write
+  (`test/snoozes.test.ts`; in `test/real-bd.test.ts`, a past snooze woken
+  and carded with the wake on origin, a future one left alone); a session running a turn, then parked
   on `ask_user`, holding the card with no decision in flight; the hold
   cleared when the held bead closes; a planning card's epic set back to
   `open` when it becomes an overview card; overview cards left out; and a

@@ -273,6 +273,21 @@ function clearedCloseMarkers(meta: Readonly<Record<string, unknown>>): Record<st
   return patch;
 }
 
+/**
+ * The snoozed beads whose date has passed (samskara-l2t.14): deferred, with a
+ * `defer_until` at or before `now`. A defer with no date is the icebox and
+ * never wakes by itself (bd defer --help).
+ */
+export function expiredSnoozes(snapshot: BeadSnapshot, now: number): string[] {
+  const ids: string[] = [];
+  for (const bead of snapshot.values()) {
+    if (bead.status !== 'deferred' || !bead.defer_until) continue;
+    const until = Date.parse(bead.defer_until);
+    if (Number.isFinite(until) && until <= now) ids.push(bead.id);
+  }
+  return ids;
+}
+
 /** `BEADS_META.cardKind` of an epic's, milestone's or molecule root's card. */
 export const OVERVIEW_CARD_KIND = 'overview';
 
@@ -1261,6 +1276,31 @@ export class BeadsIntegration implements FactoryIntegration {
     //    is made in the same sweep.
     //    Every step from here reads bead state from one refresh read, taken
     //    now, after the copy's last change in this sweep (samskara-l2t.15).
+    //    Read after write-back, never reused from before it: a close, a refused
+    //    close's handover and back, or the sync (which pulls) may have changed
+    //    the copy.
+    let snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
+    // Snoozes (samskara-l2t.14): a bead deferred until a date that has passed
+    // is woken with bd's own wake, published, and read again, before intake
+    // reads bd ready, so it is carded this sweep and never taken for held.
+    const expired = snapshot ? expiredSnoozes(snapshot, Date.now()) : [];
+    if (expired.length > 0) {
+      const woke = await repo.wake();
+      if (woke.code !== 0) {
+        // It may have committed before it failed (a timeout, say): published
+        // next sweep, as any write whose sync failed, and read again now.
+        this.#unpublished.add(slug);
+        this.#warnOnce(`wake:${slug}:${woke.code}`, `[factory-beads] ${slug}: snoozed beads past their date not woken (bd ready exit ${woke.code}), retried every sweep: ${resultTail(woke, 300)}`);
+        report.state = 'error';
+        report.diagnostic = `snoozes past their date not woken: bd ready exit ${woke.code}: ${resultTail(woke, 300)}`;
+        snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
+      } else {
+        this.#log.info(`[factory-beads] ${slug}: woke ${expired.length} snoozed bead(s) whose date passed: ${expired.join(', ')}`);
+        await this.#publish(repo, credentials, report, 'publishing woken snoozes');
+        if (report.state === 'parked') return;
+        snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
+      }
+    }
     const scope: IntakeScope = {
       orgId,
       projectId,
@@ -1271,16 +1311,12 @@ export class BeadsIntegration implements FactoryIntegration {
       overviews: new Map(),
       counted: new Map(),
       childless: new Set(),
-      // Read after write-back, never reused from before it: a close, a refused
-      // close's handover and back, or the sync (which pulls) may have changed
-      // the copy.
-      snapshot: await this.#readSnapshot(repo, report, 'the overview steps skipped'),
+      snapshot,
     };
     // Human gates (samskara-l2t.9): bd ready never lists a gate, so an open
     // one is taken from the refresh read and carded for approval. Like bd
     // ready, not while one of its own blockers is open (a gate made with
     // `bd dep add <gate> <bead>`; a formula's gate has no such edge).
-    const snapshot = scope.snapshot;
     const gates = snapshot
       ? [...snapshot.values()].filter(
           bead =>
