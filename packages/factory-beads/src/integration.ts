@@ -50,7 +50,7 @@ import { join } from 'node:path';
 import { createBeadsTools, resolveToolProject } from './agent-tools';
 import type { ToolScope } from './agent-tools';
 import { registerLive } from './done-rule';
-import { BdRepo, cacheDirFor, OVERVIEW_TYPES, resultTail } from './repo';
+import { BdRepo, cacheDirFor, OVERVIEW_TYPES, RELATED_TYPES, resultTail } from './repo';
 import type { BeadComment, BeadDetails, BeadRow, BeadSnapshot } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
@@ -448,6 +448,54 @@ export const NEEDS_APPROVAL_LABEL = 'status: needs approval';
 /** The bd label for a bead that needs a person's decision (`bd human`, bd v1.3.1 cmd/bd/human.go). */
 export const HUMAN_LABEL = 'human';
 
+/** The chip for each open bead that blocks this one (samskara-l2t.11). */
+export const BLOCKED_BY_CHIP = 'blocked by ';
+/** The chip for each open bead related to this one (samskara-l2t.11). */
+export const RELATED_CHIP = 'related ';
+const BLOCKED_BY_COLOR = '#d97706';
+/** Set, so the board never colors a related chip from its text (an id with "work" in it would read amber, like a blocker). */
+const RELATED_COLOR = '#64748b';
+
+/**
+ * A card's dependency chips (samskara-l2t.11): `blocked by <id>` for each
+ * bead that keeps this one from ready, and `related <id>` for each bead
+ * linked to it as related, from either side, that is not closed. Factory's
+ * work item has no dependency edge besides the parent link, so the chips are
+ * the board's view of them; the agent reads the full list with beads_show.
+ *
+ * Blocking, as bd 1.3.1 decides it (checked with `bd ready` and `bd blocked`):
+ * a `blocks` or `conditional-blocks` edge to a bead that is not closed, and
+ * a `waits-for` edge to a bead that has a child not closed. A bead the list
+ * does not hold (an external reference, a bead in another rig) counts as a
+ * blocker, unless bd lists this bead as ready (`ready`): bd ready skips an
+ * external reference it cannot resolve. Ids are sorted, so a change in bd's
+ * list order never rewrites the chips. Without a refresh read, none.
+ */
+export function dependencyChips(
+  bead: Pick<BeadRow, 'id' | 'dependencies'>,
+  snapshot: BeadSnapshot | undefined,
+  ready = false,
+): string[] {
+  if (!snapshot) return [];
+  const notClosed = (id: string) => snapshot.get(id)?.status !== 'closed';
+  const blockers = new Set<string>();
+  const related = new Set<string>();
+  for (const dep of bead.dependencies ?? []) {
+    const id = dep?.depends_on_id;
+    if (typeof id !== 'string' || id === bead.id) continue;
+    const target = snapshot.get(id);
+    if (dep.type === 'blocks' || dep.type === 'conditional-blocks') {
+      if (target ? target.status !== 'closed' : !ready) blockers.add(id);
+    } else if (dep.type === 'waits-for') {
+      if (target ? snapshot.children(id).some(child => child.status !== 'closed') : !ready) blockers.add(id);
+    } else if (RELATED_TYPES.includes(dep.type ?? '') && notClosed(id)) {
+      related.add(id);
+    }
+  }
+  for (const other of snapshot.relatedFrom(bead.id)) if (other.id !== bead.id && notClosed(other.id)) related.add(other.id);
+  return [...[...blockers].sort().map(id => BLOCKED_BY_CHIP + id), ...[...related].sort().map(id => RELATED_CHIP + id)];
+}
+
 /** Chip dot colors for the two highest priorities; the rest take the board's default. */
 const PRIORITY_COLORS: Readonly<Record<number, string>> = { 0: '#dc2626', 1: '#ea580c' };
 
@@ -460,10 +508,17 @@ const PRIORITY_COLORS: Readonly<Record<number, string>> = { 0: '#dc2626', 1: '#e
  * anything (`needsApproval` ignores an accepted card, @mastra/factory 0.20.0
  * dist/rules/types.js:14-18), and Factory's supervisor would report it as
  * label drift on a card in a working phase (dist/supervisor/health.js:177-187).
+ * Given the refresh read, the bead's open blockers and related beads follow
+ * as chips too (dependencyChips, samskara-l2t.11), a blocker's dot amber.
  * Factory has no sort field for cards, so priority is a chip only (Mastra
  * feature request 31596da1).
  */
-export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_type' | 'await_type'>, accepted = false): {
+export function cardChips(
+  bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_type' | 'await_type'> & Partial<Pick<BeadRow, 'id' | 'dependencies'>>,
+  accepted = false,
+  snapshot?: BeadSnapshot,
+  ready = false,
+): {
   labels: string[];
   labelColors: Record<string, string>;
 } {
@@ -477,6 +532,12 @@ export function cardChips(bead: Pick<BeadRow, 'labels' | 'priority' | 'issue_typ
     if (color) labelColors[chip] = color;
   }
   if (bead.issue_type) labels.push(bead.issue_type);
+  if (bead.id) {
+    for (const chip of dependencyChips({ id: bead.id, dependencies: bead.dependencies }, snapshot, ready)) {
+      labels.push(chip);
+      labelColors[chip] = chip.startsWith(BLOCKED_BY_CHIP) ? BLOCKED_BY_COLOR : RELATED_COLOR;
+    }
+  }
   if (!accepted && (own.includes(HUMAN_LABEL) || isHumanGate(bead))) labels.push(NEEDS_APPROVAL_LABEL);
   return { labels: [...new Set(labels)], labelColors };
 }
@@ -2289,7 +2350,7 @@ export class BeadsIntegration implements FactoryIntegration {
       if (!bead) continue;
       try {
         // Chips (samskara-l2t.5): only on change, as every write bumps the revision.
-        const chips = cardChips(bead, Boolean(card.acceptedAt));
+        const chips = cardChips(bead, Boolean(card.acceptedAt), snapshot, readyIds.has(beadId));
         const meta = card.metadata ?? {};
         if (
           JSON.stringify(meta[CARD_LABELS_META] ?? null) !== JSON.stringify(chips.labels) ||

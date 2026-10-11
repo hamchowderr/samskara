@@ -453,6 +453,31 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(shown[0]?.status).toBe('closed');
   }, 300_000);
 
+  it('shows a carded bead\'s open blocker and its related bead as chips, on both related cards (samskara-l2t.11)', async () => {
+    const make = (title: string) => run('bd', ['create', title, '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    const work = make('Dep work');
+    const other = make('Dep related');
+    run('bd', ['dolt', 'push']);
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    const card = (id: string) => h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === id);
+    await sweep(integration);
+    const blocker = make('Dep blocker');
+    run('bd', ['dep', 'add', work, blocker]);
+    run('bd', ['dep', 'add', work, other, '--type', 'related']);
+    run('bd', ['dolt', 'push']);
+    const result = await sweep(integration);
+    expect(result.repos[0], JSON.stringify(result)).toMatchObject({ state: 'ok' });
+    expect(card(work)!.metadata?.labels).toEqual(expect.arrayContaining([`blocked by ${blocker}`, `related ${other}`]));
+    expect(card(other)!.metadata?.labels).toEqual(expect.arrayContaining([`related ${work}`]));
+  }, 300_000);
+
   it('cards a childless epic as a planning card; children filed through the beads tools make it an overview card (samskara-l2t.2.4)', async () => {
     const make = (title: string, type: string, parent?: string) =>
       run('bd', ['create', title, '-t', type, '--silent', ...(parent ? ['--parent', parent] : [])]).split(/\r?\n/)[0]!;

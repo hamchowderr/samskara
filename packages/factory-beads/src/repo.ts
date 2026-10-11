@@ -53,6 +53,9 @@ export interface GateCheckSummary {
   errors?: number;
 }
 
+/** The dependency types that link two beads as related (bd dep add --help: related, relates-to). */
+export const RELATED_TYPES: readonly string[] = ['related', 'relates-to'];
+
 /** One comment as `bd comments <id> --json` prints it (bd 1.3.1). */
 export interface BeadComment {
   id: string;
@@ -127,6 +130,7 @@ export class BeadSnapshot {
   readonly #rows = new Map<string, BeadRow>();
   readonly #children = new Map<string, BeadRow[]>();
   readonly #blocking = new Map<string, BeadRow[]>();
+  readonly #relatedTo = new Map<string, BeadRow[]>();
 
   constructor(rows: readonly BeadRow[]) {
     for (const row of rows) this.#rows.set(row.id, row);
@@ -146,10 +150,12 @@ export class BeadSnapshot {
         else this.#children.set(parent, [row]);
       }
       for (const dep of row.dependencies ?? []) {
-        if (dep?.type !== 'blocks' || typeof dep.depends_on_id !== 'string') continue;
-        const list = this.#blocking.get(dep.depends_on_id);
+        if (typeof dep?.depends_on_id !== 'string') continue;
+        const index = dep.type === 'blocks' ? this.#blocking : RELATED_TYPES.includes(dep.type ?? '') ? this.#relatedTo : undefined;
+        if (!index) continue;
+        const list = index.get(dep.depends_on_id);
         if (list) list.push(row);
-        else this.#blocking.set(dep.depends_on_id, [row]);
+        else index.set(dep.depends_on_id, [row]);
       }
     }
   }
@@ -167,6 +173,17 @@ export class BeadSnapshot {
   /** The beads this bead blocks: each one with a `blocks` edge to it. */
   blocks(id: string): readonly BeadRow[] {
     return this.#blocking.get(id) ?? [];
+  }
+
+  /**
+   * The beads whose own row links this bead as related (`related` or
+   * `relates-to`). `bd dep add a b --type related` stores the edge on a's
+   * row only, while `bd dep relate` writes `relates-to` on both rows (both
+   * checked on bd 1.3.1), so a caller takes the union with the bead's own
+   * edges.
+   */
+  relatedFrom(id: string): readonly BeadRow[] {
+    return this.#relatedTo.get(id) ?? [];
   }
 
   /** Every bead the list returned. */

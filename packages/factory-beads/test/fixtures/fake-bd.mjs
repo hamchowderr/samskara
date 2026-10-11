@@ -308,6 +308,7 @@ switch (words[0]) {
         const deps = [
           ...(b.parent ? [{ issue_id: b.id, depends_on_id: b.parent, type: 'parent-child' }] : []),
           ...(b.blockedBy ?? []).map(id => ({ issue_id: b.id, depends_on_id: id, type: 'blocks' })),
+          ...(b.related ?? []).map(id => ({ issue_id: b.id, depends_on_id: id, type: 'related' })),
           // Like bd 1.3.1 (checked on a real copy): supersede and duplicate put
           // their edge on the closed bead's own row, and leave close_reason empty.
           ...(b.supersededBy ? [{ issue_id: b.id, depends_on_id: b.supersededBy, type: 'supersedes' }] : []),

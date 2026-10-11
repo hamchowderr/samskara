@@ -3,6 +3,9 @@ export {
   BEADS_DATA_REF,
   BEADS_COMMENT_SOURCE,
   beadCardTitle,
+  BLOCKED_BY_CHIP,
+  dependencyChips,
+  RELATED_CHIP,
   bdAuthorName,
   bdCommentText,
   fitFeedComment,
@@ -70,7 +73,7 @@ export { beadsSetting, beadsStartupLine } from './setting';
 export type { BeadsSetting } from './setting';
 export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runner';
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
-export { BdRepo, BeadSnapshot, cacheDirFor, CONTAINER_TYPES, NEVER_READY_TYPES, OVERVIEW_TYPES } from './repo';
+export { BdRepo, BeadSnapshot, cacheDirFor, CONTAINER_TYPES, NEVER_READY_TYPES, OVERVIEW_TYPES, RELATED_TYPES } from './repo';
 export type { BeadComment, BeadDetails, BeadRow, ReadyBead } from './repo';
 export { BeadsSyncWorker, LeaseWaitTimeoutError } from './worker';
 export type { LeaseSource, TickOutcome, WithLeaseOptions } from './worker';

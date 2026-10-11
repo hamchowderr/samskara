@@ -305,7 +305,28 @@ card's chips from the refresh read, writing only on change
 | each bd label | the bead's `labels` |
 | `P0` to `P4` | the bead's priority; `P0` red, `P1` orange |
 | the type (`task`, `bug`, `epic`, ...) | the bead's `issue_type` |
-| `status: needs approval` (not drawn) | a bead labelled `human`, until a person accepts its card |
+| `blocked by <id>`, dot amber | each bead that keeps this one from ready, as bd decides it (samskara-l2t.11) |
+| `related <id>`, dot slate | each bead linked to this one as `related` or `relates-to`, from either side, that is not closed (samskara-l2t.11) |
+| `status: needs approval` (not drawn) | a bead labelled `human`, or a human gate, until a person accepts its card |
+
+**Dependencies** (samskara-l2t.11). Factory's work item has no dependency
+edge besides the parent link, so a bead's blockers and related beads are
+shown as chips (`dependencyChips`, `integration.ts`), from the refresh
+read. A blocker is what bd 1.3.1 treats as one (checked with `bd ready` and
+`bd blocked`): a `blocks` or `conditional-blocks` edge to a bead that is not
+closed, and a `waits-for` edge to a bead with a child that is not closed. A
+bead the list does not hold (an external reference, a bead in another rig)
+counts as a blocker unless bd lists this bead as ready, since bd ready skips
+an external reference it cannot resolve. `bd dep add a b --type related`
+stores a related link on a's row only, while `bd dep relate` writes
+`relates-to` on both rows (both checked on bd 1.3.1), so
+`BeadSnapshot.relatedFrom` finds the other side and both cards show it once.
+Ids are sorted, so a change in bd's list order never rewrites the chips. A
+closed blocker or related bead drops off on the next tick. Since a ready bead
+has no blocker, the chip shows on a card whose bead was blocked after it was
+carded. An agent reads the full list with `beads_show`. The board draws
+chips in one scrolling row after the bead's own labels, each cut short with
+its full text as a tooltip.
 
 `beadsPriority` and `beadsType` follow the bead too. Factory has no sort
 field for cards, so priority cannot order a column; it is a chip only until
@@ -2095,6 +2116,14 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   published web comment's own feed key, as Factory does. In
   `test/real-bd.test.ts`, a card comment reaching origin with its author
   and text, and not coming back after a restart.
+- Dependency chips (samskara-l2t.11, `test/chips.test.ts`): an open
+  blocker added after carding shown amber and dropped once it closes; a
+  related link shown on both cards though bd stores it on one; closed, self,
+  duplicate and parent edges left out; `conditional-blocks` counted, and
+  `waits-for` while its bead has an open child; an external blocker kept,
+  unless bd lists the bead as ready; ids sorted. In
+  `test/real-bd.test.ts`, a real `bd dep add` blocker and related link on
+  the cards after the next sweep.
 - Gates checked on the host (samskara-l2t.10, `test/gate-check.test.ts`): a
   timer gate past its time closed by `bd gate check` (never `--escalate`),
   published, and its step carded in the same sweep; no check while a timer
