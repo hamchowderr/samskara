@@ -1410,12 +1410,19 @@ when its [refresh read](#refresh-read) holds an open gate that may resolve
 |------|--------------------------------------|---------|
 | `timer` | `created_at + timeout` has passed | once that time is past, from the read (`timeout` is in nanoseconds) |
 | `bead` | its bead (`await_id`) is closed | once that bead reads `closed`, or every sweep for a bead in another rig (`<rig>:<id>`) |
-| `gh:pr` | the pull request (`await_id`) is merged | every sweep while open |
-| `gh:run` | the workflow run (`await_id`) completed with success | every sweep while open; never without a run id |
+| `gh:pr` | the pull request (`await_id`) is merged | every 5 minutes while open (`githubGateIntervalMs`) |
+| `gh:run` | the workflow run (`await_id`) completed with success | every 5 minutes while open; never without a run id |
 
 The check is `bd --sandbox --actor factory-beads gate check -l 0 --json`
 (`BdRepo.checkGates`, `repo.ts`), a write under the writer lease the sweep
-already holds. `-l 0` lifts the default limit of 100 gates. `--escalate` is
+already holds. Each GitHub gate costs one gh API call per check, from the App
+installation's hourly rate limit that the Factory's own GitHub calls share,
+so a repository's GitHub gates are checked at most every 5 minutes
+(`githubGateIntervalMs`, about 290 calls a day per open gate), with every
+other type in the same call. Between those, a sweep that finds a timer or
+bead gate due checks only that type (`--type=timer`, `--type=bead`), with no
+token. A gate that will never resolve keeps being checked at that rate until
+a person closes it. `-l 0` lifts the default limit of 100 gates. `--escalate` is
 never passed: it shells out to Gas Town's `gt`. What it closed is published
 with `bd sync` together with any [snooze](#snoozed-beads) woken in the same
 sweep, and the read is taken again before intake, so the step a gate freed is
@@ -2092,8 +2099,9 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   timer gate past its time closed by `bd gate check` (never `--escalate`),
   published, and its step carded in the same sweep; no check while a timer
   runs or with no gate; a bead gate closed once its bead closes; a `gh:pr`
-  gate checked every sweep with the App token as `GH_TOKEN`, which no other
-  call gets, and closed once merged; a gate gh cannot read reported and left
+  gate checked with the App token as `GH_TOKEN`, which no other call gets,
+  and closed once merged; GitHub gates checked at most every 5 minutes while
+  a due timer is checked by type every sweep, without the token; a gate gh cannot read reported and left
   open while the rest are checked; `checkableGates` on every gate kind. In
   `test/real-bd.test.ts`, a real one-second timer gate closed on the host,
   published to origin, and its step carded. `unresolvedGate` and the pour

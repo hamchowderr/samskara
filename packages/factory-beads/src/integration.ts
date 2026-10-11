@@ -530,6 +530,14 @@ export interface BeadsIntegrationOptions {
    */
   remoteCheckIntervalMs?: number;
   /**
+   * How often a repository's open GitHub gates (`gh:pr`, `gh:run`) are
+   * checked against GitHub. Default 5 min. Each check is a gh API call per
+   * gate, drawn from the App installation's hourly rate limit, which the
+   * Factory's own GitHub calls share; timer and bead gates are local and are
+   * checked on every sweep that finds one due (samskara-l2t.10).
+   */
+  githubGateIntervalMs?: number;
+  /**
    * How long an agent tool waits for the writer lease while another process
    * holds it. Default 120 s, polled every 1 s.
    */
@@ -659,6 +667,8 @@ export class BeadsIntegration implements FactoryIntegration {
   #idle: string | undefined;
   /** Repositories last seen without refs/dolt/data, by slug: when origin was checked. */
   readonly #noData = new Map<string, number>();
+  /** When each repository's GitHub gates were last checked (`githubGateIntervalMs`). */
+  readonly #githubGatesCheckedAt = new Map<string, number>();
   /** Repositories (slug) with an agent-tool write committed on the host copy but not yet on origin. */
   readonly #unpublished = new Set<string>();
   #toolOps: BeadsToolOps | undefined;
@@ -1340,8 +1350,15 @@ export class BeadsIntegration implements FactoryIntegration {
           this.#log.info(`[factory-beads] ${slug}: woke ${expired.length} snoozed bead(s) whose date passed: ${expired.join(', ')}`);
         }
       }
-      if (dueGates.length > 0) {
-        const { res, summary } = await repo.checkGates(credentials);
+      // GitHub gates at most every githubGateIntervalMs, with every other
+      // type in the same call; between those, only the local types due now.
+      const types = new Set(dueGates.map(id => snapshot!.get(id)?.await_type));
+      const github = types.has('gh:pr') || types.has('gh:run');
+      const githubDue = github && now - (this.#githubGatesCheckedAt.get(slug) ?? 0) >= (this.#options.githubGateIntervalMs ?? 5 * 60_000);
+      const checks: Array<string | undefined> = githubDue ? [undefined] : [...types].filter((type): type is string => type === 'timer' || type === 'bead');
+      for (const type of checks) {
+        const { res, summary } = await repo.checkGates(credentials, type);
+        if (type === undefined) this.#githubGatesCheckedAt.set(slug, now);
         if (res.code !== 0 || !summary) {
           failed = true;
           this.#warnOnce(`gates:${slug}:${res.code}`, `[factory-beads] ${slug}: gates not checked (bd gate check exit ${res.code}), retried every sweep: ${resultTail(res, 300)}`);

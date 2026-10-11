@@ -460,11 +460,16 @@ export class BdRepo {
    * Never `--escalate`: it shells out to Gas Town's `gt`. `-l 0` lifts the
    * default limit of 100 (checked on bd 1.3.1). bd prints a line per gate and
    * then the JSON summary; the summary is returned, or undefined when the
-   * output has none.
+   * output has none. `type` limits the check to one gate type (`--type`);
+   * omitted, every type is checked.
    */
-  async checkGates(credentials: RepoCredentials | undefined): Promise<{ res: BdResult; summary?: GateCheckSummary }> {
+  async checkGates(credentials: RepoCredentials | undefined, type?: string): Promise<{ res: BdResult; summary?: GateCheckSummary }> {
     const actor = this.runner.actor;
-    const res = await this.runner.bd(['--sandbox', '--actor', actor, 'gate', 'check', '-l', '0', '--json'], { cwd: this.dir, credentials, github: true });
+    const res = await this.runner.bd(
+      ['--sandbox', '--actor', actor, 'gate', 'check', ...(type ? [`--type=${type}`] : []), '-l', '0', '--json'],
+      // gh only runs for GitHub gates, so only an all-types check gets the token.
+      { cwd: this.dir, credentials, github: !type },
+    );
     const start = res.stdout.search(/^\{/m);
     if (start < 0) return { res };
     try {

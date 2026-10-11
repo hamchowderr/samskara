@@ -537,7 +537,11 @@ switch (words[0]) {
     const lines = [];
     const errors = [];
     const summary = { checked: 0, dry_run: false, errors: 0, escalated: 0, resolved: 0, schema_version: 1 };
-    for (const g of state.beads.filter(b => b.issue_type === 'gate' && (b.status ?? 'open') === 'open' && b.await_type !== 'human')) {
+    // --type limits the check to one type, as bd's does.
+    const only = flagValue('type');
+    for (const g of state.beads.filter(
+      b => b.issue_type === 'gate' && (b.status ?? 'open') === 'open' && b.await_type !== 'human' && (!only || b.await_type === only),
+    )) {
       summary.checked++;
       let resolved = false;
       if (g.await_type === 'timer') {

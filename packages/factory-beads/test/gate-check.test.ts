@@ -67,9 +67,9 @@ describe('gates checked on the host (samskara-l2t.10)', () => {
     expect(card(h, 'w-step')).toBeDefined();
   });
 
-  it('checks a GitHub gate every sweep with the App token as GH_TOKEN, and closes it once merged', async () => {
+  it('checks a GitHub gate with the App token as GH_TOKEN, and closes it once merged', async () => {
     h = createHarness(held({ await_type: 'gh:pr', await_id: '42' }));
-    const integration = h.integration();
+    const integration = h.integration({ githubGateIntervalMs: 0 });
     await sweep(integration);
     expect(checks(h)).toHaveLength(1);
     expect(checks(h)[0]!.env).toMatchObject({ ghToken: TOKEN, token: TOKEN });
@@ -96,6 +96,28 @@ describe('gates checked on the host (samskara-l2t.10)', () => {
     expect(result.repos[0]).toMatchObject({ state: 'ok', diagnostic: expect.stringMatching(/could not evaluate 1 gate/) });
     expect(h.state().beads.find(b => b.id === 'w-gate')!.status ?? 'open').toBe('open');
     expect(card(h, 'w-other')).toBeDefined();
+  });
+
+  it('checks GitHub gates at most every 5 minutes, and due local gates every sweep without the token', async () => {
+    h = createHarness([
+      ...held({ await_type: 'gh:pr', await_id: '42' }),
+      { id: 'w-timer', title: 'Gate: timer', issue_type: 'gate', await_type: 'timer', timeout: 1, createdAt: '2026-01-01T00:00:00Z' },
+      { id: 'w-other', title: 'Other', blockedBy: ['w-timer'] },
+    ]);
+    const integration = h.integration();
+    await sweep(integration);
+    // The first sweep checks every type at once, GitHub included.
+    expect(checks(h).map(c => c.argv.find(a => a.startsWith('--type=')) ?? 'all')).toEqual(['all']);
+    expect(card(h, 'w-other')).toBeDefined();
+    h.setState(s => Object.assign(s, { ghMerged: ['42'] }));
+    h.setState(s => s.beads.push({ id: 'w-timer2', title: 'Gate: timer', issue_type: 'gate', await_type: 'timer', timeout: 1, createdAt: '2026-01-01T00:00:00Z' }));
+    await sweep(integration);
+    // Within 5 minutes: only the due timer, by type, with no GH_TOKEN; the merged PR waits.
+    expect(checks(h).slice(1).map(c => [c.argv.find(a => a.startsWith('--type=')), c.env.ghToken])).toEqual([['--type=timer', null]]);
+    expect(h.state().beads.find(b => b.id === 'w-timer2')).toMatchObject({ status: 'closed' });
+    expect(h.state().beads.find(b => b.id === 'w-gate')!.status ?? 'open').toBe('open');
+    await sweep(integration);
+    expect(checks(h)).toHaveLength(2);
   });
 
   it('names an escalated gate in the diagnostic and leaves it open', async () => {
