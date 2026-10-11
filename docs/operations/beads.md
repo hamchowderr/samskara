@@ -405,7 +405,9 @@ the source the publisher returns on the comment (`@mastra/factory` 0.20.0
   that name is the email for a person with none (the board UI `mastra`
   1.33.0 ships, `dist/factory/assets/index-*.js`: `Wg` returns
   `name ?? id`). So `cc @sam@example.com` is copied as `cc @sam`; the
-  card keeps the original.
+  card keeps the original. An address with non-ASCII characters, or a
+  bracketed IP domain (`user@[1.2.3.4]`), is not recognised and is copied
+  as written.
 - **Written as an agent tool's write is**, by the same path (`tool-ops.ts`):
   under the writer lease, on the host copy, after `bd dolt pull`, then
   published with `bd sync`; a sync that fails leaves it for the next
@@ -434,11 +436,20 @@ the source the publisher returns on the comment (`@mastra/factory` 0.20.0
   source, or bd can write the comment and print no id; Factory names the
   same gap for its own publishers ("Both need an outbox", `domain.js:101-108`).
   Before posting a bd comment, the sweep looks for a person's card comment
-  with no source whose copy would have that author name and text, oldest
-  first and each card comment once, and records the bd id on it with
-  Factory's own `attachExternalSource`. Two identical comments by one person
-  pair with their two copies in order. A person who writes in bd exactly
-  what they wrote on the card, as the same name, is taken for a copy.
+  with no source whose copy would have that author name and text, and that
+  was made at most 15 minutes before the bd comment (a copy waits for the
+  writer lease, 120 s by default, then pulls and writes). It goes oldest
+  first, uses each card comment once, skips one whose copy is still
+  running, and records the bd id on it with Factory's own
+  `attachExternalSource`; if the card comment got a source meanwhile, the
+  bd comment is posted instead. Two identical comments by one person pair
+  with their two copies in order. bd keeps `-f` text byte for byte,
+  trailing newlines included (checked on bd 1.3.1), so a copy's text
+  matches. A person who writes in bd, under the same name, exactly what
+  they wrote on the card within those 15 minutes is taken for a copy; bd's
+  default author is git `user.name`, which is often the Factory name. An
+  unrecorded copy of a card comment that was deleted since is posted back,
+  since a deleted comment has no text to match.
 - **Not copied:** edits and deletions on the card (the publisher seam has no
   hook for them), and a comment whose repository is no longer linked to the
   project (logged).
@@ -1911,7 +1922,8 @@ first. `POST /web/beads/sync` (admins only) runs a tick immediately.
   copy for an agent, an unlinked chat sender or a card that is not a beads
   card; an email name cut to its local part; a copy whose source Factory
   never recorded linked after a restart, identical comments paired in
-  order, and someone else's identical bd comment still posted; every email
+  order, someone else's identical bd comment still posted, and a bd
+  comment written a day after an identical unlinked card comment posted; every email
   address in the copied text cut to its local part while the card keeps
   the original (samskara-l2t.18). The harness keeps a
   published web comment's own feed key, as Factory does. In

@@ -32,7 +32,7 @@ describe('bd comments on the card feed (samskara-l2t.6)', () => {
       body: 'First **finding**',
       author: { kind: 'user', id: 'beads:alice', displayName: 'alice', external: { platform: 'beads', userId: 'alice' } },
       externalSource: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE },
-      occurredAt: new Date('2026-01-02T00:00:00Z'),
+      occurredAt: new Date(h.state().beads[0]!.comments![0]!.created_at),
     });
     const revision = item.revision;
 

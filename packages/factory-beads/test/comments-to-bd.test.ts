@@ -140,6 +140,22 @@ describe('card comments to bd (samskara-l2t.7)', () => {
     expect(feed.map(c => c.externalSource?.externalId)).toEqual(bdIds);
   });
 
+  it('never takes a bd comment written long after an unlinked card comment for its copy', async () => {
+    const { harness, integration } = await setup([{ id: 'w-1', title: 'One' }]);
+    h = harness;
+    h.feed.publishers = [];
+    // Made before card comments were copied: no source, never copied.
+    const old = await comment(h, 'w-1', { kind: 'user', id: 'u1', displayName: 'Jane' }, 'LGTM');
+    if (old.status !== 'created') throw new Error(old.status);
+    h.feed.comments.find(c => c.id === old.comment.id)!.createdAt = new Date(Date.now() - 24 * 60 * 60_000);
+    // Today Jane writes the same words in bd.
+    h.bd('comments', 'add', 'w-1', 'LGTM', '--actor=Jane');
+    await sweep(integration);
+    const feed = h.feed.on(card(h, 'w-1').id);
+    expect(feed.map(c => c.body)).toEqual(['LGTM', 'LGTM']);
+    expect(feed[0]!.externalSource).toBeNull();
+  });
+
   it('copies nothing from an agent, from bd itself, or on a card that is not a beads card', async () => {
     const { harness, integration } = await setup([{ id: 'w-1', title: 'One' }]);
     h = harness;

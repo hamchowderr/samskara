@@ -100,6 +100,21 @@ export function bdCommentText(body: string): string {
 
 /** How long a settled card-comment copy is remembered (samskara-l2t.7). */
 const COPY_MEMORY_MS = 10 * 60_000;
+/**
+ * How long after a card comment its bd copy can be written: the copy waits
+ * for the writer lease (120 s by default, worker.ts) and then pulls and
+ * writes. A bd comment outside it is never taken for an unrecorded copy.
+ */
+const COPY_WINDOW_MS = 15 * 60_000;
+/** bd's `created_at` has whole seconds; a copy can read up to one earlier than the card comment. */
+const BD_CLOCK_SLACK_MS = 2_000;
+
+/** A person's card comment with no source, and the text its bd copy would have. */
+interface UnrecordedCopy {
+  row: WorkItemCommentRow;
+  author: string;
+  text: string;
+}
 const CUT_NOTE = '\n\n(cut short; the full comment is in bd)';
 
 /**
@@ -2207,9 +2222,9 @@ export class BeadsIntegration implements FactoryIntegration {
    * `work-item-comments`, base.js:132-135), whose list returns deleted rows
    * too (base.js:302-323). Empty without factory storage.
    */
-  async #feedComments(scope: IntakeScope, card: WorkItemRow): Promise<{ beadsIds: Set<string>; unlinked: WorkItemCommentRow[] }> {
+  async #feedComments(scope: IntakeScope, card: WorkItemRow): Promise<{ beadsIds: Set<string>; unlinked: UnrecordedCopy[] }> {
     const beadsIds = new Set<string>();
-    const unlinked: WorkItemCommentRow[] = [];
+    const unlinked: UnrecordedCopy[] = [];
     const comments = this.#commentsStore();
     if (!comments) return { beadsIds, unlinked };
     let before: string | undefined;
@@ -2218,7 +2233,10 @@ export class BeadsIntegration implements FactoryIntegration {
       for (const row of page.comments) {
         const source = row.externalSource;
         if (source?.integrationId === BEADS_INTEGRATION_ID && source.type === BEADS_COMMENT_SOURCE) beadsIds.add(source.externalId);
-        else if (!source && copiedToBd(row)) unlinked.push(row);
+        // A copy still running is not a candidate: its own attach records it.
+        else if (!source && copiedToBd(row) && !this.#copies.has(row.id)) {
+          unlinked.push({ row, author: bdAuthorName(row.author.displayName), text: bdCommentText(row.body) });
+        }
       }
       before = page.nextCursor;
     } while (before);
@@ -2238,24 +2256,34 @@ export class BeadsIntegration implements FactoryIntegration {
    * ("a process that restarts mid-flight drops the post. Both need an
    * outbox", dist/storage/domains/comments/domain.js:101-108). The bd comment
    * is matched to a person's card comment with no source, by the bd author
-   * name and the text the copy wrote, oldest first and each card comment at
-   * most once, and linked to it with the same `attachExternalSource` Factory
+   * name and the text the copy wrote, written within COPY_WINDOW_MS after
+   * the card comment, oldest first and each card comment at most once, never
+   * one whose copy is still running, and linked to it with the same `attachExternalSource` Factory
    * uses (dist/storage/domains/comments/base.js:434-452), so it is not posted
    * back and the next sweep finds it by id. Two identical comments by one
-   * person pair with their two copies in order; a person who writes in bd
-   * exactly what they wrote on the card, as the same name, is taken for a copy.
+   * person pair with their two copies in order. A person who writes in bd,
+   * as the same name, exactly what they wrote on the card within that window
+   * is taken for a copy. bd stores `-f` text byte for byte, trailing
+   * newlines included (checked on bd 1.3.1), so a copy's text matches.
    */
-  async #linkUnrecordedCopy(scope: IntakeScope, unlinked: WorkItemCommentRow[], comment: BeadComment): Promise<boolean> {
+  async #linkUnrecordedCopy(scope: IntakeScope, unlinked: UnrecordedCopy[], comment: BeadComment): Promise<boolean> {
     const store = this.#commentsStore();
-    if (!store) return false;
-    const match = unlinked.findIndex(row => bdAuthorName(row.author.displayName) === comment.author && bdCommentText(row.body) === comment.text);
+    const written = comment.created_at ? Date.parse(comment.created_at) : Number.NaN;
+    if (!store || Number.isNaN(written)) return false;
+    const match = unlinked.findIndex(({ row, author, text }) => {
+      const made = row.createdAt.getTime();
+      return author === comment.author && text === comment.text && written >= made - BD_CLOCK_SLACK_MS && written <= made + COPY_WINDOW_MS;
+    });
     if (match === -1) return false;
-    const [row] = unlinked.splice(match, 1);
-    await store.attachExternalSource({
+    const [{ row }] = unlinked.splice(match, 1) as [UnrecordedCopy];
+    // Null when the row got a source meanwhile (first platform wins,
+    // base.js:441): then this bd comment is not its copy, and is posted.
+    const linked = await store.attachExternalSource({
       orgId: scope.orgId,
-      commentId: row!.id,
+      commentId: row.id,
       source: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: comment.id },
     });
+    if (!linked || linked.externalSource?.externalId !== comment.id) return false;
     this.#log.info(`[factory-beads] ${scope.slug}: bd comment ${comment.id} linked to the card comment it was copied from`);
     return true;
   }

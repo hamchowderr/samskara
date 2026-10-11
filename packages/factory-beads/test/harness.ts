@@ -50,6 +50,8 @@ export interface FakeBead {
   labels?: string[];
   /** bd list's `comment_count`. */
   commentCount?: number;
+  /** `bd comments add` writes here; its length is `comment_count` (fake-bd.mjs). */
+  comments?: Array<{ id: string; issue_id: string; author: string; text: string; created_at: string }>;
   /** bd's `updated_at`; the fake sets it on close and update. Default 2026-01-01. */
   updatedAt?: string;
   /** `bd supersede <id> --with <new>`: a `supersedes` edge to the replacement. */
@@ -447,6 +449,7 @@ export interface FeedComment {
   sourceKey: string | null;
   occurredAt: Date;
   deletedAt: Date | null;
+  createdAt: Date;
 }
 
 /** Factory's outbound seam (`WorkItemFeedPublisher`), as the fake feed calls it. */
@@ -507,6 +510,7 @@ export class MemoryFeed {
       sourceKey: input.externalSource ? key(input.externalSource) : null,
       occurredAt: input.occurredAt ?? new Date(),
       deletedAt: null,
+      createdAt: new Date(),
     };
     this.comments.push(comment);
     return { status: 'created' as const, comment: structuredClone(comment), workItem, mirrored: this.#mirror(comment, workItem) };
