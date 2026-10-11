@@ -164,7 +164,9 @@ export class BeadsToolOps {
   }
 
   /**
-   * Run one bd write on the copy, then publish it with `bd sync`. `build` sees
+   * Run one bd write on the copy, then publish it with `bd sync`, as the agent
+   * actor unless `options.actor` names another (a person's card comment
+   * copied to bd, samskara-l2t.7, is written as the integration). `build` sees
    * the freshly pulled copy (for checks that need it, such as the
    * repository's issue types or a bead's status) and returns the bd
    * arguments, or throws a BeadsToolError to refuse before anything is
@@ -174,7 +176,7 @@ export class BeadsToolOps {
    * write-back conflict does: state `parked`, no intake and no writes until an
    * operator resolves it and calls POST /web/beads/reset.
    */
-  write(target: ToolRepo, build: (repo: BdRepo) => Promise<readonly string[]>): Promise<WriteOutcome> {
+  write(target: ToolRepo, build: (repo: BdRepo) => Promise<readonly string[]>, options: { actor?: string } = {}): Promise<WriteOutcome> {
     return this.#lease(async () => {
       const { repo, credentials } = await this.#prepare(target);
       const parked = repo.parkedReason() ?? (this.#deps.repoState(target.orgId, target.slug) === 'parked' ? 'bd sync conflict' : undefined);
@@ -186,7 +188,7 @@ export class BeadsToolOps {
       const pull = await repo.pull(credentials);
       if (pull.code !== 0) throw new BeadsToolError(`bd dolt pull failed (exit ${pull.code}), nothing was written: ${errorText(pull)}`);
       const args = await build(repo);
-      const res = await this.#deps.runner.bd(['--sandbox', '--actor', this.actor, ...args, '--json'], { cwd: repo.dir });
+      const res = await this.#deps.runner.bd(['--sandbox', '--actor', options.actor ?? this.actor, ...args, '--json'], { cwd: repo.dir });
       if (res.code !== 0) throw new BeadsToolError(`bd ${args[0]} failed (exit ${res.code}), nothing was written: ${errorText(res)}`);
       const output = parseBdOutput(res.stdout);
       const sync = await this.#sync(repo, credentials);

@@ -579,6 +579,47 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     });
   }, 300_000);
 
+  it("copies a person's card comment to bd under their name, published to origin, and never posts it back (samskara-l2t.7)", async () => {
+    const integration = h.integration({
+      sourceControl: {
+        id: 'github',
+        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
+      },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    });
+    h.feed.publishers = [integration.feedPublisher(h.ctx) as never];
+    run('bd', ['dolt', 'pull']);
+    const bead = run('bd', ['create', 'Card commented', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
+    run('bd', ['dolt', 'push']);
+    await sweep(integration);
+    const card = h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === bead)!;
+
+    const created = await h.feed.createComment({
+      orgId: card.orgId,
+      workItemId: card.id,
+      author: { kind: 'user', id: 'u1', displayName: 'Jane Doe' },
+      body: '--flag-like start\nsecond "line" cc @sam@example.com',
+    });
+    if (created.status !== 'created') throw new Error(created.status);
+    await created.mirrored;
+
+    run('bd', ['dolt', 'pull']);
+    const inBd = JSON.parse(run('bd', ['--readonly', 'comments', bead, '--json'])) as Array<{ id: string; author: string; text: string }>;
+    expect(inBd).toHaveLength(1);
+    expect(inBd[0]).toMatchObject({ author: 'Jane Doe', text: '--flag-like start\nsecond "line" cc @sam' });
+    expect(h.feed.on(card.id)[0]!.externalSource).toMatchObject({ integrationId: 'beads', type: 'comment', externalId: inBd[0]!.id });
+
+    await sweep(integration);
+    await sweep(h.integration({
+      sourceControl: { id: 'github', versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never },
+      cacheDir: join(root, 'c'),
+      runner: new BdRunner(),
+    }));
+    expect(h.feed.on(card.id)).toHaveLength(1);
+    h.feed.publishers = [];
+  }, 300_000);
+
   it('BdRepo.setStatus: writes only over the status read, exit 13 otherwise (samskara-l2t.4)', async () => {
     const dir = join(root, 'st');
     run('git', ['init', '-q', dir], root);

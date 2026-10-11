@@ -42,7 +42,7 @@ state.calls.push({
 const flags = argv.filter(a => a.startsWith('--'));
 const words = [];
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--actor' || argv[i] === '--reason' || argv[i] === '-n') {
+  if (['--actor', '--reason', '-n', '--author', '-f'].includes(argv[i])) {
     i++;
     continue;
   }
@@ -487,9 +487,13 @@ switch (words[0]) {
       code = 1;
       err = `resolving ${words[add ? 2 : 1]}: no issue found`;
     } else if (add) {
-      const author = flagValue('actor') ?? 'tester';
-      const text = words[3];
-      const created_at = new Date(Date.UTC(2026, 0, 2, 0, 0, (bead.comments ?? []).length)).toISOString().replace('.000', '');
+      // `--author` (or the actor) names the author; `-f` reads the text from a file.
+      const spaced = name => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
+      const author = spaced('--author') ?? flagValue('author') ?? spaced('--actor') ?? flagValue('actor') ?? 'tester';
+      const file = spaced('-f');
+      const text = file !== undefined ? readFileSync(file, 'utf8') : words[3];
+      // Like bd: the time of the write, in whole seconds (UTC).
+      const created_at = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace('.000', '');
       const h = createHash('sha1').update(`${bead.id}|${author}|${text}|${created_at}`).digest('hex');
       const id = `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
       bead.comments = [...(bead.comments ?? []), { id, issue_id: bead.id, author, text, created_at }];
