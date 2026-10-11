@@ -1434,10 +1434,14 @@ checksum-verified like bd (`Dockerfile`, stage `gh-cli`). A `gh:pr` gate
 needs the App's **Pull requests** permission, which it has; a `gh:run` gate
 needs **Actions: Read-only**, which the App needs granting
 ([GitHub App setup](../setup/github-app.md)). A gate gh cannot evaluate stays
-open, is logged once, and is named in the repository's diagnostic.
+open, is logged once, and is counted in the repository's diagnostic with
+bd's reason, unless the sweep already set one. gh runs with a config
+directory of its own (`GH_CONFIG_DIR`, under the system temp directory), so
+it never falls back to a login stored under the server user's home.
 
 **A failed run or a closed pull request.** bd counts the gate as escalated
-and leaves it open, so the step stays held. It is logged once; a person
+and leaves it open, so the step stays held, and it is checked again every
+sweep. It is logged once and named in the repository's diagnostic; a person
 decides what follows (close the gate with `bd gate resolve`, or the work).
 
 A gate check that exits non-zero puts the repository in `error` and is

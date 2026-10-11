@@ -1355,13 +1355,14 @@ export class BeadsIntegration implements FactoryIntegration {
           // A gate bd could not evaluate (gh missing, no access to the run or
           // pull request) stays open and is tried again every sweep.
           if ((summary.errors ?? 0) > 0) {
-            this.#warnOnce(`gate-errors:${slug}`, `[factory-beads] ${slug}: bd gate check could not evaluate ${summary.errors} gate(s), retried every sweep: ${resultTail(res, 600)}`);
-            report.diagnostic ??= `bd gate check could not evaluate ${summary.errors} gate(s)`;
+            this.#warnOnce(`gate-errors:${slug}:${summary.errors}`, `[factory-beads] ${slug}: bd gate check could not evaluate ${summary.errors} gate(s), retried every sweep: ${resultTail(res, 600)}`);
+            report.diagnostic ??= `bd gate check could not evaluate ${summary.errors} gate(s): ${resultTail(res, 300)}`;
           }
           // A failed run or a closed pull request: bd reports it and leaves
           // the gate open. Only a person decides what follows.
           if ((summary.escalated ?? 0) > 0) {
             this.#warnOnce(`gate-escalated:${slug}:${summary.escalated}`, `[factory-beads] ${slug}: ${summary.escalated} gate(s) will not resolve (a failed run or a closed pull request); close or reopen the work in bd: ${resultTail(res, 600)}`);
+            report.diagnostic ??= `${summary.escalated} gate(s) will not resolve (a failed run or a closed pull request); a person decides what follows in bd`;
           }
         }
       }

@@ -98,6 +98,33 @@ describe('gates checked on the host (samskara-l2t.10)', () => {
     expect(card(h, 'w-other')).toBeDefined();
   });
 
+  it('names an escalated gate in the diagnostic and leaves it open', async () => {
+    h = createHarness(held({ await_type: 'gh:pr', await_id: '9' }));
+    h.setState(s => Object.assign(s, { ghClosed: ['9'] }));
+    const result = await sweep(h.integration());
+    expect(result.repos[0]).toMatchObject({ state: 'ok', diagnostic: expect.stringMatching(/1 gate\(s\) will not resolve/) });
+    expect(h.state().beads.find(b => b.id === 'w-gate')!.status ?? 'open').toBe('open');
+    expect(syncs(h)).toBe(0);
+  });
+
+  it('reports a gate check that fails, and wakes a snooze in the same sweep, publishing once', async () => {
+    h = createHarness([
+      ...held({ await_type: 'timer', timeout: 1, createdAt: '2026-01-01T00:00:00Z' }),
+      { id: 'w-snoozed', title: 'Snoozed', status: 'deferred', deferUntil: '2025-01-15T08:00:00Z' },
+    ]);
+    h.setState(s => Object.assign(s, { gateCheckFail: true }));
+    const integration = h.integration();
+    const failed = await sweep(integration);
+    expect(failed.repos[0]).toMatchObject({ state: 'error', diagnostic: expect.stringMatching(/gates not checked: bd gate check exit 1/) });
+    // The wake still landed and was published, and the snoozed bead is carded.
+    expect(syncs(h)).toBe(1);
+    expect(card(h, 'w-snoozed')).toBeDefined();
+    expect(card(h, 'w-step')).toBeUndefined();
+    h.setState(s => Object.assign(s, { gateCheckFail: false }));
+    await sweep(integration);
+    expect(card(h, 'w-step')).toBeDefined();
+  });
+
   it('checkableGates: due timers, closed or foreign bead targets, GitHub gates with an await_id', () => {
     const now = Date.parse('2026-01-01T02:00:00Z');
     const gate = (id: string, extra: Record<string, unknown>) => ({ id, issue_type: 'gate', status: 'open', created_at: '2026-01-01T00:00:00Z', ...extra });

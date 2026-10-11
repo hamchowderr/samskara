@@ -15,6 +15,8 @@
  * server process holds every application secret, and bd has no use for them.
  */
 import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 export const TOKEN_ENV = 'BEADS_GIT_TOKEN';
 export const TOKEN_USER_ENV = 'BEADS_GIT_USERNAME';
@@ -157,13 +159,17 @@ export function childEnv(options: { actor: string; extra?: NodeJS.ProcessEnv; cr
   if (options.credentials) {
     env[TOKEN_ENV] = options.credentials.token;
     if (options.credentials.username) env[TOKEN_USER_ENV] = options.credentials.username;
-    if (options.github) {
-      // gh's own variables (gh help environment): the token, no prompts, no
-      // update check.
-      env.GH_TOKEN = options.credentials.token;
-      env.GH_PROMPT_DISABLED = '1';
-      env.GH_NO_UPDATE_NOTIFIER = '1';
-    }
+    if (options.github) env.GH_TOKEN = options.credentials.token;
+  }
+  if (options.github) {
+    // gh's own variables (gh help environment): no prompts, no update check,
+    // and a config directory of its own, so gh never falls back to a login
+    // stored under the server user's home (the allowlist passes HOME, APPDATA
+    // and XDG_CONFIG_HOME) when it has no GH_TOKEN, or for a host GH_TOKEN
+    // does not cover.
+    env.GH_PROMPT_DISABLED = '1';
+    env.GH_NO_UPDATE_NOTIFIER = '1';
+    env.GH_CONFIG_DIR = join(tmpdir(), 'factory-beads-gh');
   }
   return env;
 }

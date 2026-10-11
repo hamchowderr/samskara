@@ -79,6 +79,10 @@ export interface FakeState {
   /** `bd gate check`: GitHub gates whose await_id is merged or passed, and ones gh cannot read. */
   ghMerged?: string[];
   ghErrors?: string[];
+  /** GitHub gates whose pull request closed unmerged (escalated, left open). */
+  ghClosed?: string[];
+  /** `bd gate check` exits 1 with no summary. */
+  gateCheckFail?: boolean;
   /** Bead ids whose `--if-assignee` reassign fails as if the holder changed (exit 13). */
   casFail?: string[];
   /** The refresh read (`bd list` without --parent) fails: always (true), or this many more times. */

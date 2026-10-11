@@ -524,6 +524,11 @@ switch (words[0]) {
     // closed, a GitHub gate when `ghMerged` names its await_id; `ghErrors`
     // names await_ids gh cannot read. A line per gate, then the JSON summary;
     // errors on stderr; exit 0.
+    if (state.gateCheckFail) {
+      code = 1;
+      err = 'Error: database is locked';
+      break;
+    }
     if (words[1] !== 'check') {
       code = 1;
       err = `fake bd: gate ${words[1]} not supported`;
@@ -543,6 +548,11 @@ switch (words[0]) {
         if (!process.env.GH_TOKEN || (state.ghErrors ?? []).includes(g.await_id)) {
           summary.errors++;
           errors.push(`✗ ${g.id}: error checking - gh pr view failed`);
+          continue;
+        }
+        if ((state.ghClosed ?? []).includes(g.await_id)) {
+          summary.escalated++;
+          lines.push(`⚠ ${g.id}: escalated - PR closed without merging`);
           continue;
         }
         resolved = (state.ghMerged ?? []).includes(g.await_id);
