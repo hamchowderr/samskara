@@ -9,10 +9,9 @@
     "packages/*"
   ],
   "scripts": {
-    "predev": "node scripts/ensure-dev-secrets.mjs && node scripts/build-branded-ui.mjs",
+    "predev": "node scripts/ensure-dev-secrets.mjs",
     "dev": "cross-env MASTRACODE_AUTH_DISABLED=0 mastra factory dev --dir src/mastra",
     "check": "tsc --noEmit",
-    "prebuild": "node scripts/build-branded-ui.mjs",
     "build": "mastra build --dir src/mastra",
     "start": "varlock run -- mastra start",
     "deploy": "mastra deploy",

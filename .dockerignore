@@ -1,7 +1,6 @@
 # Rebuilt inside the image.
 node_modules
 .mastra
-.branded-ui
 
 # Never in an image: local data and secrets.
 data

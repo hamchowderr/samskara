@@ -121,10 +121,6 @@ across a version before, or depends on code that reads the installed package:
 6. **The Better Auth provider has not changed under us.** `npm run
    check:auth-parity` passes; when it fails, follow
    [better-auth-migrations.md](better-auth-migrations.md#how-drift-is-caught).
-7. **The UI branding still applies.** `scripts/build-branded-ui.mjs` patches
-   the CLI's UI bundle by anchors, and stops `npm run dev` and `npm run build`
-   when an anchor no longer matches. See
-   [white-label-ui.md](white-label-ui.md#the-team-link-in-the-sidebar).
 
 Verify against the **built** output as well as source when a change touches
 configuration. `mastra build` folds `process.env.NODE_ENV` at build time, so a
