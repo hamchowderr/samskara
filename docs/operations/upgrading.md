@@ -54,7 +54,7 @@ Moving factory alone leaves two copies of `@mastra/core` and fails type-checking
 with identity mismatches on `LibSQLVector`, `LibSQLFactoryStorage`, `PubSub` and
 `MastraWorker`. That is a dedupe failure, not a code change. Take the CLI version
 released alongside the factory: 0.15.0 shipped with CLI 1.30.0, 0.16.0 with
-CLI 1.31.0, and 0.20.0 with CLI 1.33.0, minutes apart (`npm view mastra time`).
+CLI 1.31.0, 0.20.0 with CLI 1.33.0, and 0.21.0 with CLI 1.34.0, minutes apart (`npm view mastra time`).
 
 The other `@mastra/*` packages (libsql, memory, auth providers, e2b,
 redis-streams) are pinned on their own schedule. Move them only when the new
@@ -66,7 +66,10 @@ npm view @mastra/factory@<version> dependencies --json    # core, code-sdk, auth
 npm view @mastra/code-sdk@<sdk> dependencies --json       # libsql, memory
 ```
 
-At 0.20.0 that moved three more: `@mastra/auth-workos` 1.6.6 (pinned in
+At 0.21.0 that moved `@mastra/libsql` 1.26.0 and `@mastra/memory` 1.37.0 (pinned in
+code-sdk 1.12.0); `@mastra/auth-workos` stayed at 1.6.6. Bump the beads
+package's own peer ranges (`packages/factory-beads/package.json`) with it, or
+`npm install` refuses the factory version. At 0.20.0 that moved three more: `@mastra/auth-workos` 1.6.6 (pinned in
 factory), `@mastra/libsql` 1.25.1 and `@mastra/memory` 1.36.0 (pinned in
 code-sdk 1.11.0). Leaving them behind installs a second copy beside the app's.
 
@@ -107,7 +110,11 @@ across a version before, or depends on code that reads the installed package:
    both on every upgrade, and check that `tests/boards/requests-board.test.ts`
    still passes: it asserts our phases and roles match `workBoard`'s and that
    every source key is one the runtime knows (`defineBoard()` does not validate
-   handler keys).
+   handler keys). A board built from Work's parts copies them field by field, so
+   a field Work gains is missing from ours until copied: 0.21.0 added
+   `sourceClosed` (where a card goes when its GitHub issue closes), and without
+   it closing an issue left its card where it was. Compare
+   `Object.keys(workBoard)` with the fields `requests-board.ts` sets.
 4. **Behaviour keyed to the id `work` still applies.** The default GitHub
    rules, `advanceApprovedPlan` and the triage classification tool all key on
    the literal `"work"`; see [boards.md](../boards.md#replacing-work-by-id).

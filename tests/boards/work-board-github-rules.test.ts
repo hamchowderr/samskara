@@ -13,7 +13,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { reviewBoard } from '@mastra/factory';
-import { createBoardRegistry } from '@mastra/factory/boards';
+import { createBoardRegistry, withBoardClosure } from '@mastra/factory/boards';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
 import type { GithubEventRules } from '@mastra/factory/integrations/github/default-rules';
 import { assertFactoryDecisionTarget, validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
@@ -79,10 +79,16 @@ function context(
   };
 }
 
-/** One rule evaluation, as integrations/github/rules.js:402-412 performs it. */
+/**
+ * One rule evaluation, as integrations/github/rules.js performs it: the card's
+ * board closure is added to the context from the installed boards first
+ * (@mastra/factory 0.21.0 boards/semantics.js withBoardClosure).
+ */
 async function evaluate(ctx: FactoryGithubRuleContext) {
   const rule = rules[ctx.event];
-  const decision = rule ? await rule(Object.freeze(ctx)) : undefined;
+  const item = ctx.item ? { board: ctx.board ?? null, externalSource: null, stages: ctx.item.stages } : undefined;
+  const full = item ? { ...ctx, ...withBoardClosure(boards, item as never) } : ctx;
+  const decision = rule ? await rule(Object.freeze(full)) : undefined;
   if (!decision) return undefined;
   return validateFactoryRuleDecisions([decision]).map(entry => {
     assertFactoryDecisionTarget(entry, boards, ctx.board);

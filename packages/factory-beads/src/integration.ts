@@ -713,7 +713,12 @@ export type TransitionCommit =
   | 'committed'
   /** This evaluation (same card revision) was stored before; nothing new. */
   | 'replayed'
-  /** Stored as rejected: the card changed after it was read (`stale`). */
+  /**
+   * Not applied: the card changed after it was read. @mastra/factory 0.21.0
+   * returns `stale` and stores nothing (work-items/base.d.ts
+   * CommitFactoryRuleEvaluationResult); the next sweep reads the card again
+   * and commits at its new revision.
+   */
   | 'rejected'
   /** The card is gone. */
   | 'missing';
@@ -2199,12 +2204,11 @@ export class BeadsIntegration implements FactoryIntegration {
    *
    * `key` names the reason, e.g. `overview-done`. The ingress identity
    * carries the card's revision: commitRuleEvaluation replays any identity it
-   * has seen, and stores an evaluation whose expected revision is not the
-   * card's as rejected with code `stale`
-   * (storage/domains/work-items/base.js:1424-1473). Without the revision a
-   * stale evaluation would be replayed, rejected, forever; with it, the
-   * card's next revision gets a fresh evaluation, and a repeat at the same
-   * revision is a harmless replay.
+   * has seen, and returns `stale` without storing anything when the expected
+   * revision is not the card's (@mastra/factory 0.21.0
+   * storage/domains/work-items/base.js:1518). The card's next revision gets a
+   * fresh evaluation on the next sweep, and a repeat at the same revision is
+   * a harmless replay.
    */
   async #commitTransition(orgId: string, card: WorkItemRow, stage: string, key: string): Promise<TransitionCommit> {
     const runtime = this.#ctx!.runtime!;
@@ -2228,6 +2232,7 @@ export class BeadsIntegration implements FactoryIntegration {
       now: new Date(),
     });
     if (result.status === 'missing' || result.status === 'replayed') return result.status;
+    if (result.status === 'stale') return 'rejected';
     return result.result.status === 'accepted' ? 'committed' : 'rejected';
   }
 

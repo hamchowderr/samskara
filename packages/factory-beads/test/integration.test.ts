@@ -957,9 +957,11 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
 
     // The card changes before the dispatcher runs (here, a person edits it).
     await h.workItems.update({ orgId: ORG, id: epicId, userId: 'u', patch: { metadata: { note: 'edited' } } });
-    // That evaluation, committed now, would be stored as stale, with no decision.
+    // That evaluation, committed now, is stale: Factory 0.21.0 stores nothing for it.
+    const before = h.workItems.evaluations.length;
     const stale = await h.workItems.commitRuleEvaluation({ ...first.input, ingress: { ...first.input.ingress, identity: 'probe' } });
-    expect(stale).toMatchObject({ status: 'committed', result: { status: 'rejected', code: 'stale', decisions: [] } });
+    expect(stale).toEqual({ status: 'stale' });
+    expect(h.workItems.evaluations).toHaveLength(before);
 
     await sweep(integration);
     const ours = h.workItems.evaluations.filter(e => e.input.ingress.identity.startsWith('beads:overview-done:'));
