@@ -10,6 +10,11 @@ concurrency:
   group: check-${{ github.ref }}
   cancel-in-progress: true
 
+# onnxruntime-node downloads CUDA GPU binaries from NuGet on linux/x64 during
+# `npm ci`; nothing here uses a GPU, and that download timing out failed runs.
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   typecheck:
     runs-on: ubuntu-latest

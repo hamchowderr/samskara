@@ -90,11 +90,14 @@ This is the pattern Mastra documents for customizing Work:
 That sentence predates #25595 and contradicts `:88`. Follow `:88` and SKILL.md.
 
 Keeping the id `work` matters because a lot of runtime and UI behaviour is
-keyed to that literal string, and none of it reaches a board with another id:
+keyed to that literal string, and none of it reaches a board with another id.
+From 0.21.0, closing an issue (GitHub, GitLab, Linear, Jira, incident.io)
+instead follows the board's own `sourceClosed` mapping, which our board
+copies from Work:
 
 | Keyed to `work` | Where (0.20.0 `dist/`) |
 |---|---|
-| Default GitHub rules: PR opened → Review, merged → Done, changes-requested review and PR comments sent to the builder, issue closed → Done/Canceled | `integrations/github/default-rules.js:69, :113, :148, :155, :207` |
+| Default GitHub rules: PR opened → Review, merged → Done, changes-requested review and PR comments sent to the builder, re-triage on an issue edit | `integrations/github/default-rules.js` (0.21.0) |
 | `submit_plan` advances an approved plan with `board: "work"` | `boards/work-tool-rules.js:13` |
 | The triage agent gets the classification schema | `rules/tools.js:44, :69` |
 | Cards with no stored board (Slack threads, legacy rows) belong to `work` | `boards/semantics.js:8` |

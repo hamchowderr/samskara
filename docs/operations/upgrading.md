@@ -54,7 +54,7 @@ Moving factory alone leaves two copies of `@mastra/core` and fails type-checking
 with identity mismatches on `LibSQLVector`, `LibSQLFactoryStorage`, `PubSub` and
 `MastraWorker`. That is a dedupe failure, not a code change. Take the CLI version
 released alongside the factory: 0.15.0 shipped with CLI 1.30.0, 0.16.0 with
-CLI 1.31.0, and 0.20.0 with CLI 1.33.0, minutes apart (`npm view mastra time`).
+CLI 1.31.0, 0.20.0 with CLI 1.33.0, and 0.21.0 with CLI 1.34.0, minutes apart (`npm view mastra time`).
 
 The other `@mastra/*` packages (libsql, memory, auth providers, e2b,
 redis-streams) are pinned on their own schedule. Move them only when the new
@@ -66,7 +66,10 @@ npm view @mastra/factory@<version> dependencies --json    # core, code-sdk, auth
 npm view @mastra/code-sdk@<sdk> dependencies --json       # libsql, memory
 ```
 
-At 0.20.0 that moved three more: `@mastra/auth-workos` 1.6.6 (pinned in
+At 0.21.0 that moved `@mastra/libsql` 1.26.0 and `@mastra/memory` 1.37.0 (pinned in
+code-sdk 1.12.0); `@mastra/auth-workos` stayed at 1.6.6. Bump the beads
+package's own peer ranges (`packages/factory-beads/package.json`) with it, or
+`npm install` refuses the factory version. At 0.20.0 that moved three more: `@mastra/auth-workos` 1.6.6 (pinned in
 factory), `@mastra/libsql` 1.25.1 and `@mastra/memory` 1.36.0 (pinned in
 code-sdk 1.11.0). Leaving them behind installs a second copy beside the app's.
 
@@ -107,7 +110,11 @@ across a version before, or depends on code that reads the installed package:
    both on every upgrade, and check that `tests/boards/requests-board.test.ts`
    still passes: it asserts our phases and roles match `workBoard`'s and that
    every source key is one the runtime knows (`defineBoard()` does not validate
-   handler keys).
+   handler keys). A board built from Work's parts copies them field by field, so
+   a field Work gains is missing from ours until copied: 0.21.0 added
+   `sourceClosed` (where a card goes when its GitHub issue closes), and without
+   it closing an issue left its card where it was. Compare
+   `Object.keys(workBoard)` with the fields `requests-board.ts` sets.
 4. **Behaviour keyed to the id `work` still applies.** The default GitHub
    rules, `advanceApprovedPlan` and the triage classification tool all key on
    the literal `"work"`; see [boards.md](../boards.md#replacing-work-by-id).
@@ -125,6 +132,38 @@ across a version before, or depends on code that reads the installed package:
 Verify against the **built** output as well as source when a change touches
 configuration. `mastra build` folds `process.env.NODE_ENV` at build time, so a
 branch that reads one way in source can compile to a constant.
+
+## Behaviour changes in 0.21.0
+
+Moving from 0.20.0 to 0.21.0 (CLI 1.34.0, core 1.76.0, code-sdk 1.12.0). Each
+item was checked against the installed package.
+
+- **Closing a source moves a card only on a board that declares
+  `sourceClosed`.** The issue-closed rules of every tracker (GitHub, GitLab,
+  Linear, Jira, incident.io; `integrations/*/default-rules.js`, `boardClosure`)
+  now read the card's board's `sourceClosed` mapping instead of keying on the
+  id `work`, and the message names the board ("this Requests card"). Our board
+  copies Work's mapping (Done, or Canceled for not planned or a duplicate);
+  `tests/boards/requests-board.test.ts` asserts it.
+- **Re-triage on an issue edit is limited to the `work` board**
+  (`integrations/github/default-rules.js:16`). Ours has that id.
+- **Linking a repository imports its open issues and pull requests** right
+  away, up to five pages of each, with no age filter (`factory.js`
+  `onProjectRepositoryLinked`; `integrations/github/routes.js:223-251`).
+  Older ones arrive as cards but never start on their own. Re-linking
+  repositories after a reset fills Intake and Review accordingly.
+- **A stale rule evaluation stores nothing.** `commitRuleEvaluation` returns
+  `{ status: 'stale' }` when the card's revision moved, instead of storing a
+  rejected evaluation (`storage/domains/work-items/base.js:1518`). The beads
+  sync treats it as not applied and commits again on the next sweep.
+- **Schema.** A new `factory_board_versions` table with two indexes
+  (`storage/domains/work-items/board-version.js`), created at boot. A rollback
+  to 0.20.0 leaves it in place, unused.
+- **Install.** `onnxruntime-node` (through `@mastra/code-sdk` and
+  `@mastra/fastembed`) downloads CUDA 12 binaries from NuGet during `npm ci`
+  on linux/x64. Nothing here has a GPU, the CPU binaries ship in the package,
+  and the download timing out failed builds, so `ONNXRUNTIME_NODE_INSTALL=skip`
+  is set in both Docker stages and in CI.
 
 ## Behaviour changes in 0.20.0
 

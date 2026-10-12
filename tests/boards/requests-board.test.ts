@@ -43,6 +43,11 @@ type Board = {
 const board = requestsBoard as unknown as Board;
 
 describe('Requests board source keys', () => {
+  it("moves a card whose GitHub issue closes as Work does (Factory 0.21.0 sourceClosed)", () => {
+    expect(requestsBoard.sourceClosed).toEqual(workBoard.sourceClosed);
+    expect(requestsBoard.sourceClosed).toEqual({ completed: 'done', canceled: 'canceled' });
+  });
+
   it('declares only source keys the Factory runtime knows', () => {
     const known = new Set<string>(FACTORY_RULE_SOURCES);
     for (const [phase, def] of Object.entries(board.phases)) {

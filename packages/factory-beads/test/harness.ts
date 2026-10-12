@@ -273,14 +273,17 @@ export class MemoryWorkItems {
 
   /**
    * Every rule evaluation committed, as WorkItemsStorage.commitRuleEvaluation
-   * stores it (@mastra/factory 0.20.0 storage/domains/work-items/base.js:1424-1537):
+   * stores it (@mastra/factory 0.21.0 storage/domains/work-items/base.js:1480-1540):
    * a seen identity replays, a missing card is `missing`, and an expected
-   * revision that is not the card's is stored as rejected (`stale`) with no
-   * decisions.
+   * revision that is not the card's is `stale`, with nothing stored.
    */
   evaluations: RecordedEvaluation[] = [];
 
+  /** Runs before each commit: a test moves a card's revision here, as a person editing it mid-sweep would. */
+  beforeCommit?: (input: CommitFactoryRuleEvaluationInput) => void;
+
   async commitRuleEvaluation(input: CommitFactoryRuleEvaluationInput): Promise<CommitFactoryRuleEvaluationResult> {
+    this.beforeCommit?.(input);
     const prior = this.evaluations.find(
       e => e.input.orgId === input.orgId && e.input.factoryProjectId === input.factoryProjectId && e.input.ingress.identity === input.ingress.identity,
     );
@@ -289,14 +292,14 @@ export class MemoryWorkItems {
       ? this.items.find(i => i.id === input.workItemId && i.orgId === input.orgId && i.factoryProjectId === input.factoryProjectId)
       : undefined;
     if (input.workItemId !== null && !item) return { status: 'missing' };
-    const stale = item !== undefined && item.revision !== input.expectedRevision;
-    const status = stale ? 'rejected' : input.outcome.status;
+    if (item !== undefined && item.revision !== input.expectedRevision) return { status: 'stale' };
+    const status = input.outcome.status;
     const result = {
       status,
       itemId: item?.id ?? null,
       revision: item?.revision ?? null,
-      code: stale ? 'stale' : (input.outcome.code ?? null),
-      reason: stale ? 'The work item changed before this rule evaluation committed.' : (input.outcome.reason ?? null),
+      code: input.outcome.code ?? null,
+      reason: input.outcome.reason ?? null,
       decisions: status === 'accepted' ? structuredClone(input.decisions) : [],
     };
     this.evaluations.push({ input: structuredClone(input), result, dispatch: {} });

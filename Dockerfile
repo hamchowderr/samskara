@@ -18,6 +18,11 @@
 # broke web sessions in prod (samskara-z1i; tests/runtime/request-body-gc).
 FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
 WORKDIR /app
+# onnxruntime-node (via @mastra/code-sdk -> @mastra/fastembed) downloads its
+# CUDA 12 GPU binaries from NuGet on linux/x64 during install
+# (script/install-metadata.js requirements). There is no GPU here, the CPU
+# binaries ship in the package, and that download timing out failed builds.
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 COPY package.json package-lock.json ./
 # npm workspaces: `npm ci` needs each workspace's manifest to link it.
 COPY packages/factory-beads/package.json packages/factory-beads/
@@ -108,6 +113,9 @@ COPY --from=gh-cli /usr/local/bin/gh /usr/local/bin/gh
 # hand in the container (docker exec). See docs/operations/beads.md.
 ENV BD_DISABLE_METRICS=1 \
     BD_DISABLE_EVENT_FLUSH=1
+# The runtime `npm ci` reinstalls onnxruntime-node too; skip its GPU download
+# as in the build stage.
+ENV ONNXRUNTIME_NODE_INSTALL=skip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # Strip CRLF: a Windows checkout would otherwise break the shebang.
