@@ -974,6 +974,33 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     expect((await h.workItems.applyDecisions()).filter(r => r.workItemId === epicId).map(r => r.outcome)).toEqual(['moved', 'inert']);
   });
 
+  it('commits again on the next sweep when the card changed during this one (Factory 0.21.0 stale)', async () => {
+    h = epicAndTwo();
+    // A stale result must be handled, not thrown and caught as a warning.
+    const problems: string[] = [];
+    const record = (...args: unknown[]) => void problems.push(args.join(' '));
+    const integration = h.integration({ logger: { info: () => undefined, warn: record, error: record } });
+    await sweep(integration);
+    h.setState(s => s.beads.filter(b => b.parent === 'w-e').forEach(b => (b.status = 'closed')));
+    // A person edits the epic's card between the sweep's read and its commit, once.
+    let edited = false;
+    h.workItems.beforeCommit = input => {
+      if (edited || !input.ingress.identity.startsWith('beads:overview-done:')) return;
+      edited = true;
+      const item = h!.workItems.items.find(i => i.id === input.workItemId)!;
+      item.revision += 1;
+    };
+    const first = await sweep(integration);
+    expect(first.repos[0]).toMatchObject({ state: 'ok' });
+    expect(edited).toBe(true);
+    expect(problems).toEqual([]);
+    expect(h.workItems.evaluations.filter(e => e.input.ingress.identity.startsWith('beads:overview-done:'))).toHaveLength(0);
+    await sweep(integration);
+    const ours = h.workItems.evaluations.filter(e => e.input.ingress.identity.startsWith('beads:overview-done:'));
+    expect(ours).toHaveLength(1);
+    expect(ours[0]!.result.status).toBe('accepted');
+  });
+
   it('commits nothing the board policy would refuse: a child still open, or a count that could not be read', async () => {
     h = epicAndTwo();
     const integration = h.integration();

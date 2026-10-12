@@ -85,11 +85,11 @@ export const requestsBoard = defineBoard({
   initialPhase: workBoard.initialPhase,
   transitionPolicy,
   tools: { ...workBoard.tools },
-  // Where a card goes when its source (a GitHub issue) closes: Work's own
-  // mapping, Done or Canceled. @mastra/factory 0.21.0 moves the card only
-  // when the board declares this (boards/semantics.js resolveBoardClosure;
-  // integrations/github/default-rules.js issueClosed), so a board that
-  // copies Work's fields must copy this one too.
+  // Where a card goes when its source closes (a GitHub, GitLab, Linear, Jira
+  // or incident.io issue): Work's own mapping, Done or Canceled.
+  // @mastra/factory 0.21.0 moves the card only when the board declares this
+  // (boards/semantics.js resolveBoardClosure; integrations/*/default-rules.js),
+  // so a board that copies Work's fields must copy this one too.
   sourceClosed: workBoard.sourceClosed,
   phases: {
     ...workBoard.phases,

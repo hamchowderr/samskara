@@ -279,7 +279,11 @@ export class MemoryWorkItems {
    */
   evaluations: RecordedEvaluation[] = [];
 
+  /** Runs before each commit: a test moves a card's revision here, as a person editing it mid-sweep would. */
+  beforeCommit?: (input: CommitFactoryRuleEvaluationInput) => void;
+
   async commitRuleEvaluation(input: CommitFactoryRuleEvaluationInput): Promise<CommitFactoryRuleEvaluationResult> {
+    this.beforeCommit?.(input);
     const prior = this.evaluations.find(
       e => e.input.orgId === input.orgId && e.input.factoryProjectId === input.factoryProjectId && e.input.ingress.identity === input.ingress.identity,
     );

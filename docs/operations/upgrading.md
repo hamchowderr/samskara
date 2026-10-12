@@ -133,6 +133,38 @@ Verify against the **built** output as well as source when a change touches
 configuration. `mastra build` folds `process.env.NODE_ENV` at build time, so a
 branch that reads one way in source can compile to a constant.
 
+## Behaviour changes in 0.21.0
+
+Moving from 0.20.0 to 0.21.0 (CLI 1.34.0, core 1.76.0, code-sdk 1.12.0). Each
+item was checked against the installed package.
+
+- **Closing a source moves a card only on a board that declares
+  `sourceClosed`.** The issue-closed rules of every tracker (GitHub, GitLab,
+  Linear, Jira, incident.io; `integrations/*/default-rules.js`, `boardClosure`)
+  now read the card's board's `sourceClosed` mapping instead of keying on the
+  id `work`, and the message names the board ("this Requests card"). Our board
+  copies Work's mapping (Done, or Canceled for not planned or a duplicate);
+  `tests/boards/requests-board.test.ts` asserts it.
+- **Re-triage on an issue edit is limited to the `work` board**
+  (`integrations/github/default-rules.js:16`). Ours has that id.
+- **Linking a repository imports its open issues and pull requests** right
+  away, up to five pages of each, with no age filter (`factory.js`
+  `onProjectRepositoryLinked`; `integrations/github/routes.js:223-251`).
+  Older ones arrive as cards but never start on their own. Re-linking
+  repositories after a reset fills Intake and Review accordingly.
+- **A stale rule evaluation stores nothing.** `commitRuleEvaluation` returns
+  `{ status: 'stale' }` when the card's revision moved, instead of storing a
+  rejected evaluation (`storage/domains/work-items/base.js:1518`). The beads
+  sync treats it as not applied and commits again on the next sweep.
+- **Schema.** A new `factory_board_versions` table with two indexes
+  (`storage/domains/work-items/board-version.js`), created at boot. A rollback
+  to 0.20.0 leaves it in place, unused.
+- **Install.** `onnxruntime-node` (through `@mastra/code-sdk` and
+  `@mastra/fastembed`) downloads CUDA 12 binaries from NuGet during `npm ci`
+  on linux/x64. Nothing here has a GPU, the CPU binaries ship in the package,
+  and the download timing out failed builds, so `ONNXRUNTIME_NODE_INSTALL=skip`
+  is set in both Docker stages and in CI.
+
 ## Behaviour changes in 0.20.0
 
 Moving from 0.16.0 to 0.20.0 changes runtime behaviour that type-checking does
