@@ -10,10 +10,9 @@ A client organization is one org with invited members. There are no sub-teams.
 | `/web/samskara/invitations/<id>` | The invitee. The invitation email links here. |
 
 A signed-out visitor to either page goes to `/signin` and returns to the page
-after signing in or signing up. The Factory sidebar links to the team page as
-**Team**, beside Settings. The Factory has no supported way to add a nav entry,
-so the link is inserted into its UI at build time. See
-[white-label-ui.md](white-label-ui.md#the-team-link-in-the-sidebar).
+after signing in or signing up. The Factory UI is Mastra's, unmodified (owner
+decision 2026-10-11, samskara-96u): it has no team screen and no supported way
+to add a nav entry, so the team page is reached by its URL, `/web/samskara/team`.
 
 ## Roles
 

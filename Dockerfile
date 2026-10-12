@@ -26,8 +26,7 @@ COPY packages/factory-beads/package.json packages/factory-beads/
 # only downloads packages that changed (docs.docker.com/build/cache/optimize).
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY . .
-# prebuild regenerates .branded-ui from node_modules; mastra build writes
-# .mastra/output. Its node_modules are dropped: the runtime stage installs from
+# mastra build writes .mastra/output. Its node_modules are dropped: the runtime stage installs from
 # the output's package.json + package-lock.json instead (Mastra's documented
 # Dockerfile, docs-deployment-workers.md "Deploy split workers"). The build's
 # install is kept rather than skipped (MASTRA_BUILD_SKIP_INSTALL) because it is
@@ -132,12 +131,6 @@ COPY --chown=node:node --from=build /app/.mastra/output/package.json /app/.mastr
 RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
     npm ci --omit=dev
 COPY --chown=node:node --from=build /app/.mastra/output/ ./
-# `mastra build` copies Mastra's UNBRANDED Factory UI into output/factory, and
-# the server prefers MASTRACODE_UI_DIST over it (@mastra/factory
-# dist/spa-static.js resolveUiDistDir). Without this the sign-in page says
-# "Mastra Factory". See docs/operations/white-label-ui.md.
-COPY --chown=node:node --from=build /app/.branded-ui ./branded-ui
-ENV MASTRACODE_UI_DIST=/app/branded-ui
 
 ENV NODE_ENV=production
 ENV PORT=4111
