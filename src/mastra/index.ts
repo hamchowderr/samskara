@@ -21,9 +21,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Mastra } from '@mastra/core/mastra';
 import { LibSQLFactoryStorage, LibSQLVector } from '@mastra/libsql';
-import { LocalSandbox, detectIsolation, getRecommendedIsolation } from '@mastra/core/workspace';
-import { PlatformSandbox, createRepoTemplate as createPlatformRepoTemplate } from '@mastra/platform-workspace';
-import { E2BSandbox, createRepoTemplate as createE2BRepoTemplate } from '@mastra/e2b';
+import { detectIsolation, getRecommendedIsolation } from '@mastra/core/workspace';
+import { PlatformFactorySandbox } from '@mastra/platform-workspace';
+import { E2BFactorySandbox } from '@mastra/e2b';
+import { IsolatedLocalFactorySandbox } from './sandbox/local-factory-sandbox';
 import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
@@ -661,35 +662,26 @@ if (sandboxProvider === 'local' && localIsolation === 'none') {
 } else if (sandboxProvider === 'local') {
   console.log('[sandbox] isolation=' + localIsolation);
 }
+const factorySandbox =
+  sandboxProvider === 'platform'
+    ? new PlatformFactorySandbox()
+    : sandboxProvider === 'e2b'
+      ? new E2BFactorySandbox()
+      : new IsolatedLocalFactorySandbox({
+          root: localSandboxRoot(),
+          env: localSandboxEnv(),
+          isolation: localIsolation,
+        });
+
 export const factory = new MastraFactory({
   auth,
   secretEncryption,
   integrations,
   configVersion: factoryConfigVersion,
-  sandbox: ctx => {
-    switch (sandboxProvider) {
-      case 'platform':
-        return new PlatformSandbox({ id: ctx.sessionId, template: createPlatformRepoTemplate(ctx) });
-      case 'e2b':
-        return new E2BSandbox({ id: ctx.sessionId, template: createE2BRepoTemplate(ctx) });
-      case 'local':
-        // LocalSandbox defaults to `isolation: 'none'`, which runs agent
-        // commands unconfined on EVERY platform — including macOS and Linux,
-        // where a backend is available. Ask the SDK for the best one it can
-        // actually use instead of taking that default.
-        return new LocalSandbox({
-          workingDirectory: join(localSandboxRoot(), ctx.sessionId),
-          env: localSandboxEnv(),
-          isolation: localIsolation,
-          // Both backends deny ALL network by default (seatbelt: `deny network*`;
-          // bwrap: `--unshare-net`), and the Factory clones, fetches and pushes
-          // through this same sandbox — so a confined session could not even
-          // open its workspace. Isolation here confines writes (and, under
-          // bwrap, reads); it was never meant to cut the agent off from git.
-          nativeSandbox: { allowNetwork: true },
-        });
-    }
-  },
+  // Provider instances (Factory 0.22): each owns its session sandbox, repo
+  // template, environment settings and, for e2b/platform, template builds. A
+  // bare callback is wrapped as provider 'custom' with none of those.
+  sandbox: factorySandbox,
   // Per-replica cap on concurrent Factory background dispatches. Unset means
   // the dispatcher default; invalid and non-positive values are ignored.
   dispatcher: {
