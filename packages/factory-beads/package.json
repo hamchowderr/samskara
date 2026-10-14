@@ -12,7 +12,7 @@
   },
   "peerDependencies": {
     "@mastra/core": "^1.76.0",
-    "@mastra/factory": "~0.21.0",
+    "@mastra/factory": "~0.22.0",
     "zod": "^4.0.0"
   }
 }
