@@ -16,7 +16,7 @@
 # package.json engines, which is also what CI runs. Not 22.19: its undici
 # cancels a request body when a discarded clone is garbage-collected, which
 # broke web sessions in prod (samskara-z1i; tests/runtime/request-body-gc).
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS build
 WORKDIR /app
 # onnxruntime-node (via @mastra/code-sdk -> @mastra/fastembed) downloads its
 # CUDA 12 GPU binaries from NuGet on linux/x64 during install
@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 # ── infisical cli ────────────────────────────────────────────────────────────
 # Same pin as the other Otaku images. Only the binary reaches the runtime stage.
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS infisical-cli
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS infisical-cli
 ARG INFISICAL_CLI_VERSION=0.43.110
 # pipefail so a failed download fails the build instead of piping nothing to
 # bash (Docker best practices, "Using pipes").
@@ -59,7 +59,7 @@ RUN apt-get update \
 # gastownhall/beads releases, verified against the release's checksums.txt;
 # bumping BD_VERSION without the matching checksums fails the build. Needs
 # glibc >= 2.34 (bookworm has 2.36). See docs/operations/beads.md.
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS bd-cli
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS bd-cli
 ARG BD_VERSION=1.3.1
 ARG BD_SHA256_AMD64=3219443a9734b89b93fb16ee8d65844759fa1b3cd3cf139c606b7353cfb0715c
 ARG BD_SHA256_ARM64=c3b32c71a6c0cd6358a12c28272b17e6818db991da192f87df52339c222e423a
@@ -81,7 +81,7 @@ RUN apt-get update \
 # Pinned release binary from the official cli/cli releases, verified against
 # the release's gh_<version>_checksums.txt; bumping GH_VERSION without the
 # matching checksums fails the build.
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS gh-cli
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS gh-cli
 ARG GH_VERSION=2.101.0
 ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
 ARG GH_SHA256_ARM64=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
@@ -97,7 +97,7 @@ RUN apt-get update \
  && /usr/local/bin/gh --version
 
 # ── runtime ──────────────────────────────────────────────────────────────────
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS runtime
 
 # git: agent sessions clone and push repositories. tini: PID 1 that signals
 # the whole group, since `infisical run` forks rather than execs.
