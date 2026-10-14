@@ -681,6 +681,12 @@ export const factory = new MastraFactory({
           workingDirectory: join(localSandboxRoot(), ctx.sessionId),
           env: localSandboxEnv(),
           isolation: localIsolation,
+          // Both backends deny ALL network by default (seatbelt: `deny network*`;
+          // bwrap: `--unshare-net`), and the Factory clones, fetches and pushes
+          // through this same sandbox — so a confined session could not even
+          // open its workspace. Isolation here confines writes (and, under
+          // bwrap, reads); it was never meant to cut the agent off from git.
+          nativeSandbox: { allowNetwork: true },
         });
     }
   },

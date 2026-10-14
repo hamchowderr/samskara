@@ -58,6 +58,8 @@ The backend is resolved at startup and logged:
 [sandbox] isolation=none — Native sandboxing is not supported on win32. …
 ```
 
+Network stays open inside the sandbox: the Factory clones and pushes through it. On macOS, seatbelt confines writes to the session checkout and temp directories but can read the whole disk; bubblewrap on Linux hides the host filesystem as well.
+
 Windows has no backend ([mastra-ai/mastra#20304](https://github.com/mastra-ai/mastra/issues/20304) — the fix raises an error for an unavailable backend rather than adding one). Docker is the way to get isolation there without a cloud provider.
 
 Samskara wires E2B. Mastra also ships adapters for
