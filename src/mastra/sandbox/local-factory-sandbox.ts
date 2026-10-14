@@ -11,6 +11,12 @@
  * (seatbelt: `deny network*`; bwrap: `--unshare-net`), and the Factory clones,
  * fetches and pushes through this sandbox: a confined session could not open
  * its workspace. Isolation here confines writes (and, under bwrap, reads).
+ *
+ * Under isolation the home directory is not writable (seatbelt allows writes
+ * only to the workspace and temp dirs), so `npm install` fails writing its
+ * cache to `~/.npm`. Package caches therefore go to `.cache` in the session
+ * directory, beside the checkout rather than in it. Reproduced on Linux with
+ * a read-only home: npm fails with the default cache and succeeds with this.
  */
 import { join } from 'node:path';
 import { FactorySandbox, LocalSandbox } from '@mastra/core/workspace';
@@ -35,10 +41,19 @@ export class IsolatedLocalFactorySandbox extends FactorySandbox<Record<string, n
   }
 
   create(ctx: FactorySandboxContext): LocalSandbox {
+    const workingDirectory = join(this.#options.root, ctx.sessionId);
+    const env =
+      this.#options.isolation === 'none'
+        ? this.#options.env
+        : {
+            npm_config_cache: join(workingDirectory, '.cache', 'npm'),
+            XDG_CACHE_HOME: join(workingDirectory, '.cache'),
+            ...this.#options.env,
+          };
     return new LocalSandbox({
       id: ctx.sessionId,
-      workingDirectory: join(this.#options.root, ctx.sessionId),
-      ...(this.#options.env ? { env: this.#options.env } : {}),
+      workingDirectory,
+      ...(env ? { env } : {}),
       isolation: this.#options.isolation,
       nativeSandbox: { allowNetwork: true },
     });

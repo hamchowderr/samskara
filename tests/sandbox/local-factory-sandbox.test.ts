@@ -26,4 +26,15 @@ describe('IsolatedLocalFactorySandbox', () => {
     expect(info.metadata?.isolation).toBe(backend);
     expect(info.metadata?.isolationConfig).toMatchObject({ allowNetwork: true });
   });
+
+  it.skipIf(backend === 'none')('keeps package caches inside the session directory', async () => {
+    const sandbox = new IsolatedLocalFactorySandbox({ root, isolation: backend }).create({
+      sessionId: 'sess-3',
+    } as never);
+    const result = await sandbox.executeCommand!('sh', ['-c', 'echo "$npm_config_cache|$XDG_CACHE_HOME"']);
+
+    expect(result.stdout.trim()).toBe(
+      `${join(root, 'sess-3', '.cache', 'npm')}|${join(root, 'sess-3', '.cache')}`,
+    );
+  });
 });
