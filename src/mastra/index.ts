@@ -24,6 +24,7 @@ import { LibSQLFactoryStorage, LibSQLVector } from '@mastra/libsql';
 import { detectIsolation, getRecommendedIsolation } from '@mastra/core/workspace';
 import { PlatformFactorySandbox } from '@mastra/platform-workspace';
 import { E2BFactorySandbox } from '@mastra/e2b';
+import { DockerFactorySandbox } from '@mastra/docker';
 import { IsolatedLocalFactorySandbox } from './sandbox/local-factory-sandbox';
 import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
@@ -594,21 +595,25 @@ export const factoryConfigVersion = 'mastracode-web-v1';
 //              serves clients with.
 //   platform — runs on Mastra's managed platform workspace, for anyone hosting
 //              this on Mastra rather than self-hosting the sandbox layer.
+//   docker   — runs every session in a container on this machine's Docker
+//              daemon. The isolated option that needs no cloud account and
+//              works the same on Windows, macOS and Linux. Explicit only:
+//              reaching the daemon is async, so it is never auto-detected.
 //
-// All three stay supported: a self-hoster should be able to pick whichever they
+// All four stay supported: a self-hoster should be able to pick whichever they
 // are set up for. What was removed is the scaffold's SILENT chaining
 // (platform -> e2b -> local), which failed OPEN — a missing or misspelled
 // E2B_API_KEY did not error, it quietly ran untrusted code on the host. The fix
 // was never to delete options, only to stop substituting one provider for
 // another behind your back. An explicit request that cannot be honored throws.
-type SandboxProvider = 'local' | 'e2b' | 'platform';
+type SandboxProvider = 'local' | 'e2b' | 'platform' | 'docker';
 
 const e2bApiKey = process.env.E2B_API_KEY?.trim();
 const hasPlatformSandboxEnv =
   ['MASTRA_PLATFORM_ACCESS_TOKEN', 'MASTRA_PLATFORM_SECRET_KEY'].some(k => Boolean(process.env[k]?.trim())) &&
   ['MASTRA_ENVIRONMENT_ID', 'MASTRA_PROJECT_ID'].every(k => Boolean(process.env[k]?.trim()));
 
-const SANDBOX_PROVIDERS: readonly SandboxProvider[] = ['local', 'e2b', 'platform'];
+const SANDBOX_PROVIDERS: readonly SandboxProvider[] = ['local', 'e2b', 'platform', 'docker'];
 const requestedProvider = process.env.FACTORY_SANDBOX_PROVIDER?.trim().toLowerCase();
 
 if (requestedProvider && !SANDBOX_PROVIDERS.includes(requestedProvider as SandboxProvider)) {
@@ -641,7 +646,7 @@ if (sandboxProvider === 'local') {
   console.warn(
     '[sandbox] provider=local — agent commands run DIRECTLY ON THIS MACHINE with this ' +
       "process's privileges. Fine for self-hosting your own work; never serve clients this way. " +
-      'Set FACTORY_SANDBOX_PROVIDER=e2b with an E2B_API_KEY for isolated runs.',
+      'Set FACTORY_SANDBOX_PROVIDER=docker (Docker installed) or e2b (with an E2B_API_KEY) for isolated runs.',
   );
 } else {
   console.log('[sandbox] provider=' + sandboxProvider);
@@ -657,7 +662,7 @@ if (sandboxProvider === 'local' && localIsolation === 'none') {
     '[sandbox] isolation=none — ' +
       detectIsolation().message +
       ' Agent commands will run unconfined, with the privileges of this server process. ' +
-      'Use FACTORY_SANDBOX_PROVIDER=e2b (or another cloud provider) for anything untrusted.',
+      'Use FACTORY_SANDBOX_PROVIDER=docker or e2b for anything untrusted.',
   );
 } else if (sandboxProvider === 'local') {
   console.log('[sandbox] isolation=' + localIsolation);
@@ -667,11 +672,13 @@ const factorySandbox =
     ? new PlatformFactorySandbox()
     : sandboxProvider === 'e2b'
       ? new E2BFactorySandbox()
-      : new IsolatedLocalFactorySandbox({
-          root: localSandboxRoot(),
-          env: localSandboxEnv(),
-          isolation: localIsolation,
-        });
+      : sandboxProvider === 'docker'
+        ? new DockerFactorySandbox()
+        : new IsolatedLocalFactorySandbox({
+            root: localSandboxRoot(),
+            env: localSandboxEnv(),
+            isolation: localIsolation,
+          });
 
 export const factory = new MastraFactory({
   auth,

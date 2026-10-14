@@ -41,7 +41,9 @@ Deployment shapes are covered in Mastra's [deployment guide](https://factory.mas
 
 ## 🔒 Picking a sandbox
 
-The sandbox is where agent-authored commands run, against a repository you have connected. Set it with `FACTORY_SANDBOX_PROVIDER`: `local`, `e2b` or `platform`.
+The sandbox is where agent-authored commands run, against a repository you have connected. Set it with `FACTORY_SANDBOX_PROVIDER`: `local`, `docker`, `e2b` or `platform`.
+
+`docker` runs each session in its own container on your Docker daemon (Docker Desktop on Windows and macOS). It is the isolated option on every OS without a cloud account, and the only one on Windows. It is never picked automatically.
 
 `local` runs on every platform. What confines it depends on the platform:
 
@@ -60,15 +62,14 @@ The backend is resolved at startup and logged:
 
 Network stays open inside the sandbox: the Factory clones and pushes through it. On macOS, seatbelt confines writes to the session checkout and temp directories but can read the whole disk; bubblewrap on Linux hides the host filesystem as well.
 
-Windows has no backend ([mastra-ai/mastra#20304](https://github.com/mastra-ai/mastra/issues/20304) — the fix raises an error for an unavailable backend rather than adding one). Docker is the way to get isolation there without a cloud provider.
+Windows has no backend ([mastra-ai/mastra#20304](https://github.com/mastra-ai/mastra/issues/20304) — the fix raises an error for an unavailable backend rather than adding one). Use `FACTORY_SANDBOX_PROVIDER=docker` there.
 
-Samskara wires E2B. Mastra also ships adapters for
+These four are every provider Mastra ships for the Factory (`FactorySandbox` subclasses). Mastra's own `LocalFactorySandbox` is not used: it never passes `isolation`, so it would run unconfined on macOS and Linux too. The adapters below are workspace sandboxes without a Factory provider; they would only fit through the callback form, which Factory exposes as provider `custom` with no settings or builds:
 [AgentCore](https://mastra.ai/integrations/sandboxes/agentcore),
 [Apple Container](https://mastra.ai/integrations/sandboxes/apple-container),
 [Blaxel](https://mastra.ai/integrations/sandboxes/blaxel),
 [Cloudflare](https://mastra.ai/integrations/sandboxes/cloudflare-sandbox),
 [Daytona](https://mastra.ai/integrations/sandboxes/daytona),
-[Docker](https://mastra.ai/integrations/sandboxes/docker),
 [Modal](https://mastra.ai/integrations/sandboxes/modal),
 [Railway](https://mastra.ai/integrations/sandboxes/railway) and
 [Vercel](https://mastra.ai/integrations/sandboxes/vercel).
