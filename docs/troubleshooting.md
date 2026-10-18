@@ -199,8 +199,8 @@ At startup, look for:
 [mastra-ai/mastra#20304](https://github.com/mastra-ai/mastra/issues/20304).
 
 For anything you would not run a stranger's script against, set
-`FACTORY_SANDBOX_PROVIDER=e2b` — or use Docker, which is the way to get
-isolation on Windows without a cloud provider.
+`FACTORY_SANDBOX_PROVIDER=e2b`, or `FACTORY_SANDBOX_PROVIDER=docker` with
+Docker running — the way to get isolation on Windows without a cloud provider.
 
 ## Slack sign-in never completes, and nothing is logged
 
