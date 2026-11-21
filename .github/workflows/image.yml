@@ -1,0 +1,78 @@
+# Builds the Factory app's Docker image here, instead of on the VPS that runs it (release/README.md). A pull request
+# only builds the image. main also publishes it to GHCR and moves release/samskara-factory, which Coolify deploys
+# from, so the server only downloads an image that already exists.
+name: image
+
+on:
+  pull_request:
+    paths-ignore: ['**/*.md', 'docs/**']
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**']
+  workflow_dispatch:
+
+# Pull requests: a newer push makes an in-flight build irrelevant. main: every run gets its own group, so no publish is
+# cancelled halfway; the release push below keeps the newest commit on the release branch.
+concurrency:
+  group: image-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ghcr.io/hamchowderr/samskara-factory
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, so the release push can tell that it moves the branch forward (see Release).
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: samskara-factory:check
+          cache-from: type=gha,scope=samskara-factory
+          cache-to: type=gha,scope=samskara-factory,mode=max
+      - name: Image size
+        run: docker image inspect samskara-factory:check --format '{{.Size}}' | awk '{ printf "%.0f MB\n", $1 / 1000000 }'
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          # Coolify deploys the exact commit's image (release/samskara-factory.Dockerfile), so there is no `latest`.
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=samskara-factory
+      # Coolify deploys from this branch, so it only ever picks up a commit whose image is already published. The push
+      # is never forced: GitHub accepts it only if it moves the branch forward, so a re-run of an older commit, or an
+      # older run that finishes after a newer one, leaves the newer release in place.
+      - name: Release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          BRANCH: release/samskara-factory
+        run: |
+          if git push origin "HEAD:refs/heads/$BRANCH"; then exit 0; fi
+          # Refused: fine only if a newer run already released a descendant of this commit.
+          git fetch --quiet origin "refs/heads/$BRANCH"
+          if git merge-base --is-ancestor HEAD FETCH_HEAD; then
+            echo "$BRANCH already holds a newer commit; leaving it there"; exit 0
+          fi
+          exit 1
