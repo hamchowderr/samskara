@@ -51,7 +51,7 @@ setting lives, are in [new-project.md](new-project.md#4-connect-models).
 
 ## What you need first
 
-- **Node.js 24.21.0 or newer**, the version pinned in `package.json` engines,
+- **Node.js 24.22.3 or newer**, the version pinned in `package.json` engines,
   CI and the Docker image. Avoid Node 22.19: its bundled undici cancels a
   request body when a discarded clone is garbage-collected, which breaks web
   sessions (see `tests/runtime/request-body-gc.test.ts`).

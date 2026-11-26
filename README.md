@@ -163,7 +163,7 @@ npm run dev:secure   # secrets injected from Infisical
 
 Before the first `npm run dev`, set `MASTRA_DB_PATH` in `.env` to an absolute path inside this repository, for example `<repo>/data/samskara.db`. Unset, the server opens the Mastra Code CLI's shared `mastra.db` and `mastra-vectors.db`; see `.env.example`.
 
-UI and API serve together on <http://localhost:4111>. Requires Node.js 24.21.0+.
+UI and API serve together on <http://localhost:4111>. Requires Node.js 24.22.3+.
 
 Once the server is running, [new-project.md](docs/setup/new-project.md) takes you from an empty organization to a card moving across the board.
 
