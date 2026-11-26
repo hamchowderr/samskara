@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@libsql/kysely-libsql": "0.4.1",
-    "@mastra/auth-better-auth": "1.1.5",
+    "@mastra/auth-better-auth": "1.1.13",
     "@mastra/auth-workos": "1.6.6",
     "@mastra/code-sdk": "1.13.0",
     "@mastra/core": "1.77.0",
@@ -38,7 +38,7 @@
     "@mastra/platform-workspace": "1.8.0",
     "@mastra/redis-streams": "0.4.3",
     "@samskara/factory-beads": "0.1.0",
-    "better-auth": "1.7.5",
+    "better-auth": "1.7.28",
     "resend": "6.28.1",
     "undici": "7.30.2",
     "zod": "^4.6.7"

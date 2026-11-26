@@ -174,14 +174,20 @@ async function loadOrgs() {
   list.replaceChildren(...rows);
 }
 async function load() {
-  const [{ members }, invitations, org] = await Promise.all([
+  const [{ members }, org] = await Promise.all([
     api('list-members?organizationId=' + encodeURIComponent(CTX.organizationId)),
-    api('list-invitations?organizationId=' + encodeURIComponent(CTX.organizationId)),
     api('get-full-organization?organizationId=' + encodeURIComponent(CTX.organizationId)),
   ]);
   const me = members.find(m => m.userId === CTX.userId);
   const myRole = me ? me.role : 'member';
   const canManage = myRole === 'owner' || myRole === 'admin';
+  // Since better-auth 1.7.7, list-invitations needs the invitation:create
+  // permission (has-permission.mjs canViewInvitations), so a member gets a 403.
+  // Ask only when this viewer may see them; a member sees no invitations panel.
+  const invitations = canManage
+    ? await api('list-invitations?organizationId=' + encodeURIComponent(CTX.organizationId))
+    : [];
+  document.getElementById('invitations-section').hidden = !canManage;
   const grantable = myRole === 'owner' ? ROLES : ROLES.filter(r => r !== 'owner');
 
   // Better Auth's default roles let owner and admin update the organization
@@ -361,8 +367,10 @@ export const createTeamRoutes = (routeAuth: RouteAuth) => [
 <p class="msg" id="msg" role="status"></p>
 <h2>Members</h2>
 <div class="panel" id="members"><div class="empty">Loading…</div></div>
+<section id="invitations-section">
 <h2>Pending invitations</h2>
-<div class="panel" id="invitations"><div class="empty">Loading…</div></div>`;
+<div class="panel" id="invitations"><div class="empty">Loading…</div></div>
+</section>`;
       const ctx = { userId: viewer.userId, organizationId: viewer.organizationId };
       return c.html(page('Team', body, `const CTX = ${scriptJson(ctx)};${CLIENT_HELPERS}${TEAM_SCRIPT}`));
     },
