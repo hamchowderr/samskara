@@ -136,6 +136,8 @@ test('owner invites a teammate who joins the same org and sees its projects', as
   // A member sees the team but not the invite form.
   await expect(againPage.getByText('Only an owner or admin can invite teammates.')).toBeVisible();
   await expect(againPage.getByRole('button', { name: 'Send invite' })).toBeHidden();
+  // Better Auth 1.7.7+ refuses list-invitations to a member, so none are shown.
+  await expect(againPage.getByRole('heading', { name: 'Pending invitations' })).toBeHidden();
   // ...and the organization's name, but cannot change it.
   await expect(againPage.getByRole('textbox', { name: 'Organization name' })).toHaveValue(companyName);
   await expect(againPage.getByRole('textbox', { name: 'Organization name' })).not.toBeEditable();

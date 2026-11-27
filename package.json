@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@libsql/kysely-libsql": "0.4.1",
-    "@mastra/auth-better-auth": "1.1.5",
+    "@mastra/auth-better-auth": "1.1.13",
     "@mastra/auth-workos": "1.6.6",
     "@mastra/code-sdk": "1.13.0",
     "@mastra/core": "1.77.0",
@@ -38,10 +38,10 @@
     "@mastra/platform-workspace": "1.8.0",
     "@mastra/redis-streams": "0.4.3",
     "@samskara/factory-beads": "0.1.0",
-    "better-auth": "1.7.5",
+    "better-auth": "1.7.28",
     "resend": "6.28.1",
-    "undici": "7.30.0",
-    "zod": "^4.3.6"
+    "undici": "7.30.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@libsql/client": "0.18.0",
@@ -52,9 +52,9 @@
     "mastra": "1.34.0",
     "typescript": "^5.9.2",
     "varlock": "^1.9.0",
-    "vitest": "5.0.1"
+    "vitest": "5.1.2"
   },
   "engines": {
-    "node": ">=24.21.0"
+    "node": ">=24.22.3"
   }
 }
