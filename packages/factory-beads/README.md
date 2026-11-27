@@ -1,7 +1,7 @@
 # @samskara/factory-beads
 
 Beads (`bd`) intake and write-back for Mastra Factory: ready beads in each
-linked GitHub repository become Work cards, and a card reaching Done closes its
+linked GitHub repository become cards on the Beads board, and a card reaching Done closes its
 bead and publishes it to the repository's `refs/dolt/data`. A private workspace
 package of Samskara; it is not published to npm.
 
@@ -12,8 +12,9 @@ limitations: [docs/operations/beads.md](../../docs/operations/beads.md).
 
 - `BeadsIntegration` — the Factory integration; Samskara constructs it in
   `src/mastra/index.ts`.
-- `createBeadsDoneRule` — the `manual` `onEnter` handler for the Done phase
-  (`src/mastra/boards/requests-board.ts`).
+- `beadsBoard` — the Beads board (`src/beads-board.ts`): Work's phases plus one
+  per beads skill, with the card-kind transition policy (`src/board-rules.ts`).
+  Samskara passes it in `MastraFactory({ boards })`.
 - `beadsSetting`, `beadsStartupLine` — the on/off switch and its startup line.
 - `BdRunner`, `BdRepo`, `BeadsSyncWorker` and helpers — the `bd`/`git` runner,
   the per-repository copy and the leased sync worker.

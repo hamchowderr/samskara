@@ -37,21 +37,17 @@ import type { VersionControl } from '@mastra/factory/capabilities/version-contro
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '@mastra/factory/integrations/base';
 import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
 import { LiveSessions } from '@mastra/factory/session/live-sessions';
-import { actorFromChannelAuthor, isMentionableActorId } from '@mastra/factory/storage/domains/comments/actor';
-import { MAX_COMMENT_BODY_LENGTH } from '@mastra/factory/storage/domains/comments/base';
-import type { WorkItemCommentRow, WorkItemCommentsStorage } from '@mastra/factory/storage/domains/comments/base';
-import type { WorkItemFeedPublisher } from '@mastra/factory/storage/domains/comments/feed-sync';
-import { WorkItemClaimConflictError, WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
-import type { ExternalWorkItemSource, WorkItemRow } from '@mastra/factory/storage/domains/work-items/base';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
+import type { Card as WorkItemRow, ExternalWorkItemSource } from '@mastra/factory/storage/domains/work-items/base';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createBeadsTools, resolveToolProject } from './agent-tools';
-import type { ToolScope } from './agent-tools';
-import { registerLive } from './done-rule';
+import { beadsKickoffHint } from './kickoff-rule';
+import { BEADS_BOARD_ID, REQUESTS_TO_BEADS_PHASE } from './beads-board';
+import type { BeadsInitSession, ToolScope } from './agent-tools';
 import { BdRepo, cacheDirFor, gateRepoProblem, OVERVIEW_TYPES, RELATED_TYPES, resultTail } from './repo';
-import type { BeadComment, BeadDetails, BeadRow, BeadSnapshot } from './repo';
+import type { BeadDetails, BeadRow, BeadSnapshot } from './repo';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
 import { BeadsToolOps } from './tool-ops';
@@ -59,74 +55,6 @@ import { BeadsSyncWorker } from './worker';
 import type { TickOutcome, WithLeaseOptions } from './worker';
 
 export const BEADS_INTEGRATION_ID = 'beads';
-/** The `type` of a bd comment's source on the card feed (samskara-l2t.6). */
-export const BEADS_COMMENT_SOURCE = 'comment';
-/**
- * The bd author of a card comment copied to bd (samskara-l2t.7): the person's
- * Factory name. Factory falls back to the person's email when they have no
- * name (actorFromAuthUser, @mastra/factory 0.20.0
- * dist/storage/domains/comments/actor.js:5-13); bd data is pushed to git, so
- * an address is never written there, only the part before the @.
- */
-export function bdAuthorName(displayName: string | undefined): string {
-  const shown = displayName?.trim() || 'Factory user';
-  return shown.includes('@') ? shown.slice(0, shown.indexOf('@')) || 'Factory user' : shown;
-}
-
-/**
- * Whether a card comment is one l2t.7 copies to bd: a person's (owner
- * decision), so its author is a signed-in Factory user, `kind: 'user'` with
- * a bare id (actor.js:1-4), and it is not deleted.
- */
-function copiedToBd(comment: Pick<WorkItemCommentRow, 'author' | 'deletedAt'>): boolean {
-  return comment.author.kind === 'user' && isMentionableActorId(comment.author.id) && !comment.deletedAt;
-}
-
-/** An email address: a local part, an @, and a domain with a dot. */
-const EMAIL = /([A-Za-z0-9._%+-]+)@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
-
-/**
- * The text a card comment is copied to bd with (samskara-l2t.7): the comment
- * as written, with every email address cut to the part before its @ (owner
- * decision, samskara-l2t.18), as the author name is. bd data is pushed to
- * git. An address gets into a comment by being typed, or by a mention: the
- * board inserts `@<name>`, and a person's Factory name falls back to their
- * email (the board UI `mastra` 1.33.0 ships, dist/factory/assets/index-*.js:
- * `Wg` returns `name ?? id`; actor.js:5-13). The card keeps the original.
- */
-export function bdCommentText(body: string): string {
-  return body.replace(EMAIL, '$1');
-}
-
-/** How long a settled card-comment copy is remembered (samskara-l2t.7). */
-const COPY_MEMORY_MS = 10 * 60_000;
-/**
- * How long after a card comment its bd copy can be written: the copy waits
- * for the writer lease (120 s by default, worker.ts) and then pulls and
- * writes. A bd comment outside it is never taken for an unrecorded copy.
- */
-const COPY_WINDOW_MS = 15 * 60_000;
-/** bd's `created_at` has whole seconds; a copy can read up to one earlier than the card comment. */
-const BD_CLOCK_SLACK_MS = 2_000;
-
-/** A person's card comment with no source, and the text its bd copy would have. */
-interface UnrecordedCopy {
-  row: WorkItemCommentRow;
-  author: string;
-  text: string;
-}
-const CUT_NOTE = '\n\n(cut short; the full comment is in bd)';
-
-/**
- * A bd comment cut to what the feed takes (`MAX_COMMENT_BODY_LENGTH`), never
- * splitting a surrogate pair, as Slack's publisher cuts its own
- * (@mastra/factory 0.20.0 dist/integrations/slack/feed-publisher.js:23-26).
- */
-export function fitFeedComment(body: string): string {
-  if (body.length <= MAX_COMMENT_BODY_LENGTH) return body;
-  return `${body.slice(0, MAX_COMMENT_BODY_LENGTH - CUT_NOTE.length).replace(/[\uD800-\uDBFF]$/, '')}${CUT_NOTE}`;
-}
-
 /** Card metadata keys this integration owns. */
 export const BEADS_META = {
   id: 'beadsId',
@@ -452,10 +380,11 @@ export const CARD_LABELS_META = 'labels';
 export const CARD_LABEL_COLORS_META = 'labelColors';
 
 /**
- * Factory's approval label (@mastra/factory 0.20.0 dist/rules/types.js:12-18).
- * A card carrying it in Intake or Triage, not yet accepted, gets Work's
- * prepare-approval run in Triage instead of an investigation
- * (boards/work.js:51-60). The board hides the chip itself.
+ * Factory's approval label (@mastra/factory 0.31.0 dist/rules/types.js:12-19):
+ * a card carrying it, not yet accepted, reads as awaiting a person's approval
+ * (`needsApproval`, used by the agent read tools, tools/read-tools.js:151). 0.31
+ * has no Triage phase, so it no longer picks a prepare-approval run. The board
+ * hides the chip itself.
  */
 export const NEEDS_APPROVAL_LABEL = 'status: needs approval';
 
@@ -566,7 +495,7 @@ export interface BeadsSourceControl {
 
 export interface BeadsIntegrationOptions {
   sourceControl: BeadsSourceControl;
-  /** Board the cards land on. Pass the installed board's id from its definition. Default `work`. */
+  /** Board the cards land on. Install `beadsBoard` (beads-board.ts) and pass its id. Default `beads`. */
   board?: string;
   /** Phase whose arrival closes the bead. Default `done`. */
   donePhase?: string;
@@ -576,6 +505,8 @@ export interface BeadsIntegrationOptions {
    * `canceled`; when the board has no such terminal phase, the done phase.
    */
   canceledPhase?: string;
+  /** Which session may run `beads_init`. Default none: Factory 0.24 removed the Supervisor it was for. */
+  initSession?: BeadsInitSession;
   /** Poll interval. Default 60 s. */
   pollIntervalMs?: number;
   /** Where the per-repo bd copies live. Default `<tmpdir>/factory-beads`. Must survive between ticks, not restarts. */
@@ -766,41 +697,9 @@ export class BeadsIntegration implements FactoryIntegration {
   readonly #resetRepos = new Set<string>();
   /** Repositories (slug) whose refresh read is failing: warned once per failure streak. */
   readonly #refreshFailing = new Set<string>();
-  /**
-   * The bd comment count each card's feed was last brought up to (card id to
-   * count, samskara-l2t.6). In memory, not on the card: a metadata write bumps
-   * the card's revision, and a bd comment added during a run would then make
-   * the run's next move stale. A restart reads each commented bead once
-   * more; the feed's own source key keeps that from duplicating anything.
-   */
-  readonly #commentCounts = new Map<string, number>();
-  /** Cards whose bd comments are failing to reach the feed: warned once per failure streak. */
-  readonly #commentsFailing = new Set<string>();
-  /**
-   * bd comment ids this process wrote from a card comment (samskara-l2t.7).
-   * Factory records a published comment's source only after `publish`
-   * returns (@mastra/factory 0.20.0 dist/storage/domains/comments/domain.js:113-117),
-   * so a sweep in between finds no feed comment carrying the id yet; this set
-   * keeps that sweep from posting the comment back. After a restart the feed
-   * carries the id.
-   */
-  readonly #mirroredComments = new Set<string>();
-  /**
-   * Copies to bd by Factory comment id, in flight or just done. A client
-   * retry of a web comment returns the stored row and offers it to the
-   * publishers again, with no source recorded yet while the first copy waits
-   * on the lease, pulls or syncs (@mastra/factory 0.20.0
-   * dist/storage/domains/comments/base.js:180-191, domain.js:89-108); the
-   * retry gets the first copy's result instead of a second bd comment.
-   * Kept a while after it settles, until Factory has recorded the source,
-   * after which Factory itself never offers the comment to beads again
-   * (domain.js:111).
-   */
-  readonly #copies = new Map<string, Promise<{ source: ExternalWorkItemSource } | null>>();
-
   constructor(options: BeadsIntegrationOptions) {
     this.#options = options;
-    this.board = options.board ?? 'work';
+    this.board = options.board ?? BEADS_BOARD_ID;
     this.donePhase = options.donePhase ?? 'done';
     this.canceledPhase = options.canceledPhase ?? 'canceled';
     this.#cacheRoot = options.cacheDir ?? join(tmpdir(), 'factory-beads');
@@ -813,7 +712,6 @@ export class BeadsIntegration implements FactoryIntegration {
         actor: options.actor,
         env: options.env,
       });
-    registerLive(this);
   }
 
   diagnostics(): Record<string, unknown> {
@@ -855,76 +753,6 @@ export class BeadsIntegration implements FactoryIntegration {
     return this.#preflight;
   }
 
-  /**
-   * Card comments to bd (samskara-l2t.7), through Factory's own outbound feed
-   * seam: Factory calls `publish` for every comment created on any card
-   * (@mastra/factory 0.20.0 dist/storage/domains/comments/domain.js:108-131,
-   * collected from every ready integration, dist/factory.js:808-826), after the
-   * response, and records the returned source on the comment.
-   *
-   * Only a person's comment on a beads card is copied (owner decision): the
-   * author must be a Factory user (`kind: 'user'` with a bare id, which only
-   * a signed-in person has, dist/storage/domains/comments/actor.js:1-4). Agent
-   * comments, comments from bd itself and unlinked chat senders are left
-   * alone; Factory never offers a comment to the platform it came from
-   * (domain.js:111). The comment is written with `bd comments add --author
-   * <the person's name>` as the integration's actor, under the writer lease,
-   * on the host copy, then published with `bd sync` as an agent tool's
-   * write is (tool-ops.ts). Edits and deletions on the card are not copied:
-   * Factory's publisher seam has no hook for them.
-   */
-  feedPublisher(ctx: IntegrationContext): WorkItemFeedPublisher {
-    return {
-      id: BEADS_INTEGRATION_ID,
-      publish: (comment, card) => {
-        const running = this.#copies.get(comment.id);
-        if (running) return running;
-        const copy = this.#publishComment(ctx, comment, card);
-        this.#copies.set(comment.id, copy);
-        const forget = () => setTimeout(() => this.#copies.delete(comment.id), COPY_MEMORY_MS).unref?.();
-        copy.then(forget, forget);
-        return copy;
-      },
-    };
-  }
-
-  async #publishComment(
-    ctx: IntegrationContext,
-    comment: WorkItemCommentRow,
-    card: WorkItemRow,
-  ): Promise<{ source: ExternalWorkItemSource } | null> {
-    if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID) return null;
-    const beadId = card.metadata?.[BEADS_META.id];
-    const slug = card.metadata?.[BEADS_META.repo];
-    if (typeof beadId !== 'string' || typeof slug !== 'string') return null;
-    if (!copiedToBd(comment)) return null;
-    const target = (await this.#linkedRepos(ctx, card.factoryProjectId)).find(r => r.slug === slug);
-    if (!target) {
-      this.#log.warn(`[factory-beads] ${slug}: card comment on ${beadId} not copied to bd: the repository is no longer linked to the project`);
-      return null;
-    }
-    const author = bdAuthorName(comment.author.displayName);
-    // The text goes in a file: bd reads an argument that starts with a dash
-    // as a flag, and the write appends `--json` after the arguments.
-    const dir = await mkdtemp(join(tmpdir(), 'factory-beads-comment-'));
-    try {
-      const file = join(dir, 'comment.md');
-      await writeFile(file, bdCommentText(comment.body), 'utf8');
-      const { output, published, publishNote } = await this.#tools().write(
-        target,
-        async () => ['comments', 'add', beadId, `--author=${author}`, '-f', file],
-        { actor: this.#runner.actor },
-      );
-      const id = (output as { id?: unknown } | null)?.id;
-      if (typeof id !== 'string') throw new Error(`bd comments add printed no comment id for ${beadId}`);
-      this.#mirroredComments.add(id);
-      if (!published) this.#log.warn(`[factory-beads] ${slug}: card comment copied to ${beadId} on the host copy, not yet published: ${publishNote}`);
-      return { source: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: id } };
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }
-
   workers(ctx: IntegrationContext): MastraWorker[] {
     this.#ctx = ctx;
     if (!ctx.runtime) return [];
@@ -961,7 +789,7 @@ export class BeadsIntegration implements FactoryIntegration {
    * create, update, link, init and pour, run on the host copy under the
    * writer lease. See agent-tools.ts. Nothing for a request that is not a
    * Factory session, a project with no linked repository, or before the
-   * worker exists. `beads_init` only for the supervisor (owner decision).
+   * worker exists. `beads_init` only for the session `initSession` names.
    *
    * Never throws. Factory merges every integration's tools into one
    * `extraTools` provider (@mastra/factory 0.20.0 dist/factory.js:588-595) and
@@ -973,7 +801,7 @@ export class BeadsIntegration implements FactoryIntegration {
     try {
       const ctx = this.#ctx;
       if (!ctx?.runtime || !this.#worker) return {};
-      const project = await resolveToolProject(requestContext, ctx.storage.projects);
+      const project = await resolveToolProject(requestContext, ctx.storage.projects, this.#options.initSession);
       if (!project) return {};
       const key = `${project.orgId}:${project.projectId}`;
       let cached = this.#scopeCache.get(key);
@@ -1080,9 +908,6 @@ export class BeadsIntegration implements FactoryIntegration {
     try {
       if (!ctx || !runtime) throw new Error('work-item runtime is not available');
       if (!vc) throw new Error(`source control "${this.#options.sourceControl.id}" has no versionControl capability`);
-      const board = runtime.boards.get(this.board);
-      if (!board) throw new Error(`board "${this.board}" is not installed`);
-      if (!board.phaseKind(this.donePhase)) throw new Error(`board "${this.board}" has no phase "${this.donePhase}"`);
       for (const linked of await this.#linkedRepos(ctx)) {
         const report: RepoSyncReport = {
           orgId: linked.orgId,
@@ -1107,6 +932,11 @@ export class BeadsIntegration implements FactoryIntegration {
           const credentials: RepoCredentials | undefined = access.authorization
             ? { token: access.authorization.token, username: access.authorization.username }
             : undefined;
+          // Boards are per project since @mastra/factory 0.28 (a project's boards
+          // live in its database), so each linked project is asked for its own.
+          const board = await this.#projectBoard(linked.orgId, linked.projectId);
+          if (!board) throw new Error(`board "${this.board}" is not installed in project ${linked.projectId}`);
+          if (!board.phaseKind(this.donePhase)) throw new Error(`board "${this.board}" has no phase "${this.donePhase}"`);
           await this.#syncRepo(linked, access.cloneUrl, credentials, board, report);
         } catch (error) {
           report.state = 'error';
@@ -1169,6 +999,7 @@ export class BeadsIntegration implements FactoryIntegration {
     const initialPhase = board.initialPhase;
     const phaseKind = (phase: string) => board.phaseKind(phase);
     const { orgId, projectId, slug } = linked;
+    await this.#relocateCards(orgId, projectId, slug, board);
     const cards = (await runtime.workItems.list({ orgId, factoryProjectId: projectId })).filter(
       item => item.externalSource?.integrationId === BEADS_INTEGRATION_ID && item.metadata?.[BEADS_META.repo] === slug,
     );
@@ -1510,8 +1341,8 @@ export class BeadsIntegration implements FactoryIntegration {
       if (!existing) {
         // Another project in the org already carries this bead. Its container's
         // overview card belongs there too, so none is made here.
-        const claimant = await runtime.workItems.getByClaimKey({ orgId, claimKey: beadsClaimKey(slug, bead.id) });
-        if (claimant && claimant.factoryProjectId !== projectId) {
+        const claimant = await this.#carriedElsewhere(orgId, projectId, slug, bead.id);
+        if (claimant) {
           report.existing++;
           if (bead.parent) {
             this.#warnOnce(
@@ -1951,16 +1782,6 @@ export class BeadsIntegration implements FactoryIntegration {
           // Open bead on a card that is not finished: clear what a past close left.
           const patch = clearedCloseMarkers(meta);
           if (Object.keys(patch).length > 0) card = await this.#mark(orgId, card, patch);
-          // A card back from a terminal phase (reopened, or moved back by a person).
-          if (card.claimKey === null) {
-            const claimed = await runtime.workItems.claimWorkItem({ orgId, id: card.id, claimKey: beadsClaimKey(slug, beadId) });
-            if (!claimed) {
-              this.#warnOnce(
-                `reclaim:${card.id}`,
-                `[factory-beads] ${slug}: card ${card.id} of reopened ${beadId} could not take its claim back: another card in the organization holds it`,
-              );
-            }
-          }
         } else if (closed) {
           // In a terminal phase with its bead closed: record that a card moved
           // for a close made in bd has arrived, so it is never moved again
@@ -2221,8 +2042,7 @@ export class BeadsIntegration implements FactoryIntegration {
       orgId,
       factoryProjectId: card.factoryProjectId,
       workItemId: card.id,
-      ingress: { identity, triggerType: `${BEADS_INTEGRATION_ID}.${key}` },
-      configVersion: runtime.configVersion,
+      ingress: { identity },
       expectedRevision: card.revision,
       // System, not an external actor: the dispatcher asks no consent for it (rules/dispatcher.js:193-201).
       actor: { type: 'system', id: `integration:${BEADS_INTEGRATION_ID}` },
@@ -2364,7 +2184,7 @@ export class BeadsIntegration implements FactoryIntegration {
     const { orgId, projectId, slug, snapshot } = scope;
     if (!snapshot) return;
     const runtime = this.#ctx!.runtime!;
-    const board = runtime.boards.get(this.board);
+    const board = await this.#projectBoard(orgId, projectId);
     const cards = await runtime.workItems.list({ orgId, factoryProjectId: projectId });
     for (let card of cards) {
       if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID || card.metadata?.[BEADS_META.repo] !== slug) continue;
@@ -2410,14 +2230,16 @@ export class BeadsIntegration implements FactoryIntegration {
             card = updated.item;
           }
         }
-        try {
-          await this.#followComments(scope, card, bead);
-          this.#commentsFailing.delete(card.id);
-        } catch (error) {
-          if (!this.#commentsFailing.has(card.id)) {
-            this.#commentsFailing.add(card.id);
-            this.#log.warn(`[factory-beads] ${slug}: bd comments of ${beadId} not on its card yet (retried every sweep): ${error instanceof Error ? error.message : String(error)}`);
-          }
+        // The kickoff hint (kickoff-rule.ts) on cards made before 0.31 gave cards a description.
+        const hint = beadsKickoffHint(card.metadata);
+        if (hint && !card.description) {
+          const described = await runtime.workItems.update({
+            orgId,
+            id: card.id,
+            userId: `integration:${BEADS_INTEGRATION_ID}`,
+            patch: { description: hint },
+          });
+          if (described) card = described.item;
         }
         if (readyIds.has(beadId) || bead.status === 'closed') continue;
         if (card.stages.some(stage => board?.phaseKind(stage) === 'terminal')) continue;
@@ -2441,126 +2263,51 @@ export class BeadsIntegration implements FactoryIntegration {
   }
 
   /**
-   * bd comments on the card's feed (samskara-l2t.6), as part of step 2b. When
-   * the bead's `comment_count` in the refresh read differs from the count the
-   * feed was last brought up to, the bead's comments are read
-   * (`bd comments <id> --json`) and each is posted through Factory's own feed
-   * ingest (`IntegrationContext.feed.createComment`, the path Slack asides
-   * take, @mastra/factory 0.20.0 dist/integrations/slack/slack.js:712-719),
-   * backdated to the comment's bd timestamp. Its source,
-   * `{ beads, comment, <bd comment id> }`, is the feed's idempotency key
-   * (dist/storage/domains/comments/base.js:150-197): a comment already on the
-   * feed is returned as it is, never posted twice, and one a person deleted
-   * from the feed keeps its tombstone and is not brought back. The count is
-   * recorded only once every comment is on the feed, so a failed read or post
-   * is retried on the next sweep. A comment does not change the card's
-   * revision (the feed touch writes only `comment_count` and
-   * `feed_activity_at`, base.js:268-285).
+   * Move this repository's beads cards that sit on another board onto this
+   * integration's board. Before @mastra/factory 0.31 beads cards lived on the
+   * Work board (the Requests board, under the key `work`); 0.31 can't attach
+   * the beads policy to Work, so they have a board of their own
+   * (beads-board.ts). A card keeps its phase where the board has it
+   * (`REQUESTS_TO_BEADS_PHASE`; Triage becomes Intake). A card that is
+   * finished, or has a session seated on its phase, stays put: a later sweep
+   * moves it once the session lets go. The revision and board guard the
+   * write, so a card a person or a run moved meanwhile is left alone.
    */
-  async #followComments(scope: IntakeScope, card: WorkItemRow, bead: BeadRow): Promise<void> {
-    const feed = this.#ctx?.feed;
-    const count = bead.comment_count ?? 0;
-    if (!feed || (this.#commentCounts.get(card.id) ?? 0) === count) return;
-    const comments = await scope.repo.comments(bead.id);
-    const onFeed = await this.#feedComments(scope, card);
-    for (const comment of comments) {
-      // Copied from this card (l2t.7), or already posted: never posted back.
-      if (onFeed.beadsIds.has(comment.id) || this.#mirroredComments.has(comment.id)) continue;
-      // A copy whose source Factory never recorded: link it, do not post it.
-      if (await this.#linkUnrecordedCopy(scope, onFeed.unlinked, comment)) continue;
-      const body = comment.text.trim() ? comment.text : '';
-      if (!body) continue;
-      const author = comment.author?.trim() || 'unknown';
-      const occurredAt = comment.created_at ? new Date(comment.created_at) : undefined;
-      const result = await feed.createComment({
-        orgId: scope.orgId,
-        workItemId: card.id,
-        // An unlinked sender, as Slack's ingest makes one: `beads:<author>`, never mentionable.
-        author: actorFromChannelAuthor({ platform: BEADS_INTEGRATION_ID, userId: author, userName: author }),
-        body: fitFeedComment(body),
-        ...(occurredAt && !Number.isNaN(occurredAt.getTime()) ? { occurredAt } : {}),
-        externalSource: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: comment.id },
-      });
-      if (result.status !== 'created') throw new Error(`comment ${comment.id} not posted to the feed: ${result.status}`);
-    }
-    this.#commentCounts.set(card.id, count);
-  }
-
-  /**
-   * The bd comment ids the card's feed already carries, deleted comments
-   * included: those posted from bd (l2t.6) and those copied to bd from the
-   * card (l2t.7), whose source Factory records after publishing
-   * (`attachExternalSource`). A copied comment keeps its own source key, so
-   * the feed's key check alone would not stop it coming back
-   * (@mastra/factory 0.20.0 dist/storage/domains/comments/base.js:434-452).
-   * Read from Factory's comments domain (registered as
-   * `work-item-comments`, base.js:132-135), whose list returns deleted rows
-   * too (base.js:302-323). Empty without factory storage.
-   */
-  async #feedComments(scope: IntakeScope, card: WorkItemRow): Promise<{ beadsIds: Set<string>; unlinked: UnrecordedCopy[] }> {
-    const beadsIds = new Set<string>();
-    const unlinked: UnrecordedCopy[] = [];
-    const comments = this.#commentsStore();
-    if (!comments) return { beadsIds, unlinked };
-    let before: string | undefined;
-    do {
-      const page = await comments.list({ orgId: scope.orgId, factoryProjectId: scope.projectId, workItemId: card.id, limit: 100, ...(before ? { before } : {}) });
-      for (const row of page.comments) {
-        const source = row.externalSource;
-        if (source?.integrationId === BEADS_INTEGRATION_ID && source.type === BEADS_COMMENT_SOURCE) beadsIds.add(source.externalId);
-        // A copy still running is not a candidate: its own attach records it.
-        else if (!source && copiedToBd(row) && !this.#copies.has(row.id)) {
-          unlinked.push({ row, author: bdAuthorName(row.author.displayName), text: bdCommentText(row.body) });
-        }
+  async #relocateCards(orgId: string, projectId: string, slug: string, board: BoardPhases): Promise<void> {
+    const runtime = this.#ctx!.runtime!;
+    const cards = await runtime.workItems.list({ orgId, factoryProjectId: projectId });
+    for (const card of cards) {
+      if (card.externalSource?.integrationId !== BEADS_INTEGRATION_ID || card.metadata?.[BEADS_META.repo] !== slug) continue;
+      const from = card.board ?? 'work';
+      if (from === this.board) continue;
+      const source = await this.#projectBoardById(orgId, projectId, from);
+      // As Factory's own moveCardToBoard (dist/boards/relocate.js): not a
+      // finished card, and not one with a session seated on its phase.
+      const seated = (stage: string) => {
+        const role = source?.roleForPhase(stage);
+        return role !== undefined && card.sessions?.[role] !== undefined;
+      };
+      if (!source || card.stages.some(stage => source.phaseKind(stage) === 'terminal' || seated(stage))) continue;
+      const mapped = card.stages.map(stage => REQUESTS_TO_BEADS_PHASE[stage] ?? board.initialPhase);
+      const stage = mapped.find(phase => board.phaseKind(phase) !== undefined) ?? board.initialPhase;
+      try {
+        const moved = await runtime.workItems.update({
+          orgId,
+          id: card.id,
+          userId: `integration:${BEADS_INTEGRATION_ID}`,
+          patch: {
+            board: this.board,
+            stages: [stage],
+            description: card.description ?? beadsKickoffHint(card.metadata) ?? null,
+          },
+          expectedRevision: card.revision,
+          expectedBoard: card.board,
+        });
+        if (moved) this.#log.info(`[factory-beads] ${slug}: card ${card.id} moved from board ${from} to ${this.board}`);
+      } catch (error) {
+        this.#log.warn(`[factory-beads] ${slug}: card ${card.id} not moved to board ${this.board}: ${error instanceof Error ? error.message : String(error)}`);
       }
-      before = page.nextCursor;
-    } while (before);
-    // Oldest first, so identical comments pair with their copies in order.
-    unlinked.reverse();
-    return { beadsIds, unlinked };
-  }
-
-  #commentsStore(): WorkItemCommentsStorage | undefined {
-    return this.#ctx?.factoryStorage?.getDomain<WorkItemCommentsStorage>('work-item-comments');
-  }
-
-  /**
-   * A card comment copied to bd whose bd id Factory never recorded: the
-   * server stopped between the bd write and Factory's `attachExternalSource`,
-   * or bd printed no id. Factory knows this gap for its own publishers
-   * ("a process that restarts mid-flight drops the post. Both need an
-   * outbox", dist/storage/domains/comments/domain.js:101-108). The bd comment
-   * is matched to a person's card comment with no source, by the bd author
-   * name and the text the copy wrote, written within COPY_WINDOW_MS after
-   * the card comment, oldest first and each card comment at most once, never
-   * one whose copy is still running, and linked to it with the same `attachExternalSource` Factory
-   * uses (dist/storage/domains/comments/base.js:434-452), so it is not posted
-   * back and the next sweep finds it by id. Two identical comments by one
-   * person pair with their two copies in order. A person who writes in bd,
-   * as the same name, exactly what they wrote on the card within that window
-   * is taken for a copy. bd stores `-f` text byte for byte, trailing
-   * newlines included (checked on bd 1.3.1), so a copy's text matches.
-   */
-  async #linkUnrecordedCopy(scope: IntakeScope, unlinked: UnrecordedCopy[], comment: BeadComment): Promise<boolean> {
-    const store = this.#commentsStore();
-    const written = comment.created_at ? Date.parse(comment.created_at) : Number.NaN;
-    if (!store || Number.isNaN(written)) return false;
-    const match = unlinked.findIndex(({ row, author, text }) => {
-      const made = row.createdAt.getTime();
-      return author === comment.author && text === comment.text && written >= made - BD_CLOCK_SLACK_MS && written <= made + COPY_WINDOW_MS;
-    });
-    if (match === -1) return false;
-    const [{ row }] = unlinked.splice(match, 1) as [UnrecordedCopy];
-    // Null when the row got a source meanwhile (first platform wins,
-    // base.js:441): then this bd comment is not its copy, and is posted.
-    const linked = await store.attachExternalSource({
-      orgId: scope.orgId,
-      commentId: row.id,
-      source: { integrationId: BEADS_INTEGRATION_ID, type: BEADS_COMMENT_SOURCE, externalId: comment.id },
-    });
-    if (!linked || linked.externalSource?.externalId !== comment.id) return false;
-    this.#log.info(`[factory-beads] ${scope.slug}: bd comment ${comment.id} linked to the card comment it was copied from`);
-    return true;
+    }
   }
 
   /** A new card for `bead`, under `parent` when given. Undefined when another project in the org holds its claim. */
@@ -2572,7 +2319,12 @@ export class BeadsIntegration implements FactoryIntegration {
   ): Promise<WorkItemRow | undefined> {
     const { orgId, projectId, slug } = scope;
     const named = beadCardTitle(bead, scope.snapshot);
-    try {
+    // Another project in the org already carries this bead (see #carriedElsewhere).
+    if (await this.#carriedElsewhere(orgId, projectId, slug, bead.id)) {
+      scope.report.existing++;
+      return undefined;
+    }
+    {
       const result = await this.#ctx!.runtime!.workItems.upsert({
         orgId,
         userId: `integration:${BEADS_INTEGRATION_ID}`,
@@ -2581,7 +2333,7 @@ export class BeadsIntegration implements FactoryIntegration {
         input: {
           board: this.board,
           externalSource: beadSource(bead.id),
-          claimKey: beadsClaimKey(slug, bead.id),
+          description: beadsKickoffHint({ [BEADS_META.id]: bead.id, [BEADS_META.repo]: slug }) ?? null,
           title: `${bead.id}: ${named ?? ''}`,
           stages: [scope.initialPhase],
           ...(parent ? { parentWorkItemId: parent.id } : {}),
@@ -2599,13 +2351,6 @@ export class BeadsIntegration implements FactoryIntegration {
       if (result.created) scope.report.created++;
       else scope.report.existing++;
       return result.item;
-    } catch (error) {
-      // Another project in the org already carries this bead.
-      if (error instanceof WorkItemClaimConflictError) {
-        scope.report.existing++;
-        return undefined;
-      }
-      throw error;
     }
   }
 
@@ -2631,6 +2376,43 @@ export class BeadsIntegration implements FactoryIntegration {
       this.#warnOnce(`relation:${card.id}:${parent.id}`, `[factory-beads] ${scope.slug}: card ${card.id} not linked under ${parent.id}: ${error.message}`);
       return card;
     }
+  }
+
+  /**
+   * A card for bead `beadId` of `slug` that another project of the org holds
+   * and has not finished. It stands in for the org-wide claim key that
+   * @mastra/factory 0.27 retired: a source may now own one card in each
+   * project, and intake is to consult `listBySource` before making another
+   * (storage/domains/work-items/base.d.ts:732-741). As the claim was, it is
+   * released once that card reaches a terminal phase. Two projects making the
+   * same bead's card in the same instant can both succeed; the claim key
+   * refused the second, this does not.
+   */
+  async #carriedElsewhere(orgId: string, projectId: string, slug: string, beadId: string): Promise<WorkItemRow | undefined> {
+    const cards = await this.#ctx!.runtime!.workItems.listBySource({ orgId, source: beadSource(beadId) });
+    for (const card of cards) {
+      if (card.factoryProjectId === projectId || card.metadata?.[BEADS_META.repo] !== slug) continue;
+      const board = await this.#projectBoard(orgId, card.factoryProjectId);
+      if (card.stages.some(stage => board?.phaseKind(stage) === 'terminal')) continue;
+      return card;
+    }
+    return undefined;
+  }
+
+  /**
+   * This integration's board as one project serves it. `runtime.boards` is a
+   * per-project source in a running Factory and a fixed registry in tests
+   * (integrations/base.d.ts:164-167, boards/project-boards.d.ts:48-57).
+   */
+  async #projectBoard(orgId: string, projectId: string) {
+    return this.#projectBoardById(orgId, projectId, this.board);
+  }
+
+  /** A board as the project stores it: 0.31 boards are per project (`ProjectBoardSource`). */
+  async #projectBoardById(orgId: string, projectId: string, id: string) {
+    const boards = this.#ctx!.runtime!.boards;
+    const registry = 'load' in boards ? await boards.load({ orgId, factoryProjectId: projectId }) : boards;
+    return registry.get(id);
   }
 
   #warnOnce(key: string, message: string): void {
@@ -2818,7 +2600,3 @@ function beadSource(beadId: string): ExternalWorkItemSource {
   return { integrationId: BEADS_INTEGRATION_ID, type: 'issue', externalId: beadId };
 }
 
-/** The org-wide claim for one bead: a repo's bead is carded by one project at a time. */
-export function beadsClaimKey(repo: string, beadId: string): string {
-  return `beads:${repo}:${beadId}`;
-}

@@ -6,11 +6,9 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
 
-import { requestsBoard } from '../../../src/mastra/boards/requests-board';
-import { BEADS_META, beadsKickoffHint, OVERVIEW_CARD_KIND, RESEARCH_CARD_KIND, withBeadsKickoffHint } from '../src/index';
-import { createHarness, sweep } from './harness';
+import { BEADS_META, beadsKickoffHint, OVERVIEW_CARD_KIND, RESEARCH_CARD_KIND } from '../src/index';
+import { createHarness, ORG, PROJECT, SLUG, sweep } from './harness';
 import type { Harness } from './harness';
 
 let h: Harness | undefined;
@@ -119,27 +117,16 @@ describe('cards whose bead is not ready (samskara-l2t.8)', () => {
 });
 
 describe('no description comment (samskara-l2t.8)', () => {
-  it('posts nothing to the feed, and intake reads bd ready with --brief', async () => {
+  it('copies no bead text onto the card, and intake reads bd ready with --brief', async () => {
     h = createHarness([{ id: 'w-1', title: 'One', description: 'A long description.' }]);
     await sweep(h.integration());
-    expect(h.feed.comments).toEqual([]);
+    expect(card(h, 'w-1').description).not.toContain('A long description.');
     expect(h.state().calls.find(c => c.argv.includes('ready'))!.argv).toContain('--brief');
   });
 });
 
 describe('kickoff hint (samskara-l2t.8)', () => {
   const beadsMeta = { [BEADS_META.id]: 'w-1', [BEADS_META.repo]: 'acme/widgets' };
-  const context = (stage: string, metadata: Record<string, unknown> | null) =>
-    ({
-      ingress: { id: 'ingress_1' },
-      board: 'work',
-      stage,
-      fromStage: 'intake',
-      toStage: stage,
-      item: { id: 'card_1', title: 'w-1: One', url: null, source: 'manual', sourceKey: null, stages: [stage], metadata, triageType: null },
-    }) as unknown as Readonly<FactoryStageRuleContext>;
-  const run = (stage: 'triage' | 'planning' | 'execute', metadata: Record<string, unknown> | null) =>
-    requestsBoard.phases[stage].onEnter!.manual!(context(stage, metadata)) as Promise<Record<string, unknown> | undefined>;
   const hint = beadsKickoffHint(beadsMeta)!;
 
   it('names the bead, its repository and beads_show', () => {
@@ -150,29 +137,60 @@ describe('kickoff hint (samskara-l2t.8)', () => {
     expect(beadsKickoffHint(null)).toBeUndefined();
   });
 
-  it("is appended to the Requests board's Planning and Building runs on a beads card, and to no other card's", async () => {
-    const plan = await run('planning', beadsMeta);
-    expect(plan).toMatchObject({ type: 'invokeSkill', skillName: 'factory-plan', arguments: `w-1: One\n\n${hint}` });
-    const build = await run('execute', beadsMeta);
-    expect(build?.type).toBe('invokeSkill');
-    expect(String(build?.prompt).endsWith(`\n\n${hint}`)).toBe(true);
-    expect(String((await run('planning', null))?.arguments)).not.toContain('beads_show');
-    expect(String((await run('execute', { other: true }))?.prompt)).not.toContain('beads_show');
+  it("is the card's description, which every phase run reads through the work-item signal", async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    await sweep(h.integration());
+    expect(card(h, 'w-1').description).toBe(hint);
   });
 
-  it("is appended to a research card's decision run and to Triage", async () => {
-    const research = await run('planning', { ...beadsMeta, [BEADS_META.cardKind]: RESEARCH_CARD_KIND });
-    expect(research).toMatchObject({ skillName: 'factory-beads-decision' });
-    expect(String(research?.arguments).endsWith(hint)).toBe(true);
-    const triage = await run('triage', beadsMeta);
-    expect(triage?.type).toBe('invokeSkill');
-    expect(String(triage?.arguments ?? triage?.prompt)).toContain(hint);
+  it('is written onto a card made before cards had a description', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    const integration = h.integration();
+    await sweep(integration);
+    h.workItems.items.find(i => i.id === card(h!, 'w-1').id)!.description = null;
+    await sweep(integration);
+    expect(card(h, 'w-1').description).toBe(hint);
+  });
+});
+
+describe('cards on the old Work-based board (Factory 0.31 port)', () => {
+  const legacy = async (harness: Harness, stage: string, sessions: Record<string, unknown> = {}) => {
+    const { item } = await harness.workItems.upsert({
+      orgId: ORG,
+      userId: 'u',
+      factoryProjectId: PROJECT,
+      input: {
+        board: 'work',
+        externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-1' },
+        title: 'w-1: One',
+        stages: [stage],
+        metadata: { [BEADS_META.id]: 'w-1', [BEADS_META.repo]: SLUG },
+      },
+    });
+    harness.workItems.items.find(i => i.id === item.id)!.sessions = sessions as never;
+    return item.id;
+  };
+
+  it('moves a resting card onto the Beads board in the same phase, with the kickoff hint', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    const id = await legacy(h, 'intake');
+    await sweep(h.integration());
+    const moved = h.workItems.items.find(i => i.id === id)!;
+    expect(moved).toMatchObject({ board: 'beads', stages: ['intake'] });
+    expect(moved.description).toBe(beadsKickoffHint(moved.metadata));
+    expect(h.workItems.beadCards()).toHaveLength(1);
   });
 
-  it('passes every other decision through unchanged', async () => {
-    const reject = { type: 'reject', code: 'forbidden', reason: 'no' } as const;
-    expect(await withBeadsKickoffHint(() => reject)(context('planning', beadsMeta))).toEqual(reject);
-    expect(await withBeadsKickoffHint(() => undefined)(context('planning', beadsMeta))).toBeUndefined();
-    expect(await withBeadsKickoffHint()(context('planning', beadsMeta))).toBeUndefined();
+  it('leaves a card with a session seated on its phase, and a finished one, where they are', async () => {
+    h = createHarness([{ id: 'w-1', title: 'One' }]);
+    const id = await legacy(h, 'planning', { work: { sessionId: 's1', branch: 'b', threadId: 't' } });
+    await sweep(h.integration());
+    expect(h.workItems.items.find(i => i.id === id)).toMatchObject({ board: 'work', stages: ['planning'] });
+
+    h.cleanup();
+    h = createHarness([{ id: 'w-1', title: 'One', status: 'closed' }]);
+    const done = await legacy(h, 'done');
+    await sweep(h.integration());
+    expect(h.workItems.items.find(i => i.id === done)).toMatchObject({ board: 'work', stages: ['done'] });
   });
 });

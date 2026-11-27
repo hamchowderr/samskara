@@ -27,7 +27,6 @@ import type { RequestContext } from '@mastra/core/request-context';
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext } from '@mastra/factory/auth';
 import type { IntegrationTools } from '@mastra/factory/integrations/base';
 import type { FactoryProjectsStorage } from '@mastra/factory/storage/domains/projects/base';
-import { parseSupervisorResourceId } from '@mastra/factory/supervisor/session';
 import { z } from 'zod';
 
 import { gateRepoProblem } from './repo';
@@ -39,10 +38,20 @@ import type { BeadsToolOps, ToolRepo, WriteOutcome } from './tool-ops';
 export interface ToolScope {
   orgId: string;
   projectId: string;
-  /** The project's supervisor session. Only it gets `beads_init` (owner decision, samskara-e64). */
+  /**
+   * Whether this session gets `beads_init`. It was the project's supervisor
+   * session alone (owner decision, samskara-e64); see `BeadsInitSession`.
+   */
   supervisor: boolean;
   repos: Array<{ repositoryId: string; slug: string }>;
 }
+
+/**
+ * Which session may run `beads_init`. @mastra/factory 0.24 removed the Factory
+ * Supervisor, the one session it was for (samskara-e64), so by default no
+ * session gets it until the owner names another (samskara-pg2).
+ */
+export type BeadsInitSession = (session: { resourceId?: string; factoryProjectId?: string }) => boolean;
 
 interface ControllerLike {
   resourceId?: string;
@@ -54,27 +63,26 @@ interface ControllerLike {
  * when the request is not a Factory session, the project does not exist, or the
  * caller's org (or the session's stamped org) is a different one.
  *
- * `supervisor` is true only for the project's supervisor session: its
- * resource id is `factory-supervisor:<projectId>` (dist/supervisor/session.js:4-16).
- * Worker (triage, plan, build, review) and channel sessions have other ids.
+ * `supervisor` is what `initSession` says of the session; false without one.
  */
 export async function resolveToolProject(
   requestContext: RequestContext,
   projects: Pick<FactoryProjectsStorage, 'getById'>,
+  initSession?: BeadsInitSession,
 ): Promise<{ orgId: string; projectId: string; supervisor: boolean } | undefined> {
   if (!requestContext || typeof requestContext.get !== 'function') return undefined;
   const controller = requestContext.get('controller') as ControllerLike | undefined;
   if (!controller) return undefined;
   const state = controller.getState?.() ?? {};
-  const supervisorOf = parseSupervisorResourceId(controller.resourceId);
-  const projectId = state.factoryProjectId ?? supervisorOf ?? controller.resourceId;
+  const projectId = state.factoryProjectId ?? controller.resourceId;
   if (!projectId) return undefined;
   const project = await projects.getById({ id: projectId }).catch(() => null);
   if (!project) return undefined;
   const callerOrg = getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
   if (callerOrg && callerOrg !== project.orgId) return undefined;
   if (state.factoryOrgId && state.factoryOrgId !== project.orgId) return undefined;
-  return { orgId: project.orgId, projectId: project.id, supervisor: supervisorOf !== null && supervisorOf === project.id };
+  const supervisor = initSession?.({ resourceId: controller.resourceId, factoryProjectId: state.factoryProjectId }) ?? false;
+  return { orgId: project.orgId, projectId: project.id, supervisor };
 }
 
 /** Issue types bd always accepts, and the aliases it maps (bd create --help, bd types). */

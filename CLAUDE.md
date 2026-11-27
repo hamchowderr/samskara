@@ -255,15 +255,16 @@ dependency, not a fork. Entry point: `src/mastra/index.ts`.
 - **Team pages** — `src/mastra/team/`, the member and invitation pages the
   Factory UI lacks. See docs/operations/team-invites.md.
 - **Beads** — `packages/factory-beads`, on by default (`index.ts:469-501`):
-  ready beads become Work cards and Done cards close their bead. See
+  ready beads become Beads-board cards and Done cards close their bead. See
   docs/operations/beads.md.
 - **Sandbox** — `local | e2b | platform` via `FACTORY_SANDBOX_PROVIDER`,
   auto-detected when unset. An explicit choice missing its credentials THROWS;
   it must never silently downgrade to a less isolated provider.
-- **Boards** — `src/mastra/boards/requests-board.ts` is the built-in Work
-  board plus `manual` triage, installed under the id `work` with
-  `includeDefaultBoards: false` so it replaces the built-in (Review is
-  reinstalled as-is). Keep the id: the GitHub rules key on it. See docs/boards.md.
+- **Boards** — Factory's own Work, unchanged, plus the Beads board
+  (`packages/factory-beads/src/beads-board.ts`, passed in `boards`), whose
+  phases run the beads skills and whose transition policy keeps each card kind
+  in its phases. Since Factory 0.31 a phase's `onEnter` is ignored: a phase runs
+  its `runner.skill`. See docs/boards.md.
 
 ## Conventions & Patterns
 

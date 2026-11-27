@@ -104,22 +104,18 @@ across a version before, or depends on code that reads the installed package:
    which is undefined whenever a storage instance is injected.
 2. **The sandbox still throws on an explicit provider with no credentials.**
    `FACTORY_SANDBOX_PROVIDER=e2b` with `E2B_API_KEY` unset must refuse to start.
-3. **Our Work board still replaces the built-in.** `includeDefaultBoards: false`
-   with a same-id board is the documented customization path (README "replace
-   Work or Review", `factory-skills/configure-factory-rules/SKILL.md`). Re-read
-   both on every upgrade, and check that `tests/boards/requests-board.test.ts`
-   still passes: it asserts our phases and roles match `workBoard`'s and that
-   every source key is one the runtime knows (`defineBoard()` does not validate
-   handler keys). A board built from Work's parts copies them field by field, so
-   a field Work gains is missing from ours until copied: 0.21.0 added
-   `sourceClosed` (where a card goes when its GitHub issue closes), and without
-   it closing an issue left its card where it was. Compare
-   `Object.keys(workBoard)` with the fields `requests-board.ts` sets.
-4. **Behaviour keyed to the id `work` still applies.** The default GitHub
-   rules, `advanceApprovedPlan` and the triage classification tool all key on
-   the literal `"work"`; see [boards.md](../boards.md#replacing-work-by-id).
-   `tests/boards/work-board-github-rules.test.ts` drives the stock GitHub rules
-   against the installed registry.
+3. **The Beads board still carries its policy.** It is passed in the
+   deprecated `boards` option, the one route that keeps an app board's
+   `transitionPolicy` (see [boards.md](../boards.md#what-ships)). Check the
+   option and `transitionPolicy` still exist and are enforced
+   (`dist/rules/transition-service.js`), and that
+   `packages/factory-beads/test/beads-board.test.ts` passes: it checks the
+   board still copies Work's phases and runners. A field Work gains is missing
+   from Beads until copied; compare `Object.keys(workBoard)` with the fields
+   `beads-board.ts` sets.
+4. **Phases still start from `runner.skill`.** 0.31 ignores `onEnter`; if a
+   release brings back per-source handlers or moves the kickoff into
+   `description`, re-read `phase-runner.js` before relying on either.
 5. **Beads still constructs and syncs.** `beads` is in the `[integrations]`
    line, and `GET /web/beads/status`, from a signed-in session, shows each
    beads repository with `state: "ok"`. Check that
@@ -132,6 +128,24 @@ across a version before, or depends on code that reads the installed package:
 Verify against the **built** output as well as source when a change touches
 configuration. `mastra build` folds `process.env.NODE_ENV` at build time, so a
 branch that reads one way in source can compile to a constant.
+
+## Behaviour changes in 0.31.0
+
+Moving from 0.22 to 0.31 (core 1.86, code-sdk 1.21). Each item was checked
+against the installed package; the beads side is in
+[beads.md](beads.md#factory-031).
+
+- **Boards.** `onEnter`/`onExit` ignored, Triage gone from Work,
+  `includeDefaultBoards` ignored, `reviewBoard` export gone, boards per
+  project. The Requests board was removed; see [boards.md](../boards.md).
+- **Work items.** The comments domain, `claimKey`, `getByClaimKey`,
+  `claimWorkItem` and `WorkItemClaimConflictError` were removed; `WorkItemRow`
+  is now `Card`, which adds `description` and a separate provider `workItem`.
+  `listBySource({ orgId, source })` finds a source's cards across projects.
+- **Rule evaluations.** `commitRuleEvaluation`'s ingress is `{ identity }`
+  only; `configVersion` left its input.
+- **Supervisor.** The `@mastra/factory/supervisor/session` module and the
+  project Supervisor were removed in 0.24.
 
 ## Behaviour changes in 0.21.0
 

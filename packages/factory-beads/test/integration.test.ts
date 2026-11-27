@@ -4,10 +4,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   BEADS_META,
-  beadsClaimKey,
   BeadSnapshot,
   cacheDirFor,
-  createBeadsDoneRule,
   FACTORY_REPOSITORY_META,
   OVERVIEW_CARD_KIND,
   OVERVIEW_WORKING_REASON,
@@ -15,11 +13,10 @@ import {
   PLAN_CARD_KIND,
   RESEARCH_CARD_KIND,
 } from '../src/index';
-import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
 // Factory's own resolver, the one dispatch runs (rules/start-coordinator.js:80, routes/surface.js:159).
 import { resolveWorkItemRepository } from '@mastra/factory/session/work-item-repository';
 import type { SourceControlStorageHandle } from '@mastra/factory/storage/domains/source-control/base';
-import { createHarness, MAX_DISPATCH_ATTEMPTS, ORG, PROJECT, SLUG, sweep, TOKEN } from './harness';
+import { createHarness, MAX_DISPATCH_ATTEMPTS, ORG, PROJECT, SLUG, sweep, TOKEN, triggerOf } from './harness';
 import type { Harness } from './harness';
 
 let h: Harness | undefined;
@@ -34,7 +31,7 @@ const ids = (harness: Harness) => harness.workItems.beadCards().map(c => c.metad
  * that close a carded child bead by editing bd state also get a
  * `closed-outside` move for its card, which they are not about.
  */
-const ownMoves = (harness: Harness) => harness.workItems.evaluations.filter(e => e.input.ingress.triggerType !== 'beads.closed-outside');
+const ownMoves = (harness: Harness) => harness.workItems.evaluations.filter(e => triggerOf(e) !== 'beads.closed-outside');
 const cardFor = (harness: Harness, beadId: string) =>
   harness.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === beadId)!;
 /** Each call as "<command> <first operand>", skipping flags and flag values. */
@@ -81,9 +78,7 @@ describe('intake', () => {
     expect(cardFor(h, 'w-1').metadata?.[BEADS_META.cardKind]).toBe(PLAN_CARD_KIND);
     const card = cardFor(h, 'w-2');
     expect(card.externalSource).toEqual({ integrationId: 'beads', type: 'issue', externalId: 'w-2' });
-    expect(card.claimKey).toBe(beadsClaimKey(SLUG, 'w-2'));
-    expect(card.claimKey).toBe('beads:acme/widgets:w-2');
-    expect(card.board).toBe('work');
+    expect(card.board).toBe('beads');
     expect(card.stages).toEqual(['intake']);
     expect(card.title).toBe('w-2: First');
     expect(card.metadata).toMatchObject({ beadsRepo: SLUG, beadsType: 'task', beadsPriority: 1 });
@@ -114,7 +109,7 @@ describe('intake', () => {
       orgId: ORG,
       userId: 'u',
       factoryProjectId: 'other_project',
-      input: { title: 'held elsewhere', claimKey: beadsClaimKey(SLUG, 'w-1') },
+      input: { title: 'held elsewhere', externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-1' }, metadata: { [BEADS_META.id]: 'w-1', [BEADS_META.repo]: SLUG } },
     });
     const summary = await sweep(h.integration());
     expect(summary.repos[0]).toMatchObject({ created: 0, existing: 1, state: 'ok' });
@@ -372,25 +367,6 @@ describe('write-back and ordering', () => {
   });
 });
 
-describe('done rule', () => {
-  const context = (metadata: Record<string, unknown> | null) =>
-    ({ item: { metadata } }) as unknown as Readonly<FactoryStageRuleContext>;
-
-  it('only wakes the worker, for beads cards, and returns no decision', async () => {
-    h = createHarness([]);
-    const integration = h.integration();
-    let kicks = 0;
-    integration.kick = () => {
-      kicks++;
-    };
-    const rule = createBeadsDoneRule();
-    expect(rule(context({ beadsId: 'w-1' }))).toBeUndefined();
-    expect(rule(context({ other: true }))).toBeUndefined();
-    expect(rule(context(null))).toBeUndefined();
-    expect(kicks).toBe(1);
-  });
-});
-
 describe('repository cache', () => {
   it('keeps one copy per repo under the cache directory', async () => {
     h = createHarness([{ id: 'w-1', title: 'One' }]);
@@ -445,7 +421,7 @@ describe('repository on the card', () => {
       sourceControl: (harness.ctx.storage as unknown as { sourceControls: SourceControlStorageHandle[] }).sourceControls[0]!,
       orgId: ORG,
       factoryProjectId: PROJECT,
-      item: { metadata },
+      item: { metadata, workItem: { metadata: null } },
     });
   /** Link a second repository to the same project and connection. */
   const linkGadgets = (harness: Harness) => {
@@ -521,7 +497,7 @@ describe('repository on the card', () => {
 
 describe('overview cards and child linking (samskara-l2t.2.1)', () => {
   const card = (harness: Harness, beadId: string) => harness.workItems.items.find(i => i.metadata?.[BEADS_META.id] === beadId);
-  const order = (harness: Harness) => harness.workItems.beadCards().map(c => c.metadata?.[BEADS_META.id]);
+  const order = (harness: Harness) => harness.workItems.beadCards().filter(c => c.factoryProjectId === PROJECT).map(c => c.metadata?.[BEADS_META.id]);
   const collectWarnings = () => {
     const warnings: string[] = [];
     return {
@@ -546,7 +522,6 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
       title: 'w-e: Epic',
       stages: ['intake'],
       parentWorkItemId: null,
-      claimKey: beadsClaimKey(SLUG, 'w-e'),
       externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e' },
     });
     expect(epic.metadata).toMatchObject({
@@ -708,7 +683,7 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
       orgId: ORG,
       userId: 'u',
       factoryProjectId: 'other_project',
-      input: { title: 'held elsewhere', claimKey: beadsClaimKey(SLUG, 'w-e.1') },
+      input: { title: 'held elsewhere', externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e.1' }, metadata: { [BEADS_META.id]: 'w-e.1', [BEADS_META.repo]: SLUG } },
     });
     const { warnings, logger } = collectWarnings();
     const integration = h.integration({ logger });
@@ -730,7 +705,7 @@ describe('overview cards and child linking (samskara-l2t.2.1)', () => {
       orgId: ORG,
       userId: 'u',
       factoryProjectId: 'other_project',
-      input: { title: 'epic elsewhere', claimKey: beadsClaimKey(SLUG, 'w-e') },
+      input: { title: 'epic elsewhere', externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e' }, metadata: { [BEADS_META.id]: 'w-e', [BEADS_META.repo]: SLUG } },
     });
     const { warnings, logger } = collectWarnings();
     const summary = await sweep(h.integration({ logger }));
@@ -796,9 +771,8 @@ describe('research cards for decision beads (samskara-l2t.2.3)', () => {
       userId: 'u',
       factoryProjectId: PROJECT,
       input: {
-        board: 'work',
+        board: 'beads',
         externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-d' },
-        claimKey: beadsClaimKey(SLUG, 'w-d'),
         title: 'w-d: Which queue?',
         stages: ['intake'],
         metadata: { [BEADS_META.id]: 'w-d', [BEADS_META.repo]: SLUG, [FACTORY_REPOSITORY_META]: SLUG, [BEADS_META.type]: 'decision' },
@@ -858,9 +832,8 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
       userId: 'u',
       factoryProjectId: PROJECT,
       input: {
-        board: 'work',
+        board: 'beads',
         externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e' },
-        claimKey: beadsClaimKey(SLUG, 'w-e'),
         title: 'w-e: Epic',
         stages: ['done'],
         metadata: { [BEADS_META.id]: 'w-e', [BEADS_META.repo]: SLUG, [FACTORY_REPOSITORY_META]: SLUG, ...metadata },
@@ -889,13 +862,13 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
       factoryProjectId: PROJECT,
       workItemId: epic.id,
       expectedRevision: epic.revision,
-      ingress: { identity, triggerType: 'beads.overview-done' },
+      ingress: { identity },
       actor: { type: 'system', id: 'integration:beads' },
       outcome: { status: 'accepted' },
     });
     expect(evaluation!.result).toMatchObject({
       status: 'accepted',
-      decisions: [{ type: 'transition', board: 'work', stage: 'done', idempotencyKey: `${identity}:transition` }],
+      decisions: [{ type: 'transition', board: 'beads', stage: 'done', idempotencyKey: `${identity}:transition` }],
     });
     // The sweep that commits the move does not close the epic: write-back does, after the move.
     expect(commands(h)).not.toContain('close w-e');
@@ -934,7 +907,7 @@ describe('overview cards close when the last child closes (samskara-l2t.2.2)', (
     expect(h.workItems.evaluations).toHaveLength(1);
     expect(h.workItems.evaluations[0]!.result).toMatchObject({
       status: 'accepted',
-      decisions: [{ type: 'transition', board: 'work', stage: 'done' }],
+      decisions: [{ type: 'transition', board: 'beads', stage: 'done' }],
     });
 
     expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: epic.id, stage: 'done', outcome: 'moved' }]);
@@ -1289,9 +1262,8 @@ describe('planning cards for childless epics (samskara-l2t.2.4)', () => {
       userId: 'u',
       factoryProjectId: PROJECT,
       input: {
-        board: 'work',
+        board: 'beads',
         externalSource: { integrationId: 'beads', type: 'issue', externalId: 'w-e' },
-        claimKey: beadsClaimKey(SLUG, 'w-e'),
         title: 'w-e: Epic',
         stages: ['intake'],
         metadata: { [BEADS_META.id]: 'w-e', [BEADS_META.repo]: SLUG, [FACTORY_REPOSITORY_META]: SLUG, [BEADS_META.type]: 'epic' },
@@ -1329,11 +1301,11 @@ describe('planning cards for childless epics (samskara-l2t.2.4)', () => {
     const identity = `beads:overview-intake:${stranded.id}@${stranded.revision}`;
     expect(h.workItems.evaluations[0]!.input).toMatchObject({
       workItemId: stranded.id,
-      ingress: { identity, triggerType: 'beads.overview-intake' },
+      ingress: { identity },
       actor: { type: 'system', id: 'integration:beads' },
     });
     expect(h.workItems.evaluations[0]!.result.decisions).toEqual([
-      expect.objectContaining({ type: 'transition', board: 'work', stage: 'intake', idempotencyKey: `${identity}:transition` }),
+      expect.objectContaining({ type: 'transition', board: 'beads', stage: 'intake', idempotencyKey: `${identity}:transition` }),
     ]);
     // A repeat before the dispatcher runs is a replay.
     await sweep(integration);
@@ -1365,7 +1337,7 @@ describe('planning cards for childless epics (samskara-l2t.2.4)', () => {
       s.beads.find(b => b.id === 'w-s')!.status = 'closed';
     });
     await sweep(integration);
-    expect(h.workItems.evaluations.map(e => [e.input.workItemId, e.input.ingress.triggerType])).toEqual([
+    expect(h.workItems.evaluations.map(e => [e.input.workItemId, triggerOf(e)])).toEqual([
       [card(h, 'w-s').id, 'beads.overview-done'],
       // The closed child's own card (samskara-l2t.3); never the closed epic's overview card.
       [card(h, 'w-s.1').id, 'beads.closed-outside'],
@@ -1478,7 +1450,7 @@ describe('legacy container cards, subtasks and the dispatcher (samskara-l2t.2.5)
     // Only a "Start session" chat is bound (rules/start-coordinator.js: role chat, no phase run).
     h.workItems.runBindings = [binding(epic.id, 'chat')];
     await sweep(integration);
-    expect(h.workItems.evaluations.map(e => e.input.ingress.triggerType)).toEqual(['beads.overview-intake']);
+    expect(h.workItems.evaluations.map(e => triggerOf(e))).toEqual(['beads.overview-intake']);
     expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: epic.id, stage: 'intake', outcome: 'moved' }]);
   });
 
@@ -1495,19 +1467,19 @@ describe('legacy container cards, subtasks and the dispatcher (samskara-l2t.2.5)
       orgId: ORG,
       factoryProjectId: PROJECT,
       workItemId: epic.id,
-      ingress: { identity: 'probe', triggerType: 'test' },
+      ingress: { identity: 'probe' },
       configVersion: 'test',
       expectedRevision: epic.revision,
       actor: { type: 'system', id: 'test' },
       outcome: { status: 'accepted' },
-      decisions: [{ type: 'transition', idempotencyKey: 'probe:transition', board: 'work', stage: 'execute' }],
+      decisions: [{ type: 'transition', idempotencyKey: 'probe:transition', board: 'beads', stage: 'planning' }],
       causalChain: [],
       now: new Date(),
     } as never);
     expect(await h.workItems.applyDecisions()).toEqual([
       {
         workItemId: epic.id,
-        stage: 'execute',
+        stage: 'planning',
         outcome: 'rejected',
         code: 'forbidden',
         reason: OVERVIEW_WORKING_REASON,
@@ -1527,23 +1499,6 @@ describe('legacy container cards, subtasks and the dispatcher (samskara-l2t.2.5)
     expect(card(h, 'w-e').stages).toEqual(['intake']);
   });
 
-  it("wakes the beads worker through the Done phase's handler when the dispatcher moves an overview card there", async () => {
-    h = createHarness([
-      { id: 'w-e', title: 'Epic', issue_type: 'epic' },
-      { id: 'w-e.1', title: 'One', issue_type: 'task', parent: 'w-e', status: 'closed' },
-    ]);
-    const integration = h.integration();
-    let kicks = 0;
-    const kick = integration.kick.bind(integration);
-    integration.kick = () => {
-      kicks++;
-      kick();
-    };
-    await sweep(integration);
-    expect(kicks).toBe(0);
-    expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: card(h, 'w-e').id, stage: 'done', outcome: 'moved' }]);
-    expect(kicks).toBe(1);
-  });
 });
 
 describe('per-sweep refresh read (samskara-l2t.15)', () => {

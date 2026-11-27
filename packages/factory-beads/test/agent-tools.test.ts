@@ -14,6 +14,9 @@ import type { BeadsIntegration } from '../src/index';
 import { createHarness, ORG, PROJECT, SLUG, sweep, TOKEN } from './harness';
 import type { Harness } from './harness';
 
+/** The session that got `beads_init` before Factory 0.24 removed it: tests name it explicitly (BeadsInitSession). */
+const SUPERVISOR_INIT = { initSession: (s: { resourceId?: string }) => s.resourceId?.startsWith('factory-supervisor:') ?? false };
+
 let h: Harness | undefined;
 afterEach(() => {
   h?.cleanup();
@@ -54,7 +57,7 @@ function withGetById(harness: Harness): Harness {
 function requestContext(options: { projectId?: string; supervisor?: boolean; callerOrg?: string } = {}): RequestContext {
   const projectId = options.projectId ?? PROJECT;
   const controller = options.supervisor
-    ? { resourceId: `factory-supervisor:${projectId}`, getState: () => ({}) }
+    ? { resourceId: `factory-supervisor:${projectId}`, getState: () => ({ factoryProjectId: projectId }) }
     : { resourceId: 'session-1', getState: () => ({ factoryProjectId: projectId }) };
   const user = options.callerOrg ? { id: 'u1', organizationId: options.callerOrg } : undefined;
   return { get: (key: string) => (key === 'controller' ? controller : key === 'user' ? user : undefined) } as unknown as RequestContext;
@@ -93,14 +96,14 @@ describe('agentTools', () => {
 
   it('offers the tools, without beads_init and with no close or delete, to a worker session', async () => {
     h = withGetById(createHarness([]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     expect(Object.keys(tools).sort()).toEqual(WORKER_TOOLS);
     expect(Object.keys(tools).some(name => /close|delete/.test(name))).toBe(false);
   });
 
   it('offers beads_init to the supervisor session only', async () => {
     h = withGetById(createHarness([]));
-    const integration = h.integration();
+    const integration = h.integration(SUPERVISOR_INIT);
     const supervisor = await toolsFor(integration, requestContext({ supervisor: true }));
     expect(Object.keys(supervisor).sort()).toEqual([...WORKER_TOOLS, 'beads_init'].sort());
     // A worker session of the same project, and a session whose resource id
@@ -112,10 +115,16 @@ describe('agentTools', () => {
     expect(Object.keys(await toolsFor(integration, byResource))).not.toContain('beads_init');
   });
 
+  it('offers beads_init to no session by default: the Supervisor it was for is gone (Factory 0.24)', async () => {
+    h = withGetById(createHarness([]));
+    const integration = h.integration({ initSession: undefined });
+    expect(Object.keys(await toolsFor(integration, requestContext({ supervisor: true })))).not.toContain('beads_init');
+  });
+
   it('a storage failure yields no beads tools instead of throwing, logged once', async () => {
     h = withGetById(createHarness([]));
     const warnings: string[] = [];
-    const integration = h.integration({ logger: { info: () => undefined, warn: (m: string) => warnings.push(m), error: () => undefined } });
+    const integration = h.integration({ ...SUPERVISOR_INIT,  logger: { info: () => undefined, warn: (m: string) => warnings.push(m), error: () => undefined } });
     const handle = h.ctx.storage.sourceControls[0] as unknown as { connections: { list: () => Promise<unknown> } };
     handle.connections.list = async () => {
       throw new Error('database is locked');
@@ -129,16 +138,16 @@ describe('agentTools', () => {
   it('offers nothing to a project with no linked repository, an unknown project, or another org', async () => {
     h = withGetById(createHarness([]));
     h.sourceControl.projects.push({ id: 'proj_empty', orgId: ORG });
-    const integration = h.integration();
+    const integration = h.integration(SUPERVISOR_INIT);
     expect(await toolsFor(integration, requestContext({ projectId: 'proj_empty' }))).toEqual({});
     expect(await toolsFor(integration, requestContext({ projectId: 'proj_missing' }))).toEqual({});
     expect(await toolsFor(integration, requestContext({ callerOrg: 'org_other' }))).toEqual({});
     expect(Object.keys(await toolsFor(integration, requestContext({ callerOrg: ORG })))).toContain('beads_ready');
   });
 
-  it('resolves the supervisor session from its resource id', async () => {
+  it('gives the init session the worker tools too', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'Ready one', issue_type: 'task' }]));
-    const tools = await toolsFor(h.integration(), requestContext({ supervisor: true }));
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT), requestContext({ supervisor: true }));
     const result = await tools.beads_ready!.execute({});
     expect(result).toEqual({ repository: SLUG, beads: [expect.objectContaining({ id: 'w-1' })] });
   });
@@ -147,7 +156,7 @@ describe('agentTools', () => {
 describe('reads', () => {
   it('run with --readonly and no token', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task' }]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     await tools.beads_show!.execute({ id: 'w-1' });
     await tools.beads_list!.execute({ title_contains: 'one' });
     const reads = h.state().calls.filter(c => c.argv.includes('show') || c.argv.includes('list'));
@@ -161,7 +170,7 @@ describe('reads', () => {
   it('point at beads_init when origin has no beads data', async () => {
     h = withGetById(createHarness([]));
     h.setBeadsData(false);
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_ready!.execute({});
     expect(result.error).toMatch(/does not use beads yet.*beads_init/);
   });
@@ -170,7 +179,7 @@ describe('reads', () => {
 describe('writes', () => {
   it('create passes --validate and the fields, under --sandbox, then bd sync with the token', async () => {
     h = withGetById(createHarness([]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_create!.execute({ ...GOOD, parent: 'w-9' });
     expect(result).toMatchObject({ repository: SLUG, published: true, result: { title: GOOD.title, issue_type: 'bug' } });
     const [create] = callsOf(h, 'create');
@@ -199,7 +208,7 @@ describe('writes', () => {
 
   it('create and update take labels; a label with a comma is refused before bd runs (samskara-l2t.5)', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', labels: ['old'] }]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     expect(await tools.beads_create!.execute({ ...GOOD, labels: ['frontend', 'human'] })).toMatchObject({ published: true });
     expect(callsOf(h, 'create')[0]).toContain('--labels=frontend,human');
     expect(await tools.beads_update!.execute({ id: 'w-1', add_labels: ['api'], remove_labels: ['old'] })).toMatchObject({ published: true });
@@ -214,7 +223,7 @@ describe('writes', () => {
 
   it('create reports bd validation failures and writes nothing', async () => {
     h = withGetById(createHarness([]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_create!.execute({ ...GOOD, description: 'Broken. No reproduction steps.' });
     expect(result.error).toMatch(/missing required sections for bug[\s\S]*Steps to Reproduce/);
     expect(h.state().beads).toHaveLength(0);
@@ -223,7 +232,7 @@ describe('writes', () => {
 
   it('create rejects an unknown type before running bd create, naming the allowed types', async () => {
     h = withGetById(createHarness([]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_create!.execute({ ...GOOD, type: 'widget' });
     expect(result.error).toMatch(/"widget" is not an issue type.*bug, chore, decision, epic, feature, milestone, spike, story, task/);
     expect(callsOf(h, 'create')).toHaveLength(0);
@@ -232,14 +241,14 @@ describe('writes', () => {
   it("create accepts bd's aliases and the repository's custom types", async () => {
     h = withGetById(createHarness([]));
     h.setState(s => Object.assign(s, { customTypes: ['research'] }));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     expect(await tools.beads_create!.execute({ ...GOOD, type: 'feat' })).toMatchObject({ result: { issue_type: 'feature' } });
     expect(await tools.beads_create!.execute({ ...GOOD, type: 'research' })).toMatchObject({ result: { issue_type: 'research' } });
   });
 
   it('update never closes: closed is refused and nothing reaches bd', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task' }]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_update!.execute({ id: 'w-1', status: 'closed' });
     expect(result.error).toMatch(/never close a bead.*Done/);
     expect(callsOf(h, 'update')).toHaveLength(0);
@@ -248,7 +257,7 @@ describe('writes', () => {
 
   it('update appends notes and edits fields, never replacing notes', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task' }]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_update!.execute({ id: 'w-1', append_notes: 'found X', status: 'in_progress', priority: 1 });
     expect(result).toMatchObject({ published: true });
     const [update] = callsOf(h, 'update');
@@ -258,7 +267,7 @@ describe('writes', () => {
 
   it('dep add links two beads with the given type', async () => {
     h = withGetById(createHarness([]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     await tools.beads_dep_add!.execute({ issue: 'w-2', depends_on: 'w-1', type: 'discovered-from' });
     expect(h.state()).toMatchObject({ deps: [{ issue: 'w-2', dependsOn: 'w-1', type: 'discovered-from' }] });
   });
@@ -268,7 +277,7 @@ describe('writes', () => {
     h.setState(s => {
       s.syncExits = [1];
     });
-    const integration = h.integration();
+    const integration = h.integration(SUPERVISOR_INIT);
     const tools = await toolsFor(integration);
     const result = await tools.beads_create!.execute(GOOD);
     expect(result).toMatchObject({ published: false, warning: expect.stringMatching(/next sweep publishes it/) });
@@ -282,7 +291,7 @@ describe('writes', () => {
 
   it('refuses writes to a parked repository', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task' }]));
-    const integration = h.integration();
+    const integration = h.integration(SUPERVISOR_INIT);
     await sweep(integration);
     const card = h.workItems.beadCards()[0]!;
     h.workItems.move(card.id, 'done');
@@ -297,7 +306,7 @@ describe('writes', () => {
 
   it('a sync conflict after a tool write parks the repository like a write-back conflict, until reset', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task' }]));
-    const integration = h.integration();
+    const integration = h.integration(SUPERVISOR_INIT);
     const tools = await toolsFor(integration);
     h.setState(s => {
       s.syncExits = [2];
@@ -327,7 +336,7 @@ describe('writes', () => {
 
   it('update never edits or reopens a closed bead', async () => {
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task', status: 'closed' }]));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     for (const input of [{ status: 'open' }, { append_notes: 'more' }, { title: 'Renamed' }]) {
       const result = await tools.beads_update!.execute({ id: 'w-1', ...input });
       expect(result.error).toMatch(/w-1 is closed/);
@@ -346,14 +355,14 @@ describe('repository argument', () => {
 
   it('is required, with the choices, when the project links several repositories', async () => {
     h = twoRepos(withGetById(createHarness([])));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_ready!.execute({});
     expect(result.error).toMatch(/links 2 repositories; pass repository as one of: acme\/widgets, acme\/gadgets/);
   });
 
   it('targets the named repository, and rejects one that is not linked', async () => {
     h = twoRepos(withGetById(createHarness([])));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const ok = await tools.beads_ready!.execute({ repository: 'acme/gadgets' });
     expect(ok).toMatchObject({ repository: 'acme/gadgets' });
     const ready = h.state().calls.filter(c => c.argv.includes('ready')).at(-1)!;
@@ -367,7 +376,7 @@ describe('beads_init', () => {
   it('clones, runs bd init with the repository name, publishes refs/dolt/data, and hands over to the sweep', async () => {
     h = withGetById(createHarness([]));
     h.setBeadsData(false);
-    const integration = h.integration();
+    const integration = h.integration(SUPERVISOR_INIT);
     // The sweep has seen the repository without beads data.
     expect((await sweep(integration)).repos[0]!.state).toBe('no-beads-data');
     const tools = await toolsFor(integration, requestContext({ supervisor: true }));
@@ -386,7 +395,7 @@ describe('beads_init', () => {
   it('needs confirm: true', async () => {
     h = withGetById(createHarness([]));
     h.setBeadsData(false);
-    const tools = await toolsFor(h.integration(), requestContext({ supervisor: true }));
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT), requestContext({ supervisor: true }));
     const result = await tools.beads_init!.execute({});
     expect(JSON.stringify(result)).toMatch(/confirm/);
     expect(callsOf(h, 'init')).toHaveLength(0);
@@ -394,7 +403,7 @@ describe('beads_init', () => {
 
   it('is refused when the repository already uses beads', async () => {
     h = withGetById(createHarness([]));
-    const tools = await toolsFor(h.integration(), requestContext({ supervisor: true }));
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT), requestContext({ supervisor: true }));
     const result = await tools.beads_init!.execute({ confirm: true });
     expect(result.error).toMatch(/already uses beads/);
     expect(callsOf(h, 'init')).toHaveLength(0);
@@ -407,7 +416,7 @@ describe('workflows', () => {
   it('formula list hides the server path', async () => {
     h = withGetById(createHarness([]));
     h.setState(s => Object.assign(s, { formulas }));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_formula_list!.execute({});
     expect(result).toEqual({ repository: SLUG, formulas: [{ name: 'project', type: 'workflow', description: 'Internal project', steps: 2, vars: 2 }] });
   });
@@ -415,7 +424,7 @@ describe('workflows', () => {
   it('pour passes each var, writes the molecule and publishes it', async () => {
     h = withGetById(createHarness([]));
     h.setState(s => Object.assign(s, { formulas }));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_pour!.execute({ formula: 'project', vars: { name: 'auth', deliverable: 'login flow' } });
     expect(result).toMatchObject({ published: true, result: { created: 3 } });
     const [pour] = callsOf(h, 'pour');
@@ -426,7 +435,7 @@ describe('workflows', () => {
   it('pour reports missing variables; dry_run writes nothing', async () => {
     h = withGetById(createHarness([]));
     h.setState(s => Object.assign(s, { formulas }));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const missing = await tools.beads_pour!.execute({ formula: 'project', vars: { name: 'auth' } });
     expect(missing.error).toMatch(/missing required variables: deliverable/);
     const preview = await tools.beads_pour!.execute({ formula: 'project', vars: { name: 'a', deliverable: 'b' }, dry_run: true });
@@ -442,7 +451,7 @@ describe('workflows', () => {
   it("lists and pours only the repository's own formulas, never the server user's", async () => {
     h = withGetById(createHarness([]));
     h.setState(s => Object.assign(s, { formulas: [...formulas, { ...formulas[0]!, name: 'personal', user: true }] }));
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const listed = await tools.beads_formula_list!.execute({});
     expect((listed.formulas as Array<{ name: string }>).map(f => f.name)).toEqual(['project']);
     for (const dry_run of [false, true]) {
@@ -462,7 +471,7 @@ describe('workflows', () => {
         ],
       }),
     );
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     const result = await tools.beads_pour!.execute({ formula: 'timed', vars: { name: 'a', deliverable: 'b' } });
     expect(result.error).toMatch(/has a timer gate/);
     expect(callsOf(h, 'pour')).toHaveLength(0);
@@ -507,7 +516,7 @@ describe('workflows', () => {
         ],
       }),
     );
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     for (const dry_run of [false, true]) {
       const result = await tools.beads_pour!.execute({ formula: 'child', vars: { name: 'a', deliverable: 'b' }, dry_run });
       expect(result.error).toMatch(/has a gh:run gate with no await_id \(its own or inherited\)/);
@@ -529,7 +538,7 @@ describe('workflows', () => {
         ],
       }),
     );
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     expect((await tools.beads_pour!.execute({ formula: 'wrap', vars: { name: 'a', deliverable: 'b' } })).error).toMatch(
       /composes with "outside" \(through itself\)/,
     );
@@ -554,7 +563,7 @@ describe('workflows', () => {
         ],
       }),
     );
-    const tools = await toolsFor(h.integration());
+    const tools = await toolsFor(h.integration(SUPERVISOR_INIT));
     for (const dry_run of [false, true]) {
       const result = await tools.beads_pour!.execute({ formula: 'hooked', vars: { name: 'a', deliverable: 'b' }, dry_run });
       expect(result.error).toMatch(/"hooked" attaches "gated" \(a hook or on_complete in itself\), which has a timer gate/);
@@ -705,7 +714,7 @@ describe('the writer lease', () => {
   it('a tool waits for the lease held by another process before running bd', async () => {
     const lease = new MemoryLease();
     h = withGetById(createHarness([{ id: 'w-1', title: 'One', issue_type: 'task' }]));
-    const integration = h.integration({ leaseProvider: lease, toolLeaseWait: { pollMs: 5 } });
+    const integration = h.integration({ ...SUPERVISOR_INIT,  leaseProvider: lease, toolLeaseWait: { pollMs: 5 } });
     const tools = await toolsFor(integration);
     lease.owners.set('beads:writer', 'other-process');
     const pending = tools.beads_update!.execute({ id: 'w-1', append_notes: 'x' });
@@ -719,7 +728,7 @@ describe('the writer lease', () => {
   it('a tool reports a clear error when the lease never frees', async () => {
     const lease = new MemoryLease();
     h = withGetById(createHarness([]));
-    const integration = h.integration({ leaseProvider: lease, toolLeaseWait: { pollMs: 5, timeoutMs: 30 } });
+    const integration = h.integration({ ...SUPERVISOR_INIT,  leaseProvider: lease, toolLeaseWait: { pollMs: 5, timeoutMs: 30 } });
     const tools = await toolsFor(integration);
     lease.owners.set('beads:writer', 'other-process');
     const result = await tools.beads_ready!.execute({});

@@ -9,9 +9,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { BoardTransitionPolicyResult } from '@mastra/factory/boards';
 
-import { requestsBoard } from '../../../src/mastra/boards/requests-board';
+import { beadsBoard } from '../src/index';
 import { BEADS_META, heldReason, OVERVIEW_CARD_KIND } from '../src/index';
-import { createHarness, sweep } from './harness';
+import { createHarness, sweep, triggerOf } from './harness';
 import type { Harness } from './harness';
 
 let h: Harness | undefined;
@@ -28,7 +28,7 @@ const bead = (harness: Harness, id: string) => {
 /** A marker the sweep cleared or never set. */
 const marker = (harness: Harness, beadId: string, key: string) => card(harness, beadId).metadata?.[key] ?? null;
 const moves = (harness: Harness) =>
-  harness.workItems.evaluations.map(e => [e.input.workItemId, e.input.ingress.triggerType, e.result.decisions[0]?.stage]);
+  harness.workItems.evaluations.map(e => [e.input.workItemId, triggerOf(e), e.result.decisions[0]?.stage]);
 /** The integration's bd writes after call `from`: `update <id> --status=<s>`, `close <id>`, `sync`. */
 const writes = (harness: Harness, from: number) =>
   harness
@@ -48,12 +48,12 @@ const writes = (harness: Harness, from: number) =>
     })
     .filter(c => c.startsWith('update') || c.startsWith('close') || c === 'sync');
 
-/** What a person's move into `toStage` gets from the Requests board policy. */
+/** What a person's move into `toStage` gets from the Beads board policy. */
 const personMove = (harness: Harness, beadId: string, toStage: string): BoardTransitionPolicyResult | undefined => {
   const item = card(harness, beadId);
-  return requestsBoard.transitionPolicy?.({
+  return beadsBoard.transitionPolicy?.({
     actor: { type: 'human', id: 'u1' },
-    board: 'work',
+    board: 'beads',
     fromStage: item.stages[0]!,
     toStage,
     source: 'manual',
@@ -83,14 +83,14 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     // Carded in Intake with its bead open: nothing to write, the pair is recorded.
     expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.status]: 'open', [BEADS_META.statusStage]: 'intake' });
 
-    h.workItems.move(card(h, 'w-1').id, 'triage');
+    h.workItems.move(card(h, 'w-1').id, 'planning');
     let from = h.state().calls.length;
     await sweep(integration);
     expect(writes(h, from)).toEqual(['update w-1 --status=in_progress', 'sync']);
     expect(bead(h, 'w-1')).toMatchObject({ status: 'in_progress' });
     // Plain status: never a claim, so no assignee.
     expect(bead(h, 'w-1').assignee).toBeUndefined();
-    expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.status]: 'in_progress', [BEADS_META.statusStage]: 'triage' });
+    expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.status]: 'in_progress', [BEADS_META.statusStage]: 'planning' });
 
     // Between working phases the status already matches: nothing written.
     h.workItems.move(card(h, 'w-1').id, 'execute');
@@ -104,7 +104,7 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     expect(writes(h, from)).toEqual(['update w-1 --status=open', 'sync']);
     expect(bead(h, 'w-1').status).toBe('open');
 
-    h.workItems.move(card(h, 'w-1').id, 'review');
+    h.workItems.move(card(h, 'w-1').id, 'pr-review');
     await sweep(integration);
     h.workItems.move(card(h, 'w-1').id, 'canceled');
     from = h.state().calls.length;
@@ -146,7 +146,7 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     expect(bead(h, 'w-2')).toMatchObject({ status: 'in_progress', assignee: 'alice' });
 
     // The card's next move is written again.
-    h.workItems.move(card(h, 'w-1').id, 'review');
+    h.workItems.move(card(h, 'w-1').id, 'pr-review');
     const next = h.state().calls.length;
     await sweep(integration);
     expect(writes(h, next)).toEqual(['update w-1 --status=in_progress', 'sync']);
@@ -201,7 +201,7 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     expect(card(h, 'w-1')).toMatchObject({ stages: ['execute'], metadata: { [BEADS_META.held]: 'blocked', [BEADS_META.status]: 'blocked' } });
     expect(moves(h)).toEqual([]);
     // The run's own moves between working phases still pass.
-    expect(personMove(h, 'w-1', 'review')?.type).not.toBe('reject');
+    expect(personMove(h, 'w-1', 'pr-review')?.type).not.toBe('reject');
 
     // The run settles: the next sweep moves the card to Intake.
     h.workItems.deferredDecisions = [run(id, 'succeeded')];
@@ -215,14 +215,14 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     expect(writes(h, from)).toEqual([]);
     expect(bead(h, 'w-1').status).toBe('blocked');
     expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.statusStage]: 'intake', [BEADS_META.held]: 'blocked' });
-    expect(personMove(h, 'w-1', 'triage')).toEqual({ type: 'reject', code: 'forbidden', reason: heldReason('blocked') });
+    expect(personMove(h, 'w-1', 'planning')).toEqual({ type: 'reject', code: 'forbidden', reason: heldReason('blocked') });
     expect(personMove(h, 'w-1', 'canceled')?.type).not.toBe('reject');
 
     // Open again in bd: the hold is lifted and the card waits in Intake for a person.
     h.bd('update', 'w-1', '--status=open');
     await sweep(integration);
     expect(card(h, 'w-1')).toMatchObject({ stages: ['intake'], metadata: { [BEADS_META.held]: null, [BEADS_META.status]: 'open' } });
-    expect(personMove(h, 'w-1', 'triage')?.type).not.toBe('reject');
+    expect(personMove(h, 'w-1', 'planning')?.type).not.toBe('reject');
     expect(moves(h)).toHaveLength(1);
   });
 
@@ -232,7 +232,7 @@ describe('two-way status sync (samskara-l2t.4)', () => {
     await sweep(integration);
     const id = card(h, 'w-1').id;
     // A run a stage message started (Review has no onEnter rule): no invokeSkill decision.
-    h.workItems.move(id, 'review');
+    h.workItems.move(id, 'pr-review');
     h.workItems.items.find(i => i.id === id)!.sessions = { work: { sessionId: 'sess_1' } } as never;
     const session = h.controller.session('sess_1');
     session.state.running = true;

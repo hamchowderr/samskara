@@ -36,14 +36,13 @@ import { keepOutboundConnectionsAlive } from './keep-alive';
 import { buildBetterAuth } from './auth/better-auth';
 import { SessionCache } from './auth/session-cache';
 import { mailConfigured } from './auth/mailer';
-import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory, reviewBoard } from '@mastra/factory';
+import { createFactoryRouteAuth, createFactorySecretEncryption, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
 import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webhook';
 import { LinearIntegration } from '@mastra/factory/integrations/linear/integration';
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
-import { requestsBoard } from './boards/requests-board';
-import { BeadsIntegration, beadsSetting, beadsStartupLine } from '@samskara/factory-beads';
+import { BeadsIntegration, beadsBoard, beadsSetting, beadsStartupLine } from '@samskara/factory-beads';
 import { createTeamRoutes } from './team/routes';
 
 /**
@@ -488,7 +487,7 @@ const beads =
     ? new BeadsIntegration({
         sourceControl: github,
         // From the board definition, so a board change follows.
-        board: requestsBoard.id,
+        board: beadsBoard.id,
         pollIntervalMs: positiveInt(process.env.BEADS_POLL_INTERVAL_MS),
         cacheDir: process.env.BEADS_CACHE_DIR?.trim() || undefined,
         bdPath: process.env.BEADS_BD_PATH?.trim() || undefined,
@@ -721,17 +720,15 @@ export const factory = new MastraFactory({
   // Deployment-stable secret for OAuth `state` signing (GitHub/Linear connect
   // flows). See `stateSecret` above.
   stateSecret,
-  // Samskara's Work board. The built-in one declares no triage handler for
-  // `manual`, so a chat- or Slack-submitted card reached Triage and got a
-  // generic stage message instead of the triage skill. `requestsBoard` is
-  // Work's own definition plus `manual` triage, installed under the id
-  // `work` so it REPLACES the built-in (upstream #25595). Keeping the id means
-  // every behaviour keyed to `work` — the default GitHub rules, submit_plan,
-  // triage classification, Slack cards, the UI's Work page — applies to it with
-  // no wrapper. `includeDefaultBoards: false` drops BOTH built-ins, so the
-  // stock Review board is re-added explicitly.
-  includeDefaultBoards: false,
-  boards: [requestsBoard, reviewBoard],
+  // Work is Factory's own (0.31 runs a phase's `runner.skill` and ignores
+  // `onEnter`, so the old Requests clone had nothing left to add). Beads cards
+  // live on their own board, whose phases run the beads skills and whose
+  // transition policy keeps each card kind where it belongs
+  // (packages/factory-beads/src/beads-board.ts). `boards` is deprecated in
+  // favour of factory.upsertBoard(), but it is the one route that keeps a
+  // board's code behaviour (the policy) for an app key; each project stores
+  // the board once. See docs/operations/beads.md.
+  boards: [beadsBoard],
 });
 
 const preparedArgs = await factory.prepare();

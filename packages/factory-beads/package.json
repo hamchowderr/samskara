@@ -11,8 +11,8 @@
     ".": "./src/index.ts"
   },
   "peerDependencies": {
-    "@mastra/core": "^1.76.0",
-    "@mastra/factory": "~0.22.0",
+    "@mastra/core": "^1.86.0",
+    "@mastra/factory": "~0.31.0",
     "zod": "^4.0.0"
   }
 }

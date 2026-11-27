@@ -22,13 +22,13 @@ Read and write beads only through the `beads_*` tools. They run bd on the Factor
 | `beads_update` | edit fields, set status, append notes |
 | `beads_dep_add` | link two beads |
 | `beads_formula_list`, `beads_pour` | start a workflow formula as linked beads |
-| `beads_init` | supervisor only: start beads in a repository that has none, only when a person asked |
+| `beads_init` | only the session the deployment names, none by default: start beads in a repository that has none, only when a person asked |
 
 When the project links more than one repository, pass `repository` as `owner/name`.
 
 There is no close and no delete. A bead is closed when its card reaches Done. Never set a status to `closed`; the tool refuses it. A closed bead is never edited or reopened: file follow-up work as a new bead and link it. Do not change a bead's status unless the work behind it actually changed.
 
-Only the supervisor has `beads_init`. In any other session, if a repository has no beads yet, say so in your handoff instead of working around it.
+Most sessions have no `beads_init`. Without it, if a repository has no beads yet, say so in your handoff instead of working around it.
 
 ## What goes in a bead
 
@@ -82,17 +82,17 @@ A repository may define more types; the tool's error lists every type it accepts
 
 Priority runs from 0 (highest) to 4 (lowest); 2 is normal.
 
-Labels are free-form tags (`labels` on `beads_create`, `add_labels` and `remove_labels` on `beads_update`); they show on the bead's card. The label `human` means a person must decide: its card is held for approval in Triage instead of being worked. A bead created with `parent` inherits its parent's labels, `human` included.
+Labels are free-form tags (`labels` on `beads_create`, `add_labels` and `remove_labels` on `beads_update`); they show on the bead's card. The label `human` means a person must decide: its card carries a needs-approval label, so a person decides before moving it into a working phase. A bead created with `parent` inherits its parent's labels, `human` included.
 
 ## Cards: what each bead becomes
 
-Every ready bead becomes a card in Intake. The card's kind follows the bead, and it decides what may run on the card and who moves it:
+Every ready bead becomes a card in Intake on the Beads board, which has Work's phases plus Researching, Proposing and Filing. The card's kind follows the bead, and it decides what may run on the card and who moves it:
 
 | Bead | Card | What runs on it | Who moves it where |
 |---|---|---|---|
-| a task, bug, feature, chore, spike or story | work card | Work's own triage, plan and build runs | as any card; Done closes the bead |
-| an open `decision` | research card | in Planning, the `factory-beads-decision` skill | only a person moves it to Done, which approves and closes it; it never enters Triage, Building or Review |
-| an open epic with no children | planning card | in Planning, the `factory-beads-epic` skill proposes children; in Building it files the approved ones | only a person moves it to Building (the approval) or Done; it never enters Triage or Review |
+| a task, bug, feature, chore, spike or story | work card | Work's own plan, build and review runs | as any card, but never into Researching, Proposing or Filing; Done closes the bead |
+| an open `decision` | research card | in Researching, the `factory-beads-decision` skill | only a person moves it to Done, which approves and closes it; it enters no other working phase |
+| an open epic with no children | planning card | in Proposing, the `factory-beads-epic` skill proposes children; in Filing it files the approved ones | only a person moves it to Filing (the approval) or Done; it enters no other working phase |
 | an epic, milestone or poured molecule's root with children | overview card | nothing, ever | it rests in Intake and moves to Done by itself when its last child closes; it never enters a working phase |
 
 A bead with a `parent` gets its card linked under the parent's card. Under an epic, milestone or molecule root that card is an overview card. Under any other bead, a task with subtasks say, it is the parent's own card, which stays a work card: it runs like any other, and nothing moves it for you.
@@ -102,7 +102,7 @@ bd refuses to close any bead while one of its children is open. So a parent's ca
 ## Epics, children and dependencies
 
 - Put child beads under an epic with `parent` on `beads_create`. An epic is a container that holds no work itself: once it has children it gets an overview card, and its children's cards are linked under it. An overview card cannot move to Done while a child is open. When its last child closes, the card moves to Done by itself and the epic is closed, so there is nothing to move or close by hand. A milestone and a poured molecule's root work the same way, except that a childless milestone or molecule root gets no card at all.
-- An open epic with no children gets a planning card. When a person moves it into Planning, the `factory-beads-epic` skill proposes its child beads into the epic's notes and creates nothing; it never calls `submit_plan`, because the plan seat has no sandbox, so the card's Plan panel cannot load a plan file and its Approve control stays disabled. A person approves the proposal by moving the card to Building. In Building a second run files exactly the approved children with `beads_create` (`parent` = the epic) and `beads_dep_add`; the agent writes no code and opens no pull request, and moves the card back to Intake. The next sync turns it into the epic's overview card. Only a person moves a planning card to Building or Done, and auto-approved plans do not change that. Filing an epic you mean to plan this way: give it its description and success criteria, and leave the children to the planning card.
+- An open epic with no children gets a planning card. When a person moves it into Proposing, the `factory-beads-epic` skill proposes its child beads into the epic's notes and creates nothing; it never calls `submit_plan`: the proposal lives in the notes. A person approves the proposal by moving the card to Filing. In Filing a second run files exactly the approved children with `beads_create` (`parent` = the epic) and `beads_dep_add`; the agent writes no code and opens no pull request, and moves the card back to Intake. The next sync turns it into the epic's overview card. Only a person moves a planning card to Filing or Done. Filing an epic you mean to plan this way: give it its description and success criteria, and leave the children to the planning card.
 - An open epic whose children are all closed is already settled: it gets an overview card, not a planning card, and the card moves to Done and the epic closes on the first sync, with nothing to do by hand.
 - Use `beads_dep_add` with type `blocks` (the default) when one bead cannot start before another closes. A blocked bead stays out of `beads_ready` and gets its card only after its blocker closes, so blocks edges set the build order.
 - Found work in the middle of a task? Create it complete, then `beads_dep_add` it to the bead you were working on with type `discovered-from`, so the causal link survives.
@@ -125,7 +125,7 @@ The board refuses a move a card's kind does not allow, and `factory_transition_w
 The card's "Start session" button opens a chat session bound to the card. It runs no skill, starts no phase run and moves nothing: the card stays where it is, and the board asks no question until a move is requested. So in such a session:
 
 - On an overview card, do not build anything. Its work is its children's cards. Answer questions; a move into a working phase is refused.
-- On a research or planning card, its skill does not run here. It runs when the card enters Planning (and, for a planning card, Building); a person makes those moves, or you request Planning when the person asks you to resume it. Do not write the decision or file the children from a chat session unless the person asks you to, and even then never move the card to Done or Building yourself: those moves are the person's approval.
+- On a research or planning card, its skill does not run here. It runs when the card enters Researching (a research card) or Proposing and Filing (a planning card); a person makes those moves, or you request Researching or Proposing when the person asks you to resume it. Do not write the decision or file the children from a chat session unless the person asks you to, and even then never move the card to Done or Filing yourself: those moves are the person's approval.
 - A card that rests in Intake with an earlier run's session shows "Resume" instead. That is a move into the earlier run's phase, and the board refuses it for an overview card like any other.
 
 While a card's session is open, the Factory card menu greys out every move into a working phase. That is the Factory UI, not the board: close the session view, or wait for the run to finish, to make such a move.
@@ -134,8 +134,8 @@ While a card's session is open, the Factory card menu greys out every move into 
 
 A `decision` bead records a choice and why it was made. File one when the project has to settle a question before the work that depends on it can start; link that work to it with `blocks`.
 
-- An **open** decision is a question still to answer. Its card is a research card: when it enters Planning, the `factory-beads-decision` skill researches the options and writes `## Decision`, `## Rationale` and `## Alternatives Considered` into the bead, after the original question. The agent writes no code and opens no pull request.
-- A person approves the decision by moving its card to Done, which closes the bead. An agent can never move a decision card to Done, and auto-approved plans do not change that. A decision card never enters Triage, Building or Review.
+- An **open** decision is a question still to answer. Its card is a research card: when it enters Researching, the `factory-beads-decision` skill researches the options and writes `## Decision`, `## Rationale` and `## Alternatives Considered` into the bead, after the original question. The agent writes no code and opens no pull request.
+- A person approves the decision by moving its card to Done, which closes the bead. An agent can never move a decision card to Done. A decision card enters no working phase but Researching.
 - A **closed** decision is a record. It never gets a card. Do not edit it; to reverse it, file a new decision and link it with `supersedes`.
 - Filing an open question: `beads_create` requires the three sections, so put the question first and leave each section empty or write `Open.` under it. The decision skill fills them in. Filing a decision already settled: write the sections in full and say in the notes who decided. Either way it waits in Intake for a person.
 

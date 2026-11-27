@@ -9,14 +9,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   BEADS_META,
-  beadsClaimKey,
   closedOutsideOutcome,
-  createBeadsTransitionPolicy,
+  beadsBoard,
   isClosedOutsideMove,
   PLAN_CARD_KIND,
   RESEARCH_CARD_KIND,
 } from '../src/index';
-import { createHarness, ORG, PROJECT, SLUG, sweep } from './harness';
+import { createHarness, ORG, PROJECT, SLUG, sweep, triggerOf } from './harness';
 import type { Harness } from './harness';
 
 let h: Harness | undefined;
@@ -27,7 +26,7 @@ afterEach(() => {
 
 const card = (harness: Harness, beadId: string) => harness.workItems.items.find(i => i.metadata?.[BEADS_META.id] === beadId)!;
 const moves = (harness: Harness) =>
-  harness.workItems.evaluations.map(e => [e.input.workItemId, e.input.ingress.triggerType, e.result.decisions[0]?.stage]);
+  harness.workItems.evaluations.map(e => [e.input.workItemId, triggerOf(e), e.result.decisions[0]?.stage]);
 /**
  * Each bd call the integration made after call `from`, as "<command> <first
  * operand>". The person's own commands (run from the harness directory, not
@@ -81,12 +80,6 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
   it('moves the card of a bead closed in bd to Done, once, and write-back only marks it synced', async () => {
     h = createHarness([{ id: 'w-1', title: 'One' }]);
     const integration = h.integration();
-    let kicks = 0;
-    const kick = integration.kick.bind(integration);
-    integration.kick = () => {
-      kicks++;
-      kick();
-    };
     await sweep(integration);
     h.bd('close', 'w-1', '--reason', 'fixed on a laptop');
 
@@ -104,7 +97,6 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
     expect(h.workItems.evaluations).toHaveLength(1);
 
     expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: committed.id, stage: 'done', outcome: 'moved' }]);
-    expect(kicks).toBe(1);
     const from = h.state().calls.length;
     const synced = await sweep(integration);
     // Nothing to close and nothing to publish: no close, no sync; the copy is pulled as usual.
@@ -204,7 +196,7 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
   });
 
   it('allows the closed-outside move only for the system and only to the marked phase', () => {
-    const policy = createBeadsTransitionPolicy(undefined);
+    const policy = beadsBoard.transitionPolicy!;
     const context = (actor: string, toStage: string, metadata: Record<string, unknown>) =>
       ({ actor: { type: actor }, toStage, fromStage: 'planning', item: { metadata } }) as never;
     for (const kind of [RESEARCH_CARD_KIND, PLAN_CARD_KIND]) {
@@ -231,7 +223,7 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
     h.workItems.move(card(h, 'w-1').id, 'done');
     await sweep(integration);
     expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.writeback]: 'synced' });
-    h.workItems.move(card(h, 'w-1').id, 'review');
+    h.workItems.move(card(h, 'w-1').id, 'pr-review');
     // Canceled by a person (the bead stays open by owner decision), then closed in bd.
     h.workItems.move(card(h, 'w-2').id, 'canceled');
     h.bd('close', 'w-2');
@@ -241,7 +233,7 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
     await sweep(integration);
     expect(h.state().beads.find(b => b.id === 'w-e')!.status).toBe('closed');
     expect(h.workItems.evaluations).toHaveLength(0);
-    expect(card(h, 'w-1').stages).toEqual(['review']);
+    expect(card(h, 'w-1').stages).toEqual(['pr-review']);
     expect(card(h, 'w-2').stages).toEqual(['canceled']);
   });
 
@@ -262,12 +254,12 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
     // w-a: a sweep sees it in Canceled and records the arrival; then a person moves it out.
     await sweep(integration);
     expect(card(h, 'w-a').metadata?.[BEADS_META.closedOutsideAt]).toEqual(expect.any(String));
-    h.workItems.move(card(h, 'w-a').id, 'review');
+    h.workItems.move(card(h, 'w-a').id, 'pr-review');
     await sweep(integration);
     await sweep(integration);
     expect(h.workItems.evaluations).toHaveLength(2);
     expect(await h.workItems.applyDecisions()).toEqual([]);
-    expect(card(h, 'w-a').stages).toEqual(['review']);
+    expect(card(h, 'w-a').stages).toEqual(['pr-review']);
     expect(card(h, 'w-b').stages).toEqual(['planning']);
     expect(card(h, 'w-b').metadata?.[BEADS_META.closedOutsideAt]).toEqual(expect.any(String));
   });
@@ -283,14 +275,14 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
     expect(h.state().beads[0]!.status).toBe('closed');
     expect(card(h, 'w-1').metadata).toMatchObject({ [BEADS_META.localClose]: expect.any(String) });
     // A person moves the card out of Done before the close is published.
-    h.workItems.move(card(h, 'w-1').id, 'review');
+    h.workItems.move(card(h, 'w-1').id, 'pr-review');
     const from = h.state().calls.length;
     const recovered = await sweep(integration);
     expect(recovered.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
     // Published by this tick's sync, not closed again, and the card stays where the person put it.
     expect(writes(integrationCalls(h, from))).toEqual(['sync']);
     expect(h.workItems.evaluations).toHaveLength(0);
-    expect(card(h, 'w-1').stages).toEqual(['review']);
+    expect(card(h, 'w-1').stages).toEqual(['pr-review']);
     expect(card(h, 'w-1').metadata).toMatchObject({
       [BEADS_META.writeback]: 'synced',
       [BEADS_META.syncedAt]: expect.any(String),
@@ -315,7 +307,7 @@ describe('beads closed outside the Factory (samskara-l2t.3)', () => {
 });
 
 describe('beads reopened outside the Factory (samskara-l2t.3)', () => {
-  it('moves the same card Done -> Intake, takes its claim back, and closes the bead again on the next Done', async () => {
+  it('moves the same card Done -> Intake and closes the bead again on the next Done', async () => {
     h = createHarness([{ id: 'w-1', title: 'One' }]);
     const integration = h.integration();
     await sweep(integration);
@@ -323,8 +315,6 @@ describe('beads reopened outside the Factory (samskara-l2t.3)', () => {
     h.workItems.move(id, 'done');
     await sweep(integration);
     expect(h.state().beads[0]!.status).toBe('closed');
-    // Factory drops the org-wide claim on a terminal phase (work-items/base.js:911-920).
-    expect(card(h, 'w-1').claimKey).toBeNull();
 
     h.bd('reopen', 'w-1');
     await sweep(integration);
@@ -338,11 +328,10 @@ describe('beads reopened outside the Factory (samskara-l2t.3)', () => {
     expect(await h.workItems.applyDecisions()).toEqual([{ workItemId: id, stage: 'intake', outcome: 'moved' }]);
 
     await sweep(integration);
-    // The same card, its markers cleared, its claim back; no new card.
+    // The same card, its markers cleared; no new card.
     expect(h.workItems.beadCards()).toHaveLength(1);
     expect(card(h, 'w-1').metadata?.[BEADS_META.syncedAt]).toBeNull();
     expect(card(h, 'w-1').metadata?.[BEADS_META.writeback]).toBeNull();
-    expect(card(h, 'w-1').claimKey).toBe(beadsClaimKey(SLUG, 'w-1'));
     const quiet = card(h, 'w-1').revision;
     await sweep(integration);
     expect(card(h, 'w-1').revision).toBe(quiet);
@@ -430,7 +419,7 @@ describe('beads reopened outside the Factory (samskara-l2t.3)', () => {
     expect(summary.repos[0]).toMatchObject({ state: 'ok', closed: 1 });
     expect(writes(integrationCalls(h, from))).toEqual(['close w-a', 'sync']);
     expect(card(h, 'w-a').stages).toEqual(['done']);
-    expect(h.workItems.evaluations.filter(e => e.input.ingress.triggerType === 'beads.reopened')).toHaveLength(0);
+    expect(h.workItems.evaluations.filter(e => triggerOf(e) === 'beads.reopened')).toHaveLength(0);
   });
 
   it("closes the bead on a person's Done made while a stale canceled marker is still on the card", async () => {
