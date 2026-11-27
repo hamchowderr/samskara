@@ -1,6 +1,6 @@
 # Beads integration
 
-Ready beads (`bd`) in each linked GitHub repository become cards on the Work
+Ready beads (`bd`) in each linked GitHub repository become cards on the Beads
 board. When a card reaches Done, the integration closes its bead and publishes
 the change to the repository's `refs/dolt/data`. Tracked in beads
 `samskara-iz6`.
@@ -34,8 +34,50 @@ Code:
   package. It is not published to npm.
 - Wiring: `src/mastra/index.ts:469-501` (the switch, construction and the
   `integrations` list; the switch is `beadsSetting` in
-  `packages/factory-beads/src/setting.ts`), board policy and phase handlers at `src/mastra/boards/requests-board.ts:64-70,92-115`.
+  `packages/factory-beads/src/setting.ts`); the board is
+  `packages/factory-beads/src/beads-board.ts`, passed as `boards: [beadsBoard]`.
 - Image: the `bd-cli` stage of the `Dockerfile`.
+
+## Factory 0.31
+
+The port from `@mastra/factory` 0.22 to 0.31 (samskara-pg2) changed how the
+integration sits in the Factory. Where a section below still describes the
+0.22 design (the Requests board, Triage, phase `onEnter` rules, feed
+comments, claim keys, the Supervisor), this section wins.
+
+- **Board.** Beads cards live on their own board, `beads`, not on Work. Its
+  phases are Work's plus Researching (`factory-beads-decision`), Proposing and
+  Filing (`factory-beads-epic` in propose and file mode), because 0.31 starts a
+  phase's run from `runner.skill` and ignores `onEnter`. The card-kind rules
+  are the same; only the phase names changed. See
+  [boards.md](../boards.md#the-beads-board).
+- **Kickoff hint.** Written into the card's `description`, which every run
+  reads through the work-item signal, instead of appended to each `onEnter`
+  decision (`kickoff-rule.ts`).
+- **Comments removed.** 0.31 removed the work-item comments domain, so bd
+  comments are no longer copied to the card feed and card comments are no
+  longer copied to bd. Feedback on a proposal or a decision goes in the bead's
+  notes. The [bd comments on the feed](#bd-comments-on-the-feed) and
+  [Card comments to bd](#card-comments-to-bd) sections are historical.
+- **No claim keys.** `claimKey` is gone. "Another project already carries this
+  bead" is now `workItems.listBySource({ orgId, source })`: a card in another
+  project of the org, for the same repository, not in a terminal phase
+  (`integration.ts` `#carriedElsewhere`). A finished card elsewhere no longer
+  blocks one here, as the released claim did before.
+- **No Done rule.** Nothing wakes the worker when a card reaches Done; the
+  next poll (60 s by default) writes it back. See [The Done rule](#the-done-rule).
+- **`beads_init`.** It was for the Supervisor alone, which 0.24 removed. It
+  now goes to a person's own session, on a turn that person sent
+  (`personInitSession`, the default `BeadsIntegrationOptions.initSession`):
+  ask an agent in chat to start beads in a repository and it can. Card runs,
+  side sessions and turns no person sent never get it. `initSession: false`
+  turns it off.
+- **Moving old cards.** Each sweep moves this repository's beads cards from
+  another board (0.22 put them on `work`) onto Beads in the same phase
+  (Triage becomes Intake), unless a card is finished or has a session seated on
+  its phase. See [boards.md](../boards.md#cards-from-before-031).
+- **Rule evaluations.** The ingress is `{ identity }` only; the identity
+  (`beads:<key>:<card>@<revision>`) still says why a move was made.
 
 ## What it does
 
@@ -371,6 +413,8 @@ retries it. After that only changes are written.
 
 ### bd comments on the feed
 
+Removed in the 0.31 port (no comments domain). What follows describes 0.22.
+
 Every comment on a carded bead appears on its card's feed (samskara-l2t.6),
 under its bd author, at its bd time, with its Markdown as written. Step 2b of
 each sweep compares the bead's `comment_count` in the refresh read with the
@@ -412,6 +456,8 @@ the path Slack messages take (`@mastra/factory` 0.20.0
   the card see the new comments.
 
 ### Card comments to bd
+
+Removed in the 0.31 port (no comments domain). What follows describes 0.22.
 
 A comment a person writes on a beads card is copied to its bead
 (samskara-l2t.7) with `bd comments add <id> --author "<their name>"`, so
@@ -1527,7 +1573,10 @@ to start it, as any released card does.
 
 ### The Done rule
 
-`createBeadsDoneRule()` is the `manual` `onEnter` handler on Done, next to Work's
+Removed in the 0.31 port: `onEnter` no longer runs, so write-back waits for the
+next poll. What follows describes 0.22.
+
+`createBeadsDoneRule()` was the `manual` `onEnter` handler on Done, next to Work's
 own `issue` handler. Its only action is to wake the sync worker. Board rules
 run before the transition commits, inside a 5 s timeout
 (`dist/rules/transition-service.js:9`, `:93-96`). `bd sync` takes 12–13 s, and a
@@ -1739,7 +1788,7 @@ lease (option (b) of the 2026-10-08 design research, picked by the owner on
 | `beads_dep_add` | `bd --sandbox dep add <issue> <depends-on> --type=<t>` | yes | every session |
 | `beads_formula_list` | `bd --readonly formula list --json`, repository formulas only | no | every session |
 | `beads_pour` | `bd --sandbox mol pour <formula> --var=k=v ...`; `dry_run` adds `--dry-run` and never syncs | yes | every session |
-| `beads_init` | `git clone`, `bd init --prefix=<repo name> --skip-agents --skip-hooks`, `bd dolt push --yes` | yes | **supervisor only** |
+| `beads_init` | `git clone`, `bd init --prefix=<repo name> --skip-agents --skip-hooks`, `bd dolt push --yes` | yes | **a person's own session, on their turn** (`initSession`) |
 
 **How Factory sees them.** `FactoryIntegration.agentTools()`
 (`@mastra/factory` 0.20.0 `dist/integrations/base.d.ts:208-215`) is merged
@@ -1760,12 +1809,18 @@ merged provider without a catch (`@mastra/code-sdk`
 otherwise remove every tool from every session. A failure is logged once and
 the request simply gets no beads tools.
 
-**`beads_init` is for the supervisor only** (owner decision, 2026-10-09). The
-tool is in the tool set only when the session's resource id is
-`factory-supervisor:<projectId>` for the resolved project
-(`agent-tools.ts:76`, `:670`). Worker sessions (triage, plan, build, review)
-and channel sessions such as Slack never get it; they are not refused at call
-time, the tool is absent.
+**`beads_init` goes only to the session `initSession` names** (owner
+decisions: the Supervisor alone on 2026-10-09; a person's own session on
+2026-11-27, after 0.24 removed the Supervisor). The default,
+`personInitSession` (`agent-tools.ts`), reads Factory's own scope for the
+session (`resolveFactoryToolScope`, @mastra/factory
+`dist/tools/scope.js:13-66`) and offers the tool when the session is a
+person's (`kind: 'user'`, not a card run or side session) and the turn was
+sent by a signed-in person (`interactive`: over HTTP, or from a linked Slack
+sender). Notification wakes, webhooks and rule turns are not interactive.
+Sessions it does not name are not refused at call time; the tool is absent.
+If Factory can't read the session, the request gets the other tools without
+`beads_init`. `initSession: false` offers it to none.
 
 **Rules the tools enforce.**
 

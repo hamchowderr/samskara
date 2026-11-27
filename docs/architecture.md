@@ -7,7 +7,6 @@ that makes this deployment what it is lives in `src/mastra/index.ts`.
 src/mastra/
   index.ts                  the whole configuration surface
   keep-alive.ts             keeps outbound connections open (see below)
-  boards/requests-board.ts  our Work board (replaces the built-in by id)
   auth/                     Better Auth instance, its migrations, the mailer,
                             and session-cache.ts (the gate's session cache)
   team/                     the team and invitation pages

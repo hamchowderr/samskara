@@ -6,9 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { FactoryStageRuleContext } from '@mastra/factory/rules/types';
 
-import { requestsBoard } from '../../../src/mastra/boards/requests-board';
 import { BeadSnapshot, BEADS_META, CARD_LABEL_COLORS_META, CARD_LABELS_META, cardChips, dependencyChips, NEEDS_APPROVAL_LABEL } from '../src/index';
 import { createHarness, sweep } from './harness';
 import type { Harness } from './harness';
@@ -57,21 +55,10 @@ describe('card chips (samskara-l2t.5)', () => {
     });
   });
 
-  it("gives a bead labelled human Work's prepare-approval run in Triage", async () => {
+  it('marks a bead labelled human as needing approval', async () => {
     h = createHarness([{ id: 'w-1', title: 'Pick a vendor', labels: ['human'] }]);
     await sweep(h.integration());
-    const item = card(h, 'w-1');
-    expect(item.metadata?.[CARD_LABELS_META]).toContain(NEEDS_APPROVAL_LABEL);
-    const triage = (await requestsBoard.phases.triage.onEnter!.manual!({
-      ingress: { id: 'ingress_1' },
-      board: 'work',
-      stage: 'triage',
-      fromStage: 'intake',
-      toStage: 'triage',
-      item: { id: item.id, title: item.title, url: null, source: 'manual', sourceKey: null, stages: ['intake'], acceptedAt: null, metadata: item.metadata, triageType: null },
-    } as unknown as Readonly<FactoryStageRuleContext>)) as { prompt?: string; skillName?: string } | undefined;
-    expect(triage?.prompt).toMatch(/^Prepare approval for/);
-    expect(triage?.skillName).toBeUndefined();
+    expect(card(h, 'w-1').metadata?.[CARD_LABELS_META]).toContain(NEEDS_APPROVAL_LABEL);
   });
 
   it('drops the approval label once a person accepts the card, and matches human exactly', async () => {

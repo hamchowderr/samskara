@@ -83,7 +83,7 @@ A Factory scaffolded with `npm create factory` behaves as the left column descri
 | **Database** | `DATABASE_URL` set → Postgres; unset → local libSQL file in dev/test, and a hard throw outside them | libSQL and Turso. `DATABASE_URL` is read, ignored, and warned about |
 | **Vector store** | `PgVector` when `DATABASE_URL` is set; otherwise **none at all** | `LibSQLVector` always — its own file locally, sharing the Turso database unless `TURSO_VECTOR_DATABASE_URL` splits them |
 | **Sandbox** | Only `FACTORY_SANDBOX_PROVIDER=local` is read. Otherwise platform → E2B → local, silently | The value is validated. An explicit choice missing its credentials throws at startup |
-| **Chat-sourced work** | The Work board declares triage for every tracker source but not `manual` | Samskara's Work board, which replaces the built-in by id, declares it for `manual` too. See the caveat below — Slack cards skip Triage |
+| **Beads** | No beads support | Ready beads in each linked repository become cards on a Beads board; a card reaching Done closes its bead. See [docs/operations/beads.md](docs/operations/beads.md) |
 
 **Database.** Most deploy platforms inject `DATABASE_URL` automatically. On the stock scaffold that repoints the whole backend at a Postgres instance you did not pick — and with `NODE_ENV` set to anything but `development` or `test`, its absence is a startup error rather than a libSQL fallback. Samskara ignores the variable and logs a warning.
 
@@ -91,51 +91,23 @@ A Factory scaffolded with `npm create factory` behaves as the left column descri
 
 ## 📋 How work moves
 
-Work enters at Intake and moves through five more phases. Each phase runs a handler, and the handler is chosen by where the item came from.
+Work runs on two boards. **Work** is Factory's own, unchanged: Intake, Planning, Building, Review, then Done or Canceled. Each working phase starts its run from the phase's skill (`factory-plan`, `factory-build`, `factory-review`); since `@mastra/factory` 0.31 the card's source no longer picks the handler, so chat-submitted work runs exactly as tracker work does.
+
+**Beads** holds the cards made from beads. It has Work's phases plus three of its own, each running one beads skill:
 
 ```mermaid
 flowchart LR
-    GH["GitHub issue"] --> IN
-    LN["Linear issue"] --> IN
-    OT["GitLab, Jira and<br/>incident.io items"] --> IN
-    BD["Beads (bd ready)<br/>(classifies as manual)"] --> IN
-    CH["Chat message<br/>(classifies as manual)"] --> IN
+    BD["bd ready"] --> IN["Intake"]
+    IN --> PL["Planning"] --> BU["Building"] --> RV["Review"] --> DN["Done"]
+    IN --> RS["Researching<br/>(decision beads)"] --> DN
+    IN --> PR["Proposing<br/>(childless epics)"] --> FI["Filing"] --> IN
 
-    IN["Intake"] --> TR["Triage"] --> PL["Planning"] --> BU["Building"] --> RV["Review"] --> DN["Done"]
-
-    style TR fill:#8a4a2a,stroke:#8a4a2a,color:#fff
+    style RS fill:#8a4a2a,stroke:#8a4a2a,color:#fff
+    style PR fill:#8a4a2a,stroke:#8a4a2a,color:#fff
+    style FI fill:#8a4a2a,stroke:#8a4a2a,color:#fff
 ```
 
-Triage is the phase that matters here. On the stock Work board it declares a handler for every tracker source, but not for `manual` (`@mastra/factory` 0.20.0 `dist/boards/work.js:157-163`):
-
-```js
-triage: {
-  onEnter: {
-    issue: triageIssueEntry,
-    gitlabIssue: investigateTriagedGitLabIssue,
-    linearIssue: investigateTriagedLinearIssue,
-    jiraIssue: investigateTriagedJiraIssue,
-    incidentioFollowUp: investigateTriagedIncidentioFollowUp,
-  },
-},
-```
-
-A chat message classifies as `manual`, so it reaches Triage, matches no handler, and gets a generic stage message instead of the triage skill. Planning and Building already handle `manual`, so the card then continues normally. A beads card also classifies as `manual` ([docs/operations/beads.md](docs/operations/beads.md)).
-
-`src/mastra/boards/requests-board.ts` is the exported Work board with two changes: Triage also declares `manual`, and its Done phase declares a `manual` handler that wakes the beads write-back (`requests-board.ts:63-69`). It is installed under the id `work` with `includeDefaultBoards: false`, the replacement path Mastra documents, so it takes the built-in's place and everything keyed to `work` (the GitHub PR rules, plan approval, triage classification, the UI's Work page) applies to it unchanged. Review is reinstalled as-is. See [docs/boards.md](docs/boards.md).
-
-### The caveat: Slack cards skip Triage
-
-In `@mastra/factory` 0.20.0 a dispatched Slack thread creates its card directly at Building with no board assigned:
-
-```js
-// integrations/slack/slack.js
-input: { title, externalSource: {...}, stages: ["execute"] }   // no `board`
-```
-
-With `board` unset, `boardForWorkItem()` resolves it to `work`, which is Samskara's board, so the card is on the right board, but it never passes through Triage. The Slack integration exposes no option for the stage. A card is created at all only when the factory's **Create work items for new Slack threads** setting is on; it is off by default ([docs/setup/slack-app.md](docs/setup/slack-app.md#where-slack-work-lands)).
-
-A card can be re-filed by hand — `PATCH /web/factory/work-items/:id` with `{"board":"work","stages":["triage"]}`, sent from a signed-in session, is accepted while its board is still null — but that is one call per card, after the run has already started. Filing Slack work into Triage needs routing upstream does not yet provide; the Slack integration's own comment calls it a planned follow-up.
+The board's transition policy keeps each card kind in its phases: an ordinary bead never enters the beads-only phases, a decision is approved only by a person moving it to Done, and an epic's proposal only by a person moving it to Filing. The board is defined in `packages/factory-beads/src/beads-board.ts`; see [docs/boards.md](docs/boards.md) and [docs/operations/beads.md](docs/operations/beads.md).
 
 ## 🚀 Setup
 

@@ -1,14 +1,10 @@
 export {
   BeadsIntegration,
   BEADS_DATA_REF,
-  BEADS_COMMENT_SOURCE,
   beadCardTitle,
   BLOCKED_BY_CHIP,
   dependencyChips,
   RELATED_CHIP,
-  bdAuthorName,
-  bdCommentText,
-  fitFeedComment,
   BEADS_INTEGRATION_ID,
   BEADS_META,
   CARD_LABEL_COLORS_META,
@@ -16,7 +12,6 @@ export {
   cardChips,
   checkableGates,
   unreadableGates,
-  beadsClaimKey,
   closedOutsideOutcome,
   DECISION_TYPE,
   DISMISSED_REASON,
@@ -46,12 +41,10 @@ export type {
   TransitionCommit,
   WritebackState,
 } from './integration';
-export { createBeadsDoneRule } from './done-rule';
-export { beadsKickoffHint, withBeadsKickoffHint } from './kickoff-rule';
-export { createBeadsPlanningRule, DECISION_SKILL } from './decision-rule';
-export { createBeadsEpicBuildRule, createBeadsEpicPlanningRule, EPIC_SKILL } from './epic-rule';
-export type { EpicSkillMode } from './epic-rule';
+export { beadsKickoffHint } from './kickoff-rule';
+export { BEADS_BOARD_ID, BEADS_PHASES, beadsBoard, DECISION_SKILL, EPIC_SKILL, REQUESTS_TO_BEADS_PHASE } from './beads-board';
 export {
+  BEADS_ONLY_PHASE_REASON,
   createBeadsTransitionPolicy,
   GATE_APPROVAL_REASON,
   GATE_WORKING_REASON,
@@ -94,6 +87,7 @@ export {
   resolveToolProject,
   unresolvedGate,
 } from './agent-tools';
-export type { ToolScope } from './agent-tools';
+export { personInitSession } from './agent-tools';
+export type { BeadsInitCandidate, BeadsInitSession, BeadsScopeDeps, ToolScope } from './agent-tools';
 export { BeadsToolError, BeadsToolOps } from './tool-ops';
 export type { BeadsToolOpsDeps, ToolRepo, WriteOutcome } from './tool-ops';

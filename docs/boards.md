@@ -1,206 +1,121 @@
 # Boards
 
-A board defines the phases a work item moves through and what runs when it
-enters each one. Mastra documents the general shape in
+A board defines the phases a card moves through and what runs when it enters
+each one. Mastra documents the general shape in
 [configure/boards-and-rules](https://factory.mastra.ai/configure/boards-and-rules).
-This page covers what that page does not.
+This page covers what that page does not, as of `@mastra/factory` 0.31.
+
+## What changed in 0.31
+
+Before 0.31 Samskara replaced Work with its own **Requests** board under the
+id `work` (`includeDefaultBoards: false`), so that `manual` cards got the
+triage skill and Done woke the beads worker. 0.31 removed every hook that
+board used:
+
+- A phase's `onEnter` and `onExit` are **ignored**. A working phase starts its
+  run from `runner.skill`, the same for every card whatever its source
+  (`dist/boards/define-board.d.ts:99-102`, `dist/boards/phase-runner.js`).
+- Work has no Triage phase, and `includeDefaultBoards` is deprecated and
+  ignored (`dist/factory.js` `warnIncludeDefaultBoards`).
+- `work` can't be passed in `boards`, and a stored board keeps code behaviour
+  (a transition policy, tool or event rules) only for its own key. A custom
+  Work is stored with `factory.upsertBoard(board, { projects: 'all' })` and gets
+  Work's code behaviour, not ours (`dist/factory.js` `upsertBoard`).
+- The `reviewBoard` export is gone. The retired Review board is served only to
+  projects that still have cards on it (`dist/boards/review.js`).
+- Boards are per project. `runtime.boards` is a `ProjectBoardSource`, read with
+  `load({ orgId, factoryProjectId })`.
+
+So the Requests board had nothing left to do, and the beads policy could no
+longer sit on Work. Samskara now runs Factory's Work unchanged and puts beads
+cards on a board of their own.
 
 ## What ships
 
-Two boards are installed, both under the built-in ids:
+- **Work** (id `work`) — Factory's own:
+  `intake → planning → execute (Building) → pr-review (Review) → done | canceled`.
+  A project created before 0.31 keeps the Work it stored, Triage included.
+- **Beads** (id `beads`) — `packages/factory-beads/src/beads-board.ts`, passed
+  as `boards: [beadsBoard]` in `src/mastra/index.ts`.
 
-- **Work** (id `work`) — Samskara's own definition, titled **Requests**
-  (`src/mastra/boards/requests-board.ts`). It replaces the built-in Work board.
-- **Review** (id `review`) — the stock `reviewBoard`, unchanged.
+`boards` is deprecated in favour of stored boards (mastra-ai/mastra#28920), but
+boards passed there "still work: each project stores them once and is served
+from its rows, with the code behaviour they declare"
+(`dist/factory.d.ts`, `boards`). It is the one route that attaches a
+`transitionPolicy` to an app key; a policy is deprecated but still enforced
+(`dist/rules/transition-service.js:367`). When `boards` is removed upstream,
+this needs a new home.
 
-`src/mastra/index.ts` sets `includeDefaultBoards: false` and passes
-`boards: [requestsBoard, reviewBoard]`. Disabling the defaults removes BOTH
-built-ins (`@mastra/factory` 0.20.0 `dist/boards/registry.js:5-7`), which is why
-Review is installed again explicitly.
+## The Beads board
 
-The Work board keeps Work's phases:
-
-```
-intake → triage → planning → execute (Building) → review → done
-```
-
-The Review board has its own (`dist/boards/review.js:58-92`):
-
-```
-intake → review (Reviewing) → done, or canceled
-```
-
-## Why our Work board exists
-
-Each phase declares `onEnter` handlers keyed by where the item came from (see
-[Source keys](#source-keys)). Work created in the UI, by chat or from Slack is
-`manual`.
-
-The built-in Work board runs triage for every tracker source but not for
-`manual` (`@mastra/factory` 0.20.0, `dist/boards/work.js:157-163`):
-
-```js
-triage: {
-  onEnter: {
-    issue: triageIssueEntry,
-    gitlabIssue: investigateTriagedGitLabIssue,
-    linearIssue: investigateTriagedLinearIssue,
-    jiraIssue: investigateTriagedJiraIssue,
-    incidentioFollowUp: investigateTriagedIncidentioFollowUp,
-  },
-},
-```
-
-A `manual` card entering Triage there matches no handler and receives a generic
-stage message instead of running the triage skill. Planning and Building
-already declare `manual`, so only that one phase is affected, and it is the
-phase that decides what the work is.
-
-Our board is the exported `workBoard` with two changes
-(`src/mastra/boards/requests-board.ts:56-70`):
-
-- Triage also declares `manual`, using Work's own `issue` handler (it already
-  formats a `manual` item's reference and handles the needs-approval case).
-- Done also declares `manual: createBeadsDoneRule()`, which wakes the beads
-  write-back when a beads card reaches Done and does nothing while the
-  integration is off. See
-  [operations/beads.md](operations/beads.md#the-done-rule).
-
-Everything else (phases, roles, transition policy, the `submit_plan` tool rule,
-other sources' handlers) is read from `workBoard` at runtime, so upstream
-changes flow through.
-
-## Replacing Work by id
-
-This is the pattern Mastra documents for customizing Work:
-
-- `README.md:88-100`: "To replace Work or Review, disable both default boards
-  and install a board with the same ID. You can reinstall the exported
-  `workBoard` and `reviewBoard` definitions unchanged, or use their phases as
-  the starting point for a customized definition." It also says to keep the
-  built-in phase names and roles.
-- `factory-skills/configure-factory-rules/SKILL.md:23`: "To customize Work or
-  Review, set `includeDefaultBoards: false` and install a same-ID board,
-  preferably using the exported `workBoard` or `reviewBoard` phases as the
-  starting point."
-- Added upstream in mastra-ai/mastra#25595 (Factory 0.19.0). A same-id board
-  still throws `duplicate board id` while the defaults are enabled.
-
-`README.md:118` still says "there is no built-in override or replacement API".
-That sentence predates #25595 and contradicts `:88`. Follow `:88` and SKILL.md.
-
-Keeping the id `work` matters because a lot of runtime and UI behaviour is
-keyed to that literal string, and none of it reaches a board with another id.
-From 0.21.0, closing an issue (GitHub, GitLab, Linear, Jira, incident.io)
-instead follows the board's own `sourceClosed` mapping, which our board
-copies from Work:
-
-| Keyed to `work` | Where (0.20.0 `dist/`) |
-|---|---|
-| Default GitHub rules: PR opened → Review, merged → Done, changes-requested review and PR comments sent to the builder, re-triage on an issue edit | `integrations/github/default-rules.js` (0.21.0) |
-| `submit_plan` advances an approved plan with `board: "work"` | `boards/work-tool-rules.js:13` |
-| The triage agent gets the classification schema | `rules/tools.js:44, :69` |
-| Cards with no stored board (Slack threads, legacy rows) belong to `work` | `boards/semantics.js:8` |
-| UI: the `/factories/:id/work` page, the GitHub issue triage feed, card actions | Factory UI bundle |
-
-The triage row matters: `workTransitionPolicy` rejects any triage-agent
-transition that carries no classification (`boards/work-transition-policy.js:4-8`),
-and only a board with the id `work` is offered the field. Under the old `requests`
-id, a triage agent could never move a card.
-
-### No arrival automation
-
-Arrivals rest in Intake without starting a run. That is Mastra's preferred
-behaviour (`README.md:102`), and SKILL.md:25 says: "Do not restore default
-arrival automation on the built-in boards." Guarded arrival triage
-(`README.md:104-116`, SKILL.md:27) is sanctioned for custom boards only. This
-board is the built-in Work by id, so it declares none. A person moves a card
-into Triage to start it.
-
-The earlier `requests` board did restore guarded arrival triage on Intake for
-`issue`, `linearIssue` and `manual`. That was removed with the switch.
-
-## Source keys
-
-Mastra's README and its types disagree about which keys exist.
-
-| Source | README (0.20.0, line 88) | `rules/types.d.ts` `FACTORY_RULE_SOURCES` | Our Work board's Triage handles it |
+| Phase | Kind | Runs | Who it is for |
 |---|---|---|---|
-| `issue` | yes | yes | yes |
-| `pullRequest` | yes | yes | no (Review board) |
-| `linearIssue` | yes | yes | yes |
-| `manual` | yes | yes | yes (our addition) |
-| `gitlabIssue` | no | yes | yes (from `workBoard`) |
-| `gitlabPullRequest` | no | yes | no |
-| `jiraIssue` | no | yes | yes (from `workBoard`) |
-| `incidentioFollowUp` | no | yes | yes (from `workBoard`) |
+| `intake` Intake | resting | nothing | every card arrives here |
+| `research` Researching | working | `factory-beads-decision` | research cards (open decision beads) |
+| `epic-plan` Proposing | working | `factory-beads-epic`, `Mode: propose` | planning cards (childless open epics) |
+| `epic-file` Filing | working | `factory-beads-epic`, `Mode: file` | planning cards, on a person's move |
+| `planning`, `execute`, `pr-review` | working | Work's own runners | ordinary beads |
+| `done`, `canceled` | terminal | nothing | Done closes the bead |
 
-Treat `FACTORY_RULE_SOURCES` as the list the runtime uses.
+Work's phases are copied as Work declares them, with two added moves the sync
+worker makes: Building → Intake (a bead held in bd, samskara-l2t.4) and Done →
+Intake (a bead reopened in bd, samskara-l2t.3). Work's own `execute` and `done`
+have no move to Intake.
 
-## Things that will catch you
+A run learns which bead it works from the card's **description**, which the
+integration sets to the kickoff hint (`kickoff-rule.ts`): card detail reaches
+the agent through the `factory-work-item` state signal
+(`dist/boards/phase-runner.js`). Before 0.31 the hint was appended to each
+`onEnter` decision instead.
 
-### `defineBoard()` does not validate handler keys
+The skills are app skills: `src/mastra/public/factory-skills/*/SKILL.md`,
+which Factory finds on its own (`dist/skills/app-skills.js`
+`findBoardSkillProblems`).
 
-A misspelled source — `pull-request` for `pullRequest` — type-checks, is stored,
-and never fires. No error, no warning: `defineBoard()` validates phases, roles
-and tools, but copies `onEnter` as given (`dist/boards/define-board.js`). Check
-keys against [Source keys](#source-keys); `tests/boards/requests-board.test.ts`
-does this for our board.
+### The transition policy
 
-### A board with any other id loses the Work behaviour above
+`createBeadsTransitionPolicy` (`packages/factory-beads/src/board-rules.ts`)
+reads only the snapshot it is handed; the sync worker keeps the facts it needs
+on the card's metadata.
 
-`advanceApprovedPlan` returns `board: "work"`, the default GitHub rules guard on
-`context.board === "work"`, and the transition service refuses a transition
-whose board differs from the card's (`rules/validation.js:76`). A custom board
-with its own id therefore needs wrappers for each of those. Samskara had two
-(`requests-github-rules.ts` for PR opened/merged, and a `submit_plan` override)
-until the board took the id `work`; both are gone.
+- **Overview card** (an epic, milestone or molecule root with children): no
+  working phase; Done only with no open children.
+- **Research card**: no working phase but Researching; Done only by a person.
+- **Planning card**: no working phase but Proposing and Filing; Filing and Done
+  only by a person.
+- **Gate card** (an open human gate): no working phase; Done only by a person.
+- **Ordinary bead**: anything Work allows, but never the three beads phases.
+- **Held bead**: no move from a resting or terminal phase into a working one.
+- A **system** move to the phase a `beadsClosedOutside` marker names always
+  passes: the bead was already closed in bd.
 
-`tests/boards/work-board-github-rules.test.ts` drives the stock
-`GithubIntegration` rules through the SDK's own validators against the
-installed registry, for `manual` cards, GitHub-issue cards and Review cards.
+`packages/factory-beads/test/beads-board.test.ts` covers each rule.
 
-### Installing a board is not routing work to it
+### Cards from before 0.31
 
-A dispatched Slack thread is created at Building with no board assigned
-(`integrations/slack/slack.js:570-585`). A card with no board belongs to `work`
-(`boards/semantics.js:8`), which is now our board, so Slack cards land on it
-without routing.
+Beads cards used to sit on `work`. Each sweep moves this repository's beads
+cards from another board onto Beads, keeping the phase (Triage becomes Intake,
+`REQUESTS_TO_BEADS_PHASE`), and writes the kickoff hint into a card with no
+description. A finished card, and one with a session seated on its phase, stays
+where it is, as Factory's own `moveCardToBoard` does
+(`dist/boards/relocate.js`); a later sweep moves it once the session lets go.
 
-A card can be assigned a board by hand while its board is still unset. The
-Factory gate answers an unauthenticated API call with 401
-(`dist/auth.js:540-560`), so send it from a signed-in session; see
-[Calling the Factory API by hand](troubleshooting.md#calling-the-factory-api-by-hand).
-From the browser console of a signed-in tab:
+### What was dropped
 
-```js
-await fetch('/web/factory/work-items/<id>', {
-  method: 'PATCH',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ board: 'work', stages: ['triage'] }),
-}).then(r => r.json());
-```
+- **Done wakes the worker.** The old Done `onEnter` kicked the sync worker. No
+  hook replaces it: `workItems.onBoardChanged` is one listener slot that the
+  Factory's own board stream uses (`dist/factory.js:537`), and a transition
+  policy must stay side-effect free. Write-back now waits for the next poll,
+  60 s by default (`BEADS_POLL_INTERVAL_MS`).
+- **Triage for `manual` cards.** Work has no Triage.
 
-A second attempt returns `board_already_assigned` (`dist/routes/work-items.js:558`).
+## Changing a board
 
-## Adding another board
-
-1. Start from `workBoard`'s phases, as `requests-board.ts` does.
-2. Give it a new id, and remember that everything in
-   [Replacing Work by id](#replacing-work-by-id) keyed to `work` will not reach
-   it: you need your own tool rule, GitHub rule overrides and transition policy.
-3. Pass it in the `boards` array in `src/mastra/index.ts`.
-4. Check every `onEnter` key against `FACTORY_RULE_SOURCES`.
-5. Start the server and move a card through every phase. Type-checking proves
-   nothing here — a wrong key compiles.
-
-The board UI is gated on the project having a linked repository. That gate wraps
-the generic board renderer, so a custom board does not escape it.
-
-In a factory with two or more linked repositories, a card that does not name
-its repository needs one chosen for each run: `routes/surface.js:189` throws
-`source_repository_ambiguous` rather than picking one, and a board run stops
-with "Choose a repository for this work item" (`rules/start-coordinator.js:88`).
-See [operations/upgrading.md](operations/upgrading.md#behaviour-changes-in-0200).
-Beads cards name theirs in `metadata.repository`, so they need no pick; see
-[operations/beads.md](operations/beads.md#multi-repository-factories-the-card-names-its-repository).
+1. Start from `workBoard`'s phases, as `beads-board.ts` does, and keep their
+   ids: the GitHub rules move cards by the board's flow (`build`,
+   `pullRequestReview`, `completed`, `canceled`), which Factory derives from
+   the board; `GET /web/factory/projects/:id/boards` shows it as `flow`.
+2. A new phase needs a `runner.skill` to start anything. `onEnter` does nothing.
+3. Run `npm test`: `beads-board.test.ts` checks Work's phases and the skills.
+4. Phases a stored board removes refuse to write while cards sit in them
+   (`BoardWriteError` `phase_in_use`), so move those cards first.

@@ -19,6 +19,9 @@ import { BdRunner, BEADS_META } from '../src/index';
 import { createHarness, PROJECT, sweep } from './harness';
 import type { Harness } from './harness';
 
+/** The session that got `beads_init` before Factory 0.24 removed it: tests name it explicitly (BeadsInitSession). */
+const SUPERVISOR_INIT = { initSession: (s: { resourceId?: string }) => s.resourceId?.startsWith('factory-supervisor:') ?? false };
+
 const bdAvailable = process.env.FACTORY_BEADS_REAL_BD !== '0' && spawnSync('bd', ['--version']).status === 0;
 
 /** A repository formula: two steps, the second needing the first. */
@@ -161,7 +164,7 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
   });
 
   it('initialises beads, writes through the tools, and the sweep cards the result', async () => {
-    const integration = h.integration({
+    const integration = h.integration({ ...SUPERVISOR_INIT, 
       sourceControl: { id: 'github', versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never },
       cacheDir: join(root, 'c'),
       // A home of its own whose ~/.beads/formulas holds a formula the
@@ -170,7 +173,7 @@ describe.skipIf(!bdAvailable)('real bd agent tools (local-only)', () => {
     });
     const rc = {
       // The supervisor session: only it gets beads_init.
-      get: (key: string) => (key === 'controller' ? { resourceId: `factory-supervisor:${PROJECT}`, getState: () => ({}) } : undefined),
+      get: (key: string) => (key === 'controller' ? { resourceId: `factory-supervisor:${PROJECT}`, getState: () => ({ factoryProjectId: PROJECT }) } : undefined),
     } as unknown as RequestContext;
     const tools = (await integration.agentTools({ requestContext: rc })) as unknown as Tools;
 

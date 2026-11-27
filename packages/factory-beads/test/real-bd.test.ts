@@ -507,7 +507,7 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     const projects = h.ctx.storage.projects as unknown as { getById?: unknown };
     projects.getById = async ({ id }: { id: string }) => h.sourceControl.projects.find(p => p.id === id) ?? null;
     const rc = {
-      get: (key: string) => (key === 'controller' ? { resourceId: `factory-supervisor:${PROJECT}`, getState: () => ({}) } : undefined),
+      get: (key: string) => (key === 'controller' ? { resourceId: `factory-supervisor:${PROJECT}`, getState: () => ({ factoryProjectId: PROJECT }) } : undefined),
     } as unknown as RequestContext;
     type Tools = Record<string, { execute: (input: unknown) => Promise<Record<string, unknown> & { error?: string }> }>;
     const tools = (await integration.agentTools({ requestContext: rc })) as unknown as Tools;
@@ -677,75 +677,6 @@ describe.skipIf(!bdAvailable)('real bd (local-only)', () => {
     expect(applied).toEqual([{ workItemId: card().id, stage: 'intake', outcome: 'moved' }]);
     await sweep(integration);
     expect(shown().status).toBe('blocked');
-  }, 300_000);
-
-  it('posts bd comments to the card feed once, keyed by the bd comment id every copy shares (samskara-l2t.6)', async () => {
-    const integration = h.integration({
-      sourceControl: {
-        id: 'github',
-        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
-      },
-      cacheDir: join(root, 'c'),
-      runner: new BdRunner(),
-    });
-    run('bd', ['dolt', 'pull']);
-    const bead = run('bd', ['create', 'Commented', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
-    run('bd', ['comments', 'add', bead, 'Line one\nline **two**', '--actor', 'alice']);
-    run('bd', ['dolt', 'push']);
-    const [seedComment] = JSON.parse(run('bd', ['--readonly', 'comments', bead, '--json'])) as Array<{ id: string; created_at: string }>;
-
-    await sweep(integration);
-    await sweep(integration);
-    const card = h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === bead)!;
-    const posted = h.feed.on(card.id);
-    expect(posted).toHaveLength(1);
-    expect(posted[0]).toMatchObject({
-      body: 'Line one\nline **two**',
-      author: { id: 'beads:alice', displayName: 'alice' },
-      externalSource: { integrationId: 'beads', type: 'comment', externalId: seedComment!.id },
-      occurredAt: new Date(seedComment!.created_at),
-    });
-  }, 300_000);
-
-  it("copies a person's card comment to bd under their name, published to origin, and never posts it back (samskara-l2t.7)", async () => {
-    const integration = h.integration({
-      sourceControl: {
-        id: 'github',
-        versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never,
-      },
-      cacheDir: join(root, 'c'),
-      runner: new BdRunner(),
-    });
-    h.feed.publishers = [integration.feedPublisher(h.ctx) as never];
-    run('bd', ['dolt', 'pull']);
-    const bead = run('bd', ['create', 'Card commented', '-t', 'task', '--silent']).split(/\r?\n/)[0]!;
-    run('bd', ['dolt', 'push']);
-    await sweep(integration);
-    const card = h.workItems.beadCards().find(c => c.metadata?.[BEADS_META.id] === bead)!;
-
-    const created = await h.feed.createComment({
-      orgId: card.orgId,
-      workItemId: card.id,
-      author: { kind: 'user', id: 'u1', displayName: 'Jane Doe' },
-      body: '--flag-like start\nsecond "line" cc @sam@example.com',
-    });
-    if (created.status !== 'created') throw new Error(created.status);
-    await created.mirrored;
-
-    run('bd', ['dolt', 'pull']);
-    const inBd = JSON.parse(run('bd', ['--readonly', 'comments', bead, '--json'])) as Array<{ id: string; author: string; text: string }>;
-    expect(inBd).toHaveLength(1);
-    expect(inBd[0]).toMatchObject({ author: 'Jane Doe', text: '--flag-like start\nsecond "line" cc @sam' });
-    expect(h.feed.on(card.id)[0]!.externalSource).toMatchObject({ integrationId: 'beads', type: 'comment', externalId: inBd[0]!.id });
-
-    await sweep(integration);
-    await sweep(h.integration({
-      sourceControl: { id: 'github', versionControl: { getRepositoryAccess: async () => ({ cloneUrl: originUrl }) } as never },
-      cacheDir: join(root, 'c'),
-      runner: new BdRunner(),
-    }));
-    expect(h.feed.on(card.id)).toHaveLength(1);
-    h.feed.publishers = [];
   }, 300_000);
 
   it('BdRepo.setStatus: writes only over the status read, exit 13 otherwise (samskara-l2t.4)', async () => {

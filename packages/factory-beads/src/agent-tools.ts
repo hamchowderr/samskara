@@ -26,8 +26,9 @@ import { createTool } from '@mastra/core/tools';
 import type { RequestContext } from '@mastra/core/request-context';
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext } from '@mastra/factory/auth';
 import type { IntegrationTools } from '@mastra/factory/integrations/base';
+import { resolveFactoryToolScope } from '@mastra/factory/tools/scope';
+import type { FactoryToolScope, ResolveFactoryToolScopeOptions } from '@mastra/factory/tools/scope';
 import type { FactoryProjectsStorage } from '@mastra/factory/storage/domains/projects/base';
-import { parseSupervisorResourceId } from '@mastra/factory/supervisor/session';
 import { z } from 'zod';
 
 import { gateRepoProblem } from './repo';
@@ -39,10 +40,50 @@ import type { BeadsToolOps, ToolRepo, WriteOutcome } from './tool-ops';
 export interface ToolScope {
   orgId: string;
   projectId: string;
-  /** The project's supervisor session. Only it gets `beads_init` (owner decision, samskara-e64). */
+  /**
+   * Whether this session gets `beads_init`: what `initSession` says of it
+   * (samskara-e64, samskara-pg2); see `BeadsInitSession`.
+   */
   supervisor: boolean;
   repos: Array<{ repositoryId: string; slug: string }>;
 }
+
+/**
+ * A session asking for tools, as `initSession` sees it. `scope` is Factory's
+ * own reading of the session (`resolveFactoryToolScope`,
+ * @mastra/factory dist/tools/scope.js:13-66): `kind` is `worker` for a card
+ * run or a side session and `user` for a person's own session, and
+ * `interactive` is true only on a turn a signed-in person sent, over HTTP or
+ * from a linked Slack sender (dist/auth.js:640-650,
+ * dist/integrations/slack/slack.js:563-568). Absent when Factory can't place
+ * the session in the tools' project.
+ */
+export interface BeadsInitCandidate {
+  resourceId?: string;
+  factoryProjectId?: string;
+  scope?: Pick<FactoryToolScope, 'kind' | 'interactive' | 'factoryProjectId'>;
+}
+
+/**
+ * Which session may run `beads_init`. It was the Factory Supervisor alone
+ * (samskara-e64), which @mastra/factory 0.24 removed; the default is now
+ * `personInitSession` (samskara-pg2).
+ */
+export type BeadsInitSession = (session: BeadsInitCandidate) => boolean;
+
+/**
+ * `beads_init` for a person's own session, on a turn that person sent: the
+ * agent starts beads in a repository when someone asks it to in chat. Card
+ * runs, side sessions, and turns no person started (notification wakes,
+ * webhooks, rules) never get it, as Factory's own `requirePerson` gates its
+ * person-only tools (dist/tools/scope.js:68-76).
+ */
+export const personInitSession: BeadsInitSession = ({ scope }) => scope?.kind === 'user' && scope.interactive === true;
+
+/** What Factory needs to read a session's tool scope. */
+export type BeadsScopeDeps = Omit<ResolveFactoryToolScopeOptions, 'requestContext' | 'projects'> & {
+  projects: Pick<FactoryProjectsStorage, 'get'>;
+};
 
 interface ControllerLike {
   resourceId?: string;
@@ -54,27 +95,37 @@ interface ControllerLike {
  * when the request is not a Factory session, the project does not exist, or the
  * caller's org (or the session's stamped org) is a different one.
  *
- * `supervisor` is true only for the project's supervisor session: its
- * resource id is `factory-supervisor:<projectId>` (dist/supervisor/session.js:4-16).
- * Worker (triage, plan, build, review) and channel sessions have other ids.
+ * `supervisor` is what `initSession` says of the session; false without one.
+ * Factory's scope is read only when `initSession` and `scopeDeps` are given,
+ * and a failure there costs only `beads_init`, never the other tools.
  */
 export async function resolveToolProject(
   requestContext: RequestContext,
   projects: Pick<FactoryProjectsStorage, 'getById'>,
+  initSession?: BeadsInitSession,
+  scopeDeps?: BeadsScopeDeps,
 ): Promise<{ orgId: string; projectId: string; supervisor: boolean } | undefined> {
   if (!requestContext || typeof requestContext.get !== 'function') return undefined;
   const controller = requestContext.get('controller') as ControllerLike | undefined;
   if (!controller) return undefined;
   const state = controller.getState?.() ?? {};
-  const supervisorOf = parseSupervisorResourceId(controller.resourceId);
-  const projectId = state.factoryProjectId ?? supervisorOf ?? controller.resourceId;
+  const projectId = state.factoryProjectId ?? controller.resourceId;
   if (!projectId) return undefined;
   const project = await projects.getById({ id: projectId }).catch(() => null);
   if (!project) return undefined;
   const callerOrg = getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
   if (callerOrg && callerOrg !== project.orgId) return undefined;
   if (state.factoryOrgId && state.factoryOrgId !== project.orgId) return undefined;
-  return { orgId: project.orgId, projectId: project.id, supervisor: supervisorOf !== null && supervisorOf === project.id };
+  let supervisor = false;
+  if (initSession) {
+    let scope: BeadsInitCandidate['scope'];
+    if (scopeDeps) {
+      const factoryScope = await resolveFactoryToolScope({ requestContext, ...scopeDeps }).catch(() => null);
+      if (factoryScope && factoryScope.factoryProjectId === project.id) scope = factoryScope;
+    }
+    supervisor = initSession({ resourceId: controller.resourceId, factoryProjectId: state.factoryProjectId, ...(scope ? { scope } : {}) });
+  }
+  return { orgId: project.orgId, projectId: project.id, supervisor };
 }
 
 /** Issue types bd always accepts, and the aliases it maps (bd create --help, bd types). */
@@ -700,7 +751,7 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
   const beads_init = createTool({
     id: 'beads_init',
     description:
-      `Supervisor only. Start beads in a linked repository that has none: runs bd init with the repository's name as the issue prefix and ` +
+      `Start beads in a linked repository that has none: runs bd init with the repository's name as the issue prefix and ` +
       `publishes the empty database to the repository's refs/dolt/data. It changes the repository on GitHub, so call it ONLY when a person has ` +
       `asked for beads in that repository, and set confirm to true. Refused when the repository already uses beads. ${where}`,
     inputSchema: z.object({
@@ -726,8 +777,9 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     beads_dep_add,
     beads_formula_list,
     beads_pour,
-    // Owner decision (samskara-e64): only the supervisor may start beads in a
-    // repository. Other sessions never get the tool, not merely a refusal.
+    // Owner decision (samskara-e64, samskara-pg2): beads_init only for the
+    // session `initSession` names, by default a person's own session on their
+    // turn. Other sessions never get the tool, not merely a refusal.
     ...(scope.supervisor ? { beads_init } : {}),
   } as unknown as IntegrationTools;
 }

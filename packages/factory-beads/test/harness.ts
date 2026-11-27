@@ -11,19 +11,19 @@ import { fileURLToPath } from 'node:url';
 
 import type { IntegrationContext } from '@mastra/factory/integrations/base';
 import { SourceControlConnectionNotFoundError } from '@mastra/factory/storage/domains/source-control/base';
-import { applyStageTransition, validateParentRelation, WorkItemClaimConflictError } from '@mastra/factory/storage/domains/work-items/base';
+import { applyStageTransition, validateParentRelation } from '@mastra/factory/storage/domains/work-items/base';
 import type {
   CommitFactoryRuleEvaluationInput,
   CommitFactoryRuleEvaluationResult,
   CreateWorkItemInput,
   ExternalWorkItemSource,
   FactoryRunBindingRecord,
-  WorkItemRow,
+  Card as WorkItemRow,
 } from '@mastra/factory/storage/domains/work-items/base';
+import { createBoardRegistry } from '@mastra/factory/boards';
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
-import { requestsBoard } from '../../../src/mastra/boards/requests-board';
-import { BdRunner, BeadsIntegration } from '../src/index';
+import { BdRunner, BeadsIntegration, beadsBoard } from '../src/index';
 import type { BeadsIntegrationOptions } from '../src/index';
 
 export const FAKE_BD = fileURLToPath(new URL('./fixtures/fake-bd.mjs', import.meta.url));
@@ -136,18 +136,17 @@ export type AppliedTransition =
 
 type TransitionResult = { status: 'accepted'; moved: boolean } | { status: 'rejected'; code: string; reason: string };
 
-type PhaseHandler = (context: never) => unknown;
 
 /** The slice of a BoardDefinition the stand-in dispatcher reads. */
 export interface HarnessBoard {
   id: string;
-  phases: Record<string, { kind?: string; onEnter?: Record<string, PhaseHandler | undefined>; onExit?: Record<string, PhaseHandler | undefined> }>;
+  phases: Record<string, { kind?: string }>;
   transitionPolicy?: BoardTransitionPolicy;
   allowsTransition(from: string, to: string): boolean;
 }
 
 export interface ApplyOptions {
-  /** Default: the Requests board this project installs. */
+  /** Default: the Beads board (beads-board.ts). */
   board?: HarnessBoard;
   /** The project's auto-approve-plans setting, as the policy snapshot carries it. Default false. */
   plansAutoApproved?: boolean;
@@ -179,8 +178,6 @@ export class MemoryWorkItems {
       ? await this.getByProjectSource({ orgId, factoryProjectId, source: input.externalSource })
       : null;
     if (existing) return { item: existing, created: false, previous: { stages: existing.stages, sessionRoles: [] } };
-    const claimant = input.claimKey ? this.items.find(i => i.orgId === orgId && i.claimKey === input.claimKey) : undefined;
-    if (claimant) throw new WorkItemClaimConflictError(claimant);
     // Factory's own check: the parent must be a card in the same project (work-items/base.js:318-332, :2484).
     validateParentRelation(
       this.items.filter(i => i.orgId === orgId && i.factoryProjectId === factoryProjectId),
@@ -194,7 +191,7 @@ export class MemoryWorkItems {
       factoryProjectId,
       board: input.board ?? 'work',
       externalSource: input.externalSource ?? null,
-      claimKey: input.claimKey ?? null,
+      description: input.description ?? null,
       parentWorkItemId: input.parentWorkItemId ?? null,
       title: input.title,
       stages: input.stages ?? ['intake'],
@@ -217,11 +214,28 @@ export class MemoryWorkItems {
     return { item: structuredClone(item), created: true, previous: { stages: [], sessionRoles: [] } };
   }
 
-  async update({ orgId, id, patch }: { orgId: string; id: string; userId: string; patch: { stages?: string[]; title?: string; metadata?: Record<string, unknown> | null } }) {
+  async update({
+    orgId,
+    id,
+    patch,
+    expectedRevision,
+    expectedBoard,
+  }: {
+    orgId: string;
+    id: string;
+    userId: string;
+    patch: { board?: string; stages?: string[]; title?: string; description?: string | null; metadata?: Record<string, unknown> | null };
+    expectedRevision?: number;
+    expectedBoard?: string | null;
+  }) {
     const item = this.items.find(i => i.orgId === orgId && i.id === id);
     if (!item) return null;
-    // Same merge as WorkItemsStorage.applyUpdate (work-items/base.js:379-382).
+    if (expectedRevision !== undefined && item.revision !== expectedRevision) return null;
+    if (expectedBoard !== undefined && item.board !== expectedBoard) return null;
+    // Same merge as WorkItemsStorage.applyUpdate (work-items/base.js).
+    if (patch.board !== undefined) item.board = patch.board;
     if (patch.title !== undefined) item.title = patch.title;
+    if (patch.description !== undefined) item.description = patch.description;
     if (patch.metadata !== undefined) item.metadata = patch.metadata === null ? null : { ...(item.metadata ?? {}), ...patch.metadata };
     if (patch.stages) {
       item.stageHistory = applyStageTransition(item.stageHistory, item.stages, patch.stages, 'test', new Date());
@@ -231,29 +245,17 @@ export class MemoryWorkItems {
     return { item: structuredClone(item), previous: { stages: [], sessionRoles: [] } };
   }
 
-  async getByClaimKey({ orgId, claimKey }: { orgId: string; claimKey: string }) {
-    const hit = this.items.find(i => i.orgId === orgId && i.claimKey === claimKey);
-    return hit ? structuredClone(hit) : null;
-  }
-
-  /**
-   * As WorkItemsStorage.claimWorkItem (work-items/base.js:1232-1256): the card
-   * takes the claim unless another card in the org holds it or the card
-   * carries a different one; null then. Taking it bumps no revision here.
-   */
-  async claimWorkItem({ orgId, id, claimKey }: { orgId: string; id: string; claimKey: string }) {
-    const holder = this.items.find(i => i.orgId === orgId && i.claimKey === claimKey);
-    if (holder && holder.id !== id) return null;
-    const item = this.items.find(i => i.orgId === orgId && i.id === id);
-    if (!item) return null;
-    if (item.claimKey !== null && item.claimKey !== claimKey) return null;
-    item.claimKey = claimKey;
-    return structuredClone(item);
-  }
-
-  /** Cards whose claim Factory dropped: a move into a terminal phase releases it (work-items/base.js:911-920). */
-  releaseClaimIfTerminal(item: WorkItemRow, board: HarnessBoard) {
-    if (board.phases[item.stages[0]!]?.kind === 'terminal' && item.stages.length === 1) item.claimKey = null;
+  /** As WorkItemsStorage.listBySource: every card in the org carrying the source, across projects. */
+  async listBySource({ orgId, source }: { orgId: string; source: ExternalWorkItemSource }) {
+    return this.items
+      .filter(
+        i =>
+          i.orgId === orgId &&
+          i.externalSource?.integrationId === source.integrationId &&
+          i.externalSource?.type === source.type &&
+          i.externalSource?.externalId === source.externalId,
+      )
+      .map(i => structuredClone(i));
   }
 
   /** As WorkItemsStorage.setParentWorkItemIfMissing (work-items/base.js:2512-2530): a set parent is kept. */
@@ -320,20 +322,15 @@ export class MemoryWorkItems {
    *     must exist and sit in one phase, the board must allow the move
    *     (`allowsTransition`, transition-service.js:198-202), then the board's
    *     `transitionPolicy` decides (:245-262), with Factory's snapshot
-   *     fields. On acceptance the phases' `onExit`/`onEnter` handlers for the
-   *     card's source run (rules/resolve.js:2-19: none for a move to the
-   *     current phase, which is inert) and the card moves.
+   *     fields. On acceptance the card moves (0.31 runs no phase handlers;
+   *     a phase starts its run from `runner.skill`, which no test needs).
    *   - A refusal fails the decision; it is retried up to MAX_ATTEMPTS (5)
    *     times, then fails for good (dispatcher.js:19,39-41,429-440).
    *
-   * Beads cards classify as `manual` (integration.ts header), so `manual`
-   * handlers are the ones run. The default board is the Requests board this
-   * project installs (src/mastra/boards/requests-board.ts): Work's own policy
-   * wrapped by createBeadsTransitionPolicy, and its Done handler, which wakes
-   * every live beads integration.
+   * The default board is the Beads board (beads-board.ts) with its policy.
    */
   async applyDecisions(options: ApplyOptions = {}): Promise<AppliedTransition[]> {
-    const board = options.board ?? (requestsBoard as unknown as HarnessBoard);
+    const board = options.board ?? (beadsBoard as unknown as HarnessBoard);
     const out: AppliedTransition[] = [];
     for (const evaluation of this.evaluations) {
       for (const [index, decision] of (evaluation.result.decisions as Array<Record<string, unknown>>).entries()) {
@@ -413,14 +410,9 @@ export class MemoryWorkItems {
     const policy = await board.transitionPolicy?.(snapshot as unknown as Parameters<BoardTransitionPolicy>[0]);
     if (policy?.type === 'reject') return { status: 'rejected', code: policy.code, reason: policy.reason };
     if (fromStage === stage) return { status: 'accepted', moved: false };
-    for (const handler of [board.phases[fromStage]?.onExit?.manual, board.phases[stage]?.onEnter?.manual]) {
-      const decision = (await handler?.({ ...snapshot, stage } as never)) as { type?: string; code?: string; reason?: string } | undefined;
-      if (decision?.type === 'reject') return { status: 'rejected', code: String(decision.code), reason: String(decision.reason) };
-    }
     item.stageHistory = applyStageTransition(item.stageHistory, item.stages, [stage], 'factory-rule-dispatcher', new Date());
     item.stages = [stage];
     item.revision++;
-    this.releaseClaimIfTerminal(item, board);
     return { status: 'accepted', moved: true };
   }
 
@@ -456,133 +448,10 @@ export class MemoryWorkItems {
     // Stage history as Factory keeps it (work-items/base.js:338-356): one entry per phase entered.
     item.stageHistory = applyStageTransition(item.stageHistory, item.stages, [phase], 'user_test', new Date());
     item.stages = [phase];
-    this.releaseClaimIfTerminal(item, requestsBoard as unknown as HarnessBoard);
   }
 
   beadCards() {
     return this.items.filter(i => i.externalSource?.integrationId === 'beads');
-  }
-}
-
-export interface FeedComment {
-  id: string;
-  orgId: string;
-  factoryProjectId: string;
-  workItemId: string;
-  author: { kind: string; id: string; displayName?: string };
-  body: string;
-  externalSource: ExternalWorkItemSource | null;
-  /** Set at create from the ingest source and never changed by a publish (comments/base.js:441-452). */
-  sourceKey: string | null;
-  occurredAt: Date;
-  deletedAt: Date | null;
-  createdAt: Date;
-}
-
-/** Factory's outbound seam (`WorkItemFeedPublisher`), as the fake feed calls it. */
-export interface FakePublisher {
-  id: string;
-  publish(comment: FeedComment, workItem: WorkItemRow): Promise<{ source: ExternalWorkItemSource } | null>;
-}
-
-/**
- * The `feed` slice integrations get (`Pick<CommentsDomain, 'createComment'>`),
- * with the semantics the integration relies on (@mastra/factory 0.20.0):
- * body policy (comments/base.js:37-40), unknown work item
- * (comments/domain.js:49-53), and the externalSource replay that returns the
- * existing row as `created` (comments/base.js:180-191, domain.js:94-99).
- * The replay matches the source key set at create, which a publish never
- * changes: a published web comment keeps no key of its platform
- * (base.js:434-452). `publishers` are offered every new comment except on
- * its own platform, and a published source is attached (domain.js:108-131).
- */
-export class MemoryFeed {
-  comments: FeedComment[] = [];
-  calls = 0;
-  publishers: FakePublisher[] = [];
-  #seq = 0;
-  constructor(private readonly workItems: MemoryWorkItems) {}
-
-  async createComment(input: {
-    orgId: string;
-    workItemId: string;
-    author: FeedComment['author'];
-    body: string;
-    externalSource?: ExternalWorkItemSource;
-    occurredAt?: Date;
-  }) {
-    this.calls++;
-    if (!input.body.trim()) return { status: 'invalid' as const, message: 'Comment body must not be empty.' };
-    if (input.body.length > 16_000) return { status: 'invalid' as const, message: 'Comment body must be at most 16000 characters.' };
-    const workItem = this.workItems.items.find(i => i.orgId === input.orgId && i.id === input.workItemId);
-    if (!workItem) return { status: 'work_item_not_found' as const };
-    const key = (s: ExternalWorkItemSource) => `${s.integrationId}:${s.type}:${s.externalId}`;
-    const replay = input.externalSource
-      ? this.comments.find(
-          c =>
-            c.orgId === input.orgId &&
-            c.factoryProjectId === workItem.factoryProjectId &&
-            c.sourceKey === key(input.externalSource!),
-        )
-      : undefined;
-    if (replay) return { status: 'created' as const, comment: structuredClone(replay), workItem, mirrored: Promise.resolve() };
-    const comment: FeedComment = {
-      id: `comment_${++this.#seq}`,
-      orgId: input.orgId,
-      factoryProjectId: workItem.factoryProjectId,
-      workItemId: input.workItemId,
-      author: input.author,
-      body: input.body,
-      externalSource: input.externalSource ?? null,
-      sourceKey: input.externalSource ? key(input.externalSource) : null,
-      occurredAt: input.occurredAt ?? new Date(),
-      deletedAt: null,
-      createdAt: new Date(),
-    };
-    this.comments.push(comment);
-    return { status: 'created' as const, comment: structuredClone(comment), workItem, mirrored: this.#mirror(comment, workItem) };
-  }
-
-  async #mirror(comment: FeedComment, workItem: WorkItemRow): Promise<void> {
-    for (const publisher of this.publishers) {
-      if (comment.externalSource?.integrationId === publisher.id) continue;
-      try {
-        const published = await publisher.publish(structuredClone(comment), workItem);
-        // First platform wins (comments/base.js:441).
-        if (published && !comment.externalSource) comment.externalSource = published.source;
-      } catch {
-        // Factory logs a failed publish and never fails the create.
-      }
-    }
-  }
-
-  /** `attachExternalSource`: the first platform wins and the source key never changes (comments/base.js:434-452). */
-  async attachExternalSource(input: { orgId: string; commentId: string; source: ExternalWorkItemSource }) {
-    const row = this.comments.find(c => c.orgId === input.orgId && c.id === input.commentId);
-    if (!row) return null;
-    if (!row.externalSource) row.externalSource = input.source;
-    return structuredClone(row);
-  }
-
-  /** Page size of `list`; Factory's is at most 100 (comments/base.js:42). */
-  pageSize = 100;
-
-  /** `WorkItemCommentsStorage.list`: every row, deleted ones included, newest first, paged by `before`. */
-  async list(input: { orgId: string; workItemId: string; limit?: number; before?: string }) {
-    const all = this.comments
-      .filter(c => c.orgId === input.orgId && c.workItemId === input.workItemId)
-      .sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime() || (a.id < b.id ? 1 : -1));
-    const start = input.before ? all.findIndex(c => c.id === input.before) + 1 : 0;
-    const size = Math.min(input.limit ?? this.pageSize, this.pageSize);
-    const page = all.slice(start, start + size);
-    return {
-      comments: page.map(c => structuredClone(c)),
-      ...(start + size < all.length ? { nextCursor: page.at(-1)!.id } : {}),
-    };
-  }
-
-  on(workItemId: string) {
-    return this.comments.filter(c => c.workItemId === workItemId);
   }
 }
 
@@ -639,7 +508,6 @@ export interface Harness {
   cacheDir: string;
   statePath: string;
   workItems: MemoryWorkItems;
-  feed: MemoryFeed;
   sourceControl: FakeSourceControl;
   controller: FakeController;
   ctx: IntegrationContext;
@@ -670,9 +538,8 @@ export function createHarness(beads: FakeBead[]): Harness {
   writeFileSync(statePath, JSON.stringify(initial));
 
   const workItems = new MemoryWorkItems();
-  const feed = new MemoryFeed(workItems);
-  // The board this project installs as `work`: Work's phases, kinds and roles.
-  const board = requestsBoard;
+  // The boards the app installs: Factory's Work and the Beads board.
+  const boards = createBoardRegistry({ boards: [beadsBoard] });
   const sourceControl: FakeSourceControl = {
     projects: [{ id: PROJECT, orgId: ORG }],
     installations: new Set(['inst_1']),
@@ -730,14 +597,7 @@ export function createHarness(beads: FakeBead[]): Harness {
         },
       },
     },
-    runtime: { configVersion: 'test', workItems, boards: new Map([['work', board]]) },
-    feed,
-    factoryStorage: {
-      getDomain: (name: string) => {
-        if (name !== 'work-item-comments') throw new Error(`fake factory storage has no domain ${name}`);
-        return feed;
-      },
-    },
+    runtime: { configVersion: 'test', workItems, boards },
   } as unknown as IntegrationContext;
 
   const cacheDir = join(dir, 'cache');
@@ -747,7 +607,6 @@ export function createHarness(beads: FakeBead[]): Harness {
     cacheDir,
     statePath,
     workItems,
-    feed,
     sourceControl,
     controller,
     ctx,
@@ -798,4 +657,13 @@ export async function sweep(integration: BeadsIntegration) {
   const outcome = await integration.syncNow();
   if (!outcome.ran) throw new Error(`sweep did not run: ${outcome.reason}`);
   return outcome.result;
+}
+
+/**
+ * The trigger of a committed beads move, read from its ingress identity
+ * (`beads:<key>:<card>@<revision>`, integration.ts #commitTransition): 0.31
+ * dropped the ingress `triggerType`, so the key is the record of why.
+ */
+export function triggerOf(evaluation: { input: { ingress: { identity: string } } }): string {
+  return `beads.${evaluation.input.ingress.identity.split(':')[1]}`;
 }

@@ -1,68 +1,50 @@
 /**
- * The board transition policy for beads overview, research and plan cards.
+ * The Beads board's transition policy for overview, research, plan, gate and
+ * held cards (beads-board.ts).
+ *
+ * The policy is evaluated for every transition, every actor included, before
+ * the move commits, and a `reject` result ends the transition with the code
+ * and reason given (@mastra/factory 0.31.0 dist/rules/transition-service.js:367).
+ * It reads only the snapshot it is handed, so the sync worker keeps the facts
+ * it needs (card kind, open-children count, held status) on the card's
+ * metadata.
  *
  * An overview card stands for an epic, milestone or molecule root: it groups
- * its children's cards and holds no work itself (samskara-l2t.2). Returning no
- * decision from the phase handlers is not enough to keep it from running: a
- * person's move into a working phase with no skill decision still starts a run
- * with a generic stage message (@mastra/factory 0.20.0
- * dist/rules/transition-service.js:296-311). The board's `transitionPolicy` is
- * the hook that can refuse the move itself: it is evaluated for every
- * transition, every actor included, before any phase rule
- * (transition-service.js:245-262), and a `reject` result ends the transition
- * with the code and reason given (:258-262).
- *
- * The policy reads only the snapshot it is handed, as the contract requires
- * (factory-skills/configure-factory-rules/SKILL.md:61-63: side-effect-free, no
- * storage). The sync worker keeps the open-children count on the card's
- * metadata for that reason.
+ * its children's cards and holds no work itself (samskara-l2t.2). It enters no
+ * working phase, and reaches Done only with no open children.
  *
  * A research card stands for an open decision bead (samskara-l2t.2.3). Its
- * only working phase is Planning, where the decision skill researches and
- * writes the decision into the bead; it never enters Triage, Building or
- * Review. Approval is a person moving it to Done (owner decision,
- * samskara-l2t.2), so an agent or the system moving it there is refused with
- * `approval_required` whatever the project's auto-approve-plans setting:
- * Work's policy reads that setting only for Planning -> Building
- * (@mastra/factory 0.20.0 dist/boards/work-transition-policy.js:15-19), and
- * this policy never consults it.
+ * only working phase is Researching, where the decision skill writes the
+ * decision into the bead. Approval is a person moving it to Done, so any other
+ * actor's move there is refused with `approval_required`.
  *
- * A plan card stands for a childless open epic (samskara-l2t.2.4). Planning
- * proposes its child beads; Building files them. It never enters Triage or
- * Review. Approval is a person moving it into Building (owner decision,
- * samskara-l2t.2), so every other actor's move into Building is refused with
- * `approval_required`. That covers both routes Work's plan gate opens for a
- * non-human actor: the project's auto-approve-plans setting
- * (`plansAutoApproved`), and an approved `submit_plan` result, which Work's
- * tool rule turns into a system move to Building stamped `planApproved`
- * (boards/work-tool-rules.js:8-16, rules/processor.js:381-402). With
- * auto-approve on, the dispatcher approves a parked `submit_plan` itself
- * (rules/dispatcher.js:107-112), so a `planApproved` move cannot be told
- * apart from a person's approval, and is refused too. Only a person moves a
- * plan card to Done, which would close the epic without children.
+ * A plan card stands for a childless open epic (samskara-l2t.2.4). Proposing
+ * writes its child beads into the epic's notes; Filing files them. Approval is
+ * a person moving it into Filing, so every other actor's move there is refused
+ * with `approval_required`. Only a person moves a plan card to Done, which
+ * would close the epic without children.
  *
- * A gate card stands for an open human gate (samskara-l2t.9): a bead bd
- * made from a formula step's `gate`, which holds that step until it is
- * closed. It holds no work, so it enters no working phase, whoever moves it,
- * and no run starts on it. Approval is a person moving it to Done, which
- * closes the gate; every other actor's move there is refused with
- * `approval_required`. A person who moves it to Canceled leaves the gate
- * open, and the step stays held.
+ * A gate card stands for an open human gate (samskara-l2t.9). It holds no
+ * work, so it enters no working phase; a person approves it by moving it to
+ * Done, which closes the gate. A person who moves it to Canceled leaves the
+ * gate open, and the step stays held.
+ *
+ * Every other card is an ordinary bead: it may enter Work's phases, but not
+ * the phases that run a decision's or an epic's skill.
  *
  * A held card (samskara-l2t.4) stands for a bead blocked, deferred, pinned,
  * hooked or set to a custom status in bd: the sync worker marks it
- * `beadsHeld`. No move from a resting or terminal phase into a working
- * phase is allowed while the marker is set, whoever makes it, so no run
- * starts on a bead nobody may work. Moves between working phases pass: the
- * sync worker moves such a card to Intake once its run has finished.
+ * `beadsHeld`. No move from a resting or terminal phase into a working phase
+ * is allowed while the marker is set, whoever makes it. Moves between working
+ * phases pass: the sync worker moves such a card to Intake once its run has
+ * finished.
  *
- * One exception to the Done gates (samskara-l2t.3): when the bead was
- * already closed outside the Factory, the sync worker marks the card
- * `beadsClosedOutside: <phase>` and commits the move as a rule decision.
- * While the marker names the target phase, any system move there is
- * allowed (`isClosedOutsideMove`), not only the sync worker's: see that
- * function. The gate guards the close, and the close has already happened
- * in bd.
+ * One exception to the Done gates (samskara-l2t.3): when the bead was already
+ * closed outside the Factory, the sync worker marks the card
+ * `beadsClosedOutside: <phase>` and commits the move as a rule decision. While
+ * the marker names the target phase, any system move there is allowed
+ * (`isClosedOutsideMove`). The gate guards the close, and the close has
+ * already happened in bd.
  */
 import type { BoardTransitionPolicy } from '@mastra/factory/boards';
 
@@ -70,24 +52,20 @@ import { BEADS_META, GATE_CARD_KIND, OVERVIEW_CARD_KIND, PLAN_CARD_KIND, RESEARC
 
 export interface BeadsTransitionPolicyOptions {
   /**
-   * Phases an overview card may never enter. Pass the board's working phases
-   * (phases declared `kind: 'working'`): phase meaning belongs on the phase,
-   * not in the policy (configure-factory-rules/SKILL.md:65). Default: Work's
-   * working phases (boards/work.js:152-198).
+   * The board's working phases (phases declared `kind: 'working'`). An
+   * overview or gate card never enters one; a held card starts none.
    */
-  workingPhases?: readonly string[];
-  /** The done phase, which an overview card enters only with no open children. Default `done`. */
+  workingPhases: readonly string[];
+  /** The done phase. Default `done`. */
   donePhase?: string;
-  /**
-   * The one working phase a research card may enter: the board's plan phase.
-   * Default `planning` (Work's `role: 'plan'` phase, boards/work.js:165-178).
-   */
-  planningPhase?: string;
-  /**
-   * The phase a plan card's approved proposal is filed in: the board's build
-   * phase. Default `execute` (Work's Building, boards/work.js:179-191).
-   */
-  buildPhase?: string;
+  /** The one working phase a research card may enter (beads-board.ts `research`). */
+  researchPhase: string;
+  /** Where a plan card's children are proposed (beads-board.ts `epic-plan`). */
+  proposePhase: string;
+  /** Where a plan card's approved children are filed, on a person's move (beads-board.ts `epic-file`). */
+  filePhase: string;
+  /** Phases only a research or plan card may enter: an ordinary bead never runs those skills. */
+  beadsOnlyPhases: readonly string[];
 }
 
 /**
@@ -100,18 +78,20 @@ export const OVERVIEW_WORKING_REASON =
   'An overview card holds no work and closes when its last child closes; it belongs in Intake, so work on its children instead';
 export const OVERVIEW_OPEN_CHILDREN_REASON = 'This overview card still has open children; it closes when its last child closes';
 export const RESEARCH_WORKING_REASON =
-  'A decision card is researched in Planning and approved by a person moving it to Done; it is never triaged, built or reviewed';
+  'A decision card is researched in Researching and approved by a person moving it to Done; it is never planned, built or reviewed';
 export const RESEARCH_APPROVAL_REASON =
   'A person approves a decision by moving its card to Done; agents and automation never do, even when plans auto-approve';
 export const PLAN_WORKING_REASON =
-  "An epic's planning card is planned in Planning and its children are filed in Building; it is never triaged or reviewed";
+  "An epic's planning card proposes its children in Proposing and files them in Filing; it is never planned, built or reviewed";
 export const PLAN_APPROVAL_REASON =
-  "A person approves an epic's proposed children by moving its card to Building; agents and automation never do, even when plans auto-approve";
+  "A person approves an epic's proposed children by moving its card to Filing; agents and automation never do";
 export const PLAN_DONE_REASON =
   "Only a person moves an epic's planning card to Done, which closes the epic with no children";
 export const GATE_WORKING_REASON =
   'An approval card holds no work: a person approves it by moving it to Done, which resolves the gate and lets the step it holds start';
 export const GATE_APPROVAL_REASON = 'A person approves a gate by moving its card to Done; agents and automation never do';
+export const BEADS_ONLY_PHASE_REASON =
+  "This phase runs a decision's or an epic's beads skill; other cards are planned in Planning";
 /** Why work does not start on a card whose bead is held in bd (samskara-l2t.4). */
 export function heldReason(status: string): string {
   return `This card's bead is ${status} in bd; work starts on it once the bead is open or in_progress again`;
@@ -124,8 +104,8 @@ export function heldReason(status: string): string {
  * closed and commits the move as a rule decision. The policy cannot tell
  * that move from any other system move: Factory's dispatcher applies every
  * committed rule decision as `{ type: 'system', id:
- * 'factory-rule-dispatcher' }` (@mastra/factory 0.20.0
- * dist/rules/dispatcher.js:518-524), whichever rule or integration
+ * 'factory-rule-dispatcher' }` (@mastra/factory
+ * dist/rules/dispatcher.js), whichever rule or integration
  * committed it. So while the marker names the target phase, any system move
  * to that phase passes, not only the sync worker's. The marker is cleared
  * once the bead is open again; a deleted bead is no longer in bd's list, so
@@ -165,23 +145,18 @@ export function isPlanCard(metadata: Readonly<Record<string, unknown>> | null | 
 }
 
 /**
- * Wrap a board's own policy: overview cards never enter a working phase and
- * never reach Done with open children, whoever moves them. Research cards
- * enter no working phase but Planning, whoever moves them, and only a person
- * moves one to Done. Plan cards enter no working phase but Planning and
- * Building, and only a person moves one into Building or Done. Gate cards
- * enter no working phase, and only a person moves one to Done. Every other
- * card, and every other move of these cards, gets `workPolicy`'s answer
- * unchanged.
+ * Wrap a board's own policy (Beads has none: pass undefined) with the beads
+ * card rules above. Every move the rules do not decide gets `basePolicy`'s
+ * answer.
  */
 export function createBeadsTransitionPolicy(
-  workPolicy: BoardTransitionPolicy | undefined,
-  options: BeadsTransitionPolicyOptions = {},
+  basePolicy: BoardTransitionPolicy | undefined,
+  options: BeadsTransitionPolicyOptions,
 ): BoardTransitionPolicy {
-  const working = new Set(options.workingPhases ?? ['triage', 'planning', 'execute', 'review']);
+  const working = new Set(options.workingPhases);
   const donePhase = options.donePhase ?? 'done';
-  const planningPhase = options.planningPhase ?? 'planning';
-  const buildPhase = options.buildPhase ?? 'execute';
+  const { researchPhase, proposePhase, filePhase } = options;
+  const beadsOnly = new Set(options.beadsOnlyPhases);
   return context => {
     const metadata = context.item.metadata as Readonly<Record<string, unknown>> | null;
     // A held bead (samskara-l2t.4): work does not start, whoever moves the
@@ -198,38 +173,33 @@ export function createBeadsTransitionPolicy(
       if (context.toStage === donePhase && Number(metadata?.[BEADS_META.openChildren] ?? 0) > 0) {
         return { type: 'reject', code: 'forbidden', reason: OVERVIEW_OPEN_CHILDREN_REASON };
       }
-    }
-    if (isResearchCard(metadata)) {
-      if (working.has(context.toStage) && context.toStage !== planningPhase) {
+    } else if (isResearchCard(metadata)) {
+      if (working.has(context.toStage) && context.toStage !== researchPhase) {
         return { type: 'reject', code: 'forbidden', reason: RESEARCH_WORKING_REASON };
       }
-      // Not `isHumanTransition`: Work's plan gate keys on the actor alone too
-      // (work-transition-policy.js:15). plansAutoApproved is deliberately unread.
       if (context.toStage === donePhase && context.actor.type !== 'human' && !isClosedOutsideMove(context)) {
         return { type: 'reject', code: 'approval_required', reason: RESEARCH_APPROVAL_REASON };
       }
-    }
-    if (isPlanCard(metadata)) {
-      if (working.has(context.toStage) && context.toStage !== planningPhase && context.toStage !== buildPhase) {
+    } else if (isPlanCard(metadata)) {
+      if (working.has(context.toStage) && context.toStage !== proposePhase && context.toStage !== filePhase) {
         return { type: 'reject', code: 'forbidden', reason: PLAN_WORKING_REASON };
       }
-      // From any phase, not only Planning: Work's gate covers Planning ->
-      // Building alone. plansAutoApproved and planApproved are deliberately unread.
-      if (context.toStage === buildPhase && context.actor.type !== 'human') {
+      if (context.toStage === filePhase && context.actor.type !== 'human') {
         return { type: 'reject', code: 'approval_required', reason: PLAN_APPROVAL_REASON };
       }
       if (context.toStage === donePhase && context.actor.type !== 'human' && !isClosedOutsideMove(context)) {
         return { type: 'reject', code: 'approval_required', reason: PLAN_DONE_REASON };
       }
-    }
-    if (isGateCard(metadata)) {
+    } else if (isGateCard(metadata)) {
       if (working.has(context.toStage)) {
         return { type: 'reject', code: 'forbidden', reason: GATE_WORKING_REASON };
       }
       if (context.toStage === donePhase && context.actor.type !== 'human' && !isClosedOutsideMove(context)) {
         return { type: 'reject', code: 'approval_required', reason: GATE_APPROVAL_REASON };
       }
+    } else if (beadsOnly.has(context.toStage)) {
+      return { type: 'reject', code: 'forbidden', reason: BEADS_ONLY_PHASE_REASON };
     }
-    return workPolicy?.(context);
+    return basePolicy?.(context);
   };
 }

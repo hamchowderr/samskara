@@ -242,7 +242,7 @@ describe('GET /web/beads/status', () => {
 
     await sweep(integration);
     const body = await status(integration, h);
-    expect(body.diagnostics).toMatchObject({ state: 'running', board: 'work', donePhase: 'done', remoteCheckIntervalMs: 15 * MIN });
+    expect(body.diagnostics).toMatchObject({ state: 'running', board: 'beads', donePhase: 'done', remoteCheckIntervalMs: 15 * MIN });
     expect(body.repos).toEqual([
       { repo: SLUG, projectId: PROJECT, state: 'ok', checkedAt: expect.any(String) },
       {
