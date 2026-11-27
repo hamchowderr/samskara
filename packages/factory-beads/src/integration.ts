@@ -42,7 +42,9 @@ import type { Card as WorkItemRow, ExternalWorkItemSource } from '@mastra/factor
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createBeadsTools, resolveToolProject } from './agent-tools';
+import { createSourceControlSessionLookup } from '@mastra/factory/session/factory-session';
+
+import { createBeadsTools, personInitSession, resolveToolProject } from './agent-tools';
 import { beadsKickoffHint } from './kickoff-rule';
 import { BEADS_BOARD_ID, REQUESTS_TO_BEADS_PHASE } from './beads-board';
 import type { BeadsInitSession, ToolScope } from './agent-tools';
@@ -505,8 +507,11 @@ export interface BeadsIntegrationOptions {
    * `canceled`; when the board has no such terminal phase, the done phase.
    */
   canceledPhase?: string;
-  /** Which session may run `beads_init`. Default none: Factory 0.24 removed the Supervisor it was for. */
-  initSession?: BeadsInitSession;
+  /**
+   * Which session may run `beads_init`. Default `personInitSession`: a
+   * person's own session, on a turn they sent. `false` offers it to none.
+   */
+  initSession?: BeadsInitSession | false;
   /** Poll interval. Default 60 s. */
   pollIntervalMs?: number;
   /** Where the per-repo bd copies live. Default `<tmpdir>/factory-beads`. Must survive between ticks, not restarts. */
@@ -789,7 +794,8 @@ export class BeadsIntegration implements FactoryIntegration {
    * create, update, link, init and pour, run on the host copy under the
    * writer lease. See agent-tools.ts. Nothing for a request that is not a
    * Factory session, a project with no linked repository, or before the
-   * worker exists. `beads_init` only for the session `initSession` names.
+   * worker exists. `beads_init` only for the session `initSession` names:
+   * by default a person's own session, on a turn they sent.
    *
    * Never throws. Factory merges every integration's tools into one
    * `extraTools` provider (@mastra/factory 0.20.0 dist/factory.js:588-595) and
@@ -801,7 +807,13 @@ export class BeadsIntegration implements FactoryIntegration {
     try {
       const ctx = this.#ctx;
       if (!ctx?.runtime || !this.#worker) return {};
-      const project = await resolveToolProject(requestContext, ctx.storage.projects, this.#options.initSession);
+      const initSession = this.#options.initSession === false ? undefined : (this.#options.initSession ?? personInitSession);
+      const project = await resolveToolProject(requestContext, ctx.storage.projects, initSession, {
+        authEnabled: ctx.auth.enabled(),
+        sessions: createSourceControlSessionLookup(ctx.storage.sourceControls),
+        projects: ctx.storage.projects,
+        workItems: ctx.runtime.workItems,
+      });
       if (!project) return {};
       const key = `${project.orgId}:${project.projectId}`;
       let cached = this.#scopeCache.get(key);

@@ -26,6 +26,8 @@ import { createTool } from '@mastra/core/tools';
 import type { RequestContext } from '@mastra/core/request-context';
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext } from '@mastra/factory/auth';
 import type { IntegrationTools } from '@mastra/factory/integrations/base';
+import { resolveFactoryToolScope } from '@mastra/factory/tools/scope';
+import type { FactoryToolScope, ResolveFactoryToolScopeOptions } from '@mastra/factory/tools/scope';
 import type { FactoryProjectsStorage } from '@mastra/factory/storage/domains/projects/base';
 import { z } from 'zod';
 
@@ -39,19 +41,49 @@ export interface ToolScope {
   orgId: string;
   projectId: string;
   /**
-   * Whether this session gets `beads_init`. It was the project's supervisor
-   * session alone (owner decision, samskara-e64); see `BeadsInitSession`.
+   * Whether this session gets `beads_init`: what `initSession` says of it
+   * (samskara-e64, samskara-pg2); see `BeadsInitSession`.
    */
   supervisor: boolean;
   repos: Array<{ repositoryId: string; slug: string }>;
 }
 
 /**
- * Which session may run `beads_init`. @mastra/factory 0.24 removed the Factory
- * Supervisor, the one session it was for (samskara-e64), so by default no
- * session gets it until the owner names another (samskara-pg2).
+ * A session asking for tools, as `initSession` sees it. `scope` is Factory's
+ * own reading of the session (`resolveFactoryToolScope`,
+ * @mastra/factory dist/tools/scope.js:13-66): `kind` is `worker` for a card
+ * run or a side session and `user` for a person's own session, and
+ * `interactive` is true only on a turn a signed-in person sent, over HTTP or
+ * from a linked Slack sender (dist/auth.js:640-650,
+ * dist/integrations/slack/slack.js:563-568). Absent when Factory can't place
+ * the session in the tools' project.
  */
-export type BeadsInitSession = (session: { resourceId?: string; factoryProjectId?: string }) => boolean;
+export interface BeadsInitCandidate {
+  resourceId?: string;
+  factoryProjectId?: string;
+  scope?: Pick<FactoryToolScope, 'kind' | 'interactive' | 'factoryProjectId'>;
+}
+
+/**
+ * Which session may run `beads_init`. It was the Factory Supervisor alone
+ * (samskara-e64), which @mastra/factory 0.24 removed; the default is now
+ * `personInitSession` (samskara-pg2).
+ */
+export type BeadsInitSession = (session: BeadsInitCandidate) => boolean;
+
+/**
+ * `beads_init` for a person's own session, on a turn that person sent: the
+ * agent starts beads in a repository when someone asks it to in chat. Card
+ * runs, side sessions, and turns no person started (notification wakes,
+ * webhooks, rules) never get it, as Factory's own `requirePerson` gates its
+ * person-only tools (dist/tools/scope.js:68-76).
+ */
+export const personInitSession: BeadsInitSession = ({ scope }) => scope?.kind === 'user' && scope.interactive === true;
+
+/** What Factory needs to read a session's tool scope. */
+export type BeadsScopeDeps = Omit<ResolveFactoryToolScopeOptions, 'requestContext' | 'projects'> & {
+  projects: Pick<FactoryProjectsStorage, 'get'>;
+};
 
 interface ControllerLike {
   resourceId?: string;
@@ -64,11 +96,14 @@ interface ControllerLike {
  * caller's org (or the session's stamped org) is a different one.
  *
  * `supervisor` is what `initSession` says of the session; false without one.
+ * Factory's scope is read only when `initSession` and `scopeDeps` are given,
+ * and a failure there costs only `beads_init`, never the other tools.
  */
 export async function resolveToolProject(
   requestContext: RequestContext,
   projects: Pick<FactoryProjectsStorage, 'getById'>,
   initSession?: BeadsInitSession,
+  scopeDeps?: BeadsScopeDeps,
 ): Promise<{ orgId: string; projectId: string; supervisor: boolean } | undefined> {
   if (!requestContext || typeof requestContext.get !== 'function') return undefined;
   const controller = requestContext.get('controller') as ControllerLike | undefined;
@@ -81,7 +116,15 @@ export async function resolveToolProject(
   const callerOrg = getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
   if (callerOrg && callerOrg !== project.orgId) return undefined;
   if (state.factoryOrgId && state.factoryOrgId !== project.orgId) return undefined;
-  const supervisor = initSession?.({ resourceId: controller.resourceId, factoryProjectId: state.factoryProjectId }) ?? false;
+  let supervisor = false;
+  if (initSession) {
+    let scope: BeadsInitCandidate['scope'];
+    if (scopeDeps) {
+      const factoryScope = await resolveFactoryToolScope({ requestContext, ...scopeDeps }).catch(() => null);
+      if (factoryScope && factoryScope.factoryProjectId === project.id) scope = factoryScope;
+    }
+    supervisor = initSession({ resourceId: controller.resourceId, factoryProjectId: state.factoryProjectId, ...(scope ? { scope } : {}) });
+  }
   return { orgId: project.orgId, projectId: project.id, supervisor };
 }
 
@@ -734,9 +777,9 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     beads_dep_add,
     beads_formula_list,
     beads_pour,
-    // Owner decision (samskara-e64): beads_init only for the session
-    // `initSession` names (none by default). Other sessions never get the
-    // tool, not merely a refusal.
+    // Owner decision (samskara-e64, samskara-pg2): beads_init only for the
+    // session `initSession` names, by default a person's own session on their
+    // turn. Other sessions never get the tool, not merely a refusal.
     ...(scope.supervisor ? { beads_init } : {}),
   } as unknown as IntegrationTools;
 }

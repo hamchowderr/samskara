@@ -87,6 +87,7 @@ export {
   resolveToolProject,
   unresolvedGate,
 } from './agent-tools';
-export type { BeadsInitSession, ToolScope } from './agent-tools';
+export { personInitSession } from './agent-tools';
+export type { BeadsInitCandidate, BeadsInitSession, BeadsScopeDeps, ToolScope } from './agent-tools';
 export { BeadsToolError, BeadsToolOps } from './tool-ops';
 export type { BeadsToolOpsDeps, ToolRepo, WriteOutcome } from './tool-ops';

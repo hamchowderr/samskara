@@ -115,10 +115,67 @@ describe('agentTools', () => {
     expect(Object.keys(await toolsFor(integration, byResource))).not.toContain('beads_init');
   });
 
-  it('offers beads_init to no session by default: the Supervisor it was for is gone (Factory 0.24)', async () => {
+  /**
+   * A Factory session as resolveFactoryToolScope reads it: the stored session
+   * row, the project, and whether a card run is bound to the session
+   * (@mastra/factory dist/tools/scope.js:13-66).
+   */
+  function withFactorySessions(harness: Harness, rows: Record<string, { userId: string; originSessionId?: string; runBound?: boolean }>): Harness {
+    const handle = harness.ctx.storage.sourceControls[0] as unknown as { sessions?: unknown };
+    handle.sessions = {
+      getBySessionId: async (sessionId: string) => {
+        const row = rows[sessionId];
+        return row
+          ? { sessionId, orgId: ORG, factoryProjectId: PROJECT, userId: row.userId, visibility: 'org', originSessionId: row.originSessionId ?? null, originThreadId: row.originSessionId ? 't-0' : null, branch: 'main' }
+          : null;
+      },
+    };
+    const projects = harness.ctx.storage.projects as unknown as { get?: unknown };
+    projects.get = async ({ id }: { id: string }) => harness.sourceControl.projects.find(p => p.id === id) ?? null;
+    const workItems = harness.ctx.runtime!.workItems as unknown as { hasRunBindingForSession?: unknown };
+    workItems.hasRunBindingForSession = async ({ sessionId }: { sessionId: string }) => rows[sessionId]?.runBound === true;
+    return harness;
+  }
+
+  /** A turn in Factory session `sessionId`, sent by user u1 when `interactive`. */
+  function sessionTurn(sessionId: string, interactive: boolean): RequestContext {
+    const controller = { sessionId, threadId: sessionId, resourceId: PROJECT, getState: () => ({ factoryProjectId: PROJECT }) };
+    const values: Record<string, unknown> = { controller, user: { id: 'u1', organizationId: ORG }, ...(interactive ? { factoryInteractive: true } : {}) };
+    return { get: (key: string) => values[key] } as unknown as RequestContext;
+  }
+
+  it("offers beads_init by default to a person's own session, on a turn they sent", async () => {
+    h = withFactorySessions(withGetById(createHarness([])), {
+      'chat-1': { userId: 'u1' },
+      'run-1': { userId: 'u1', runBound: true },
+      'side-1': { userId: 'u1', originSessionId: 'chat-1' },
+    });
+    const integration = h.integration();
+    const offered = async (rc: RequestContext) => Object.keys(await toolsFor(integration, rc)).includes('beads_init');
+    expect(await offered(sessionTurn('chat-1', true))).toBe(true);
+    // The same session on a turn no person sent: a notification wake, a webhook, a rule.
+    expect(await offered(sessionTurn('chat-1', false))).toBe(false);
+    // A card run and a side session are workers, even on a person's turn.
+    expect(await offered(sessionTurn('run-1', true))).toBe(false);
+    expect(await offered(sessionTurn('side-1', true))).toBe(false);
+    // A session Factory has no row for, and the harness's plain worker context.
+    expect(await offered(sessionTurn('unknown', true))).toBe(false);
+    expect(await offered(requestContext())).toBe(false);
+    // Every one of them still gets the other tools.
+    expect(Object.keys(await toolsFor(integration, sessionTurn('run-1', true)))).toEqual(expect.arrayContaining(WORKER_TOOLS));
+  });
+
+  it('keeps the other tools when Factory cannot read the session', async () => {
     h = withGetById(createHarness([]));
-    const integration = h.integration({ initSession: undefined });
-    expect(Object.keys(await toolsFor(integration, requestContext({ supervisor: true })))).not.toContain('beads_init');
+    // No sessions lookup on the handle: resolveFactoryToolScope throws inside.
+    const tools = await toolsFor(h.integration(), sessionTurn('chat-1', true));
+    expect(Object.keys(tools).sort()).toEqual(WORKER_TOOLS);
+  });
+
+  it('offers beads_init to no session with initSession: false', async () => {
+    h = withFactorySessions(withGetById(createHarness([])), { 'chat-1': { userId: 'u1' } });
+    const integration = h.integration({ initSession: false });
+    expect(Object.keys(await toolsFor(integration, sessionTurn('chat-1', true)))).not.toContain('beads_init');
   });
 
   it('a storage failure yields no beads tools instead of throwing, logged once', async () => {

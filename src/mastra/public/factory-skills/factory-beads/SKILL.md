@@ -22,13 +22,13 @@ Read and write beads only through the `beads_*` tools. They run bd on the Factor
 | `beads_update` | edit fields, set status, append notes |
 | `beads_dep_add` | link two beads |
 | `beads_formula_list`, `beads_pour` | start a workflow formula as linked beads |
-| `beads_init` | only the session the deployment names, none by default: start beads in a repository that has none, only when a person asked |
+| `beads_init` | a person's own chat session, on their turn: start beads in a repository that has none, only when that person asked |
 
 When the project links more than one repository, pass `repository` as `owner/name`.
 
 There is no close and no delete. A bead is closed when its card reaches Done. Never set a status to `closed`; the tool refuses it. A closed bead is never edited or reopened: file follow-up work as a new bead and link it. Do not change a bead's status unless the work behind it actually changed.
 
-Most sessions have no `beads_init`. Without it, if a repository has no beads yet, say so in your handoff instead of working around it.
+Card runs have no `beads_init`. Without it, if a repository has no beads yet, say so in your handoff instead of working around it.
 
 ## What goes in a bead
 

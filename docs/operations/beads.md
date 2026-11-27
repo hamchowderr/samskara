@@ -66,9 +66,12 @@ comments, claim keys, the Supervisor), this section wins.
   blocks one here, as the released claim did before.
 - **No Done rule.** Nothing wakes the worker when a card reaches Done; the
   next poll (60 s by default) writes it back. See [The Done rule](#the-done-rule).
-- **`beads_init`.** It was for the Supervisor alone, which 0.24 removed. No
-  session gets it unless `BeadsIntegrationOptions.initSession` names one; the
-  app sets none.
+- **`beads_init`.** It was for the Supervisor alone, which 0.24 removed. It
+  now goes to a person's own session, on a turn that person sent
+  (`personInitSession`, the default `BeadsIntegrationOptions.initSession`):
+  ask an agent in chat to start beads in a repository and it can. Card runs,
+  side sessions and turns no person sent never get it. `initSession: false`
+  turns it off.
 - **Moving old cards.** Each sweep moves this repository's beads cards from
   another board (0.22 put them on `work`) onto Beads in the same phase
   (Triage becomes Intake), unless a card is finished or has a session seated on
@@ -1785,7 +1788,7 @@ lease (option (b) of the 2026-10-08 design research, picked by the owner on
 | `beads_dep_add` | `bd --sandbox dep add <issue> <depends-on> --type=<t>` | yes | every session |
 | `beads_formula_list` | `bd --readonly formula list --json`, repository formulas only | no | every session |
 | `beads_pour` | `bd --sandbox mol pour <formula> --var=k=v ...`; `dry_run` adds `--dry-run` and never syncs | yes | every session |
-| `beads_init` | `git clone`, `bd init --prefix=<repo name> --skip-agents --skip-hooks`, `bd dolt push --yes` | yes | **`initSession` only (none by default)** |
+| `beads_init` | `git clone`, `bd init --prefix=<repo name> --skip-agents --skip-hooks`, `bd dolt push --yes` | yes | **a person's own session, on their turn** (`initSession`) |
 
 **How Factory sees them.** `FactoryIntegration.agentTools()`
 (`@mastra/factory` 0.20.0 `dist/integrations/base.d.ts:208-215`) is merged
@@ -1807,10 +1810,17 @@ otherwise remove every tool from every session. A failure is logged once and
 the request simply gets no beads tools.
 
 **`beads_init` goes only to the session `initSession` names** (owner
-decision, 2026-10-09, when that was the Supervisor; 0.24 removed it). The
-integration's `initSession` option decides per session (`agent-tools.ts:84`);
-Samskara passes none, so no session gets the tool. Sessions it does not name
-are not refused at call time; the tool is absent.
+decisions: the Supervisor alone on 2026-10-09; a person's own session on
+2026-11-27, after 0.24 removed the Supervisor). The default,
+`personInitSession` (`agent-tools.ts`), reads Factory's own scope for the
+session (`resolveFactoryToolScope`, @mastra/factory
+`dist/tools/scope.js:13-66`) and offers the tool when the session is a
+person's (`kind: 'user'`, not a card run or side session) and the turn was
+sent by a signed-in person (`interactive`: over HTTP, or from a linked Slack
+sender). Notification wakes, webhooks and rule turns are not interactive.
+Sessions it does not name are not refused at call time; the tool is absent.
+If Factory can't read the session, the request gets the other tools without
+`beads_init`. `initSession: false` offers it to none.
 
 **Rules the tools enforce.**
 
