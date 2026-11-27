@@ -198,6 +198,7 @@ From `scripts/secrets-template.env`:
 | `RESEND_API_KEY` | invitation and password-reset email | [operations/mail.md](../operations/mail.md) |
 | `GITHUB_APP_*` | GitHub intake | [github-app.md](github-app.md) |
 | `SLACK_APP_*` | Slack intake | [slack-app.md](slack-app.md) |
+| `DOLT_CREDS_KEY_ID`, `DOLT_CREDS_JWK` | a linked repository keeps its beads on DoltHub; both or neither | `dolt creds ls`, and that key's `~/.dolt/creds/<key id>.jwk` ([operations/beads.md](../operations/beads.md#beads-on-dolthub)) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` | Linear intake; both or neither (`src/mastra/index.ts:206-214`) | Linear OAuth app |
 
 The Mastra Platform credentials (`MASTRA_PLATFORM_ACCESS_TOKEN`,

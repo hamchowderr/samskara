@@ -298,7 +298,7 @@ and `checkedAt`, when it was last checked:
 | State | Meaning | Logged |
 |-------|---------|--------|
 | `ok` | Synced this tick. | No |
-| `no-beads-data` | origin has no `refs/dolt/data`, so the repository does not use beads, or has not pushed its beads data yet. Not an error. Nothing is cloned or bootstrapped, and a copy left from before is deleted, because a copy bootstrapped without beads data has no remote and every `bd dolt pull` fails with `no remote`. origin is checked again every 15 minutes (`remoteCheckIntervalMs`); in between, the tick does not contact GitHub for that repository. `nextCheckAt` says when. | One info line when a repository enters the state, and one when `refs/dolt/data` appears. Never a warning. |
+| `no-beads-data` | origin has no `refs/dolt/data` and its `.beads/config.yaml` names no Dolt remote, so the repository does not use beads, or has not pushed its beads data yet. Or its beads are on DoltHub and the server has no DoltHub credentials; `reason` says which (see [Beads on DoltHub](#beads-on-dolthub)). Not an error. Nothing is cloned or bootstrapped, and a copy left from before is deleted, because a copy bootstrapped without beads data has no remote and every `bd dolt pull` fails with `no remote`. origin is checked again every 15 minutes (`remoteCheckIntervalMs`); in between, the tick does not contact GitHub for that repository. `nextCheckAt` says when. | One info line when a repository enters the state, and one when `refs/dolt/data` appears. Never a warning. |
 | `error` | This tick failed for the repository: `git ls-remote` failed (auth, network), or clone, bootstrap, pull, close or sync failed. `reason` says why; the token is removed from it. The next tick tries again. | `sweep finished with problems` |
 | `parked` | A write-back conflict (`bd sync` exit 2 or 4). Nothing runs for the repository until an operator resets it; see [Write-back failures](#write-back-failures). | `sweep finished with problems` |
 
@@ -1650,6 +1650,44 @@ beads through the `beads_*` tools, which run bd on the host (see
 automated writer. Do not install bd in a repository's setup command: the owner
 decided against bd in the sandbox, even read-only (samskara-e64), and bd 1.3.0
 has no setting that makes a sandbox copy read-only.
+
+## Beads on DoltHub
+
+A repository can keep its beads database on DoltHub instead of in
+`refs/dolt/data` on origin. A public repository does this so that its issues
+stay private: samskara and braynee both moved, and their committed
+`.beads/config.yaml` names the database (`sync: remote: chowderr/braynee`).
+
+When `git ls-remote` finds no `refs/dolt/data`, the sweep reads origin's
+`.beads/config.yaml` from a blobless shallow clone and takes its `sync.remote`
+(`packages/factory-beads/src/dolt-remote.ts`, `syncRemoteOf`). A DoltHub
+remote, `owner/db` or `https://doltremoteapi.dolthub.com/owner/db`, is synced
+like any other: `bd bootstrap` clones from it, `bd dolt pull` and `bd sync`
+pull and push it. A `git+…` remote, or another scheme, is reported as
+`no-beads-data`.
+
+DoltHub needs credentials. Set both in the server's Infisical folder:
+
+- `DOLT_CREDS_KEY_ID`: the key id `dolt creds ls` prints.
+- `DOLT_CREDS_JWK`: that key's JWK, the contents of
+  `~/.dolt/creds/<key id>.jwk`.
+
+At startup the integration writes them where Dolt reads credentials,
+`<BEADS_CACHE_DIR>/dolt-root/.dolt/` (`creds/<key id>.jwk`, mode 0600, and
+`config_global.json` naming it), and every bd and git child gets
+`DOLT_ROOT_PATH` pointing there (`writeDoltRoot`). A malformed JWK stops the
+server at startup (`doltHubCredentialsFromEnv`), and the value is never logged.
+The key needs write access to each database: write-back pushes closes to it.
+Without the credentials, a DoltHub repository reports `no-beads-data` with a
+reason naming the two variables.
+
+A repository on DoltHub counts as a beads repository for `beads_init` even
+without credentials, so the tool never starts a second database in
+`refs/dolt/data` beside it.
+
+Checked on 2026-11-27 against hamchowderr/braynee with bd 1.3.1, the image's
+version: `BdRepo.ensure` bootstrapped the database and `ready` read it through a
+written root; without credentials `bd dolt pull` fails with PermissionDenied.
 
 ## Credentials
 

@@ -42,7 +42,7 @@ import { parseAuthorizedBotsEnv } from '@mastra/factory/integrations/github/webh
 import { LinearIntegration } from '@mastra/factory/integrations/linear/integration';
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
-import { BeadsIntegration, beadsBoard, beadsSetting, beadsStartupLine } from '@samskara/factory-beads';
+import { BeadsIntegration, beadsBoard, beadsSetting, beadsStartupLine, doltHubCredentialsFromEnv } from '@samskara/factory-beads';
 import { createTeamRoutes } from './team/routes';
 
 /**
@@ -491,6 +491,9 @@ const beads =
         pollIntervalMs: positiveInt(process.env.BEADS_POLL_INTERVAL_MS),
         cacheDir: process.env.BEADS_CACHE_DIR?.trim() || undefined,
         bdPath: process.env.BEADS_BD_PATH?.trim() || undefined,
+        // For repositories whose beads live on DoltHub (.beads/config.yaml
+        // sync.remote), e.g. hamchowderr/braynee. Throws on a malformed JWK.
+        dolthub: doltHubCredentialsFromEnv(),
       })
     : undefined;
 
