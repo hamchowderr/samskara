@@ -708,7 +708,7 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
   const beads_init = createTool({
     id: 'beads_init',
     description:
-      `Supervisor only. Start beads in a linked repository that has none: runs bd init with the repository's name as the issue prefix and ` +
+      `Start beads in a linked repository that has none: runs bd init with the repository's name as the issue prefix and ` +
       `publishes the empty database to the repository's refs/dolt/data. It changes the repository on GitHub, so call it ONLY when a person has ` +
       `asked for beads in that repository, and set confirm to true. Refused when the repository already uses beads. ${where}`,
     inputSchema: z.object({
@@ -734,8 +734,9 @@ export function createBeadsTools(ops: BeadsToolOps, scope: ToolScope): Integrati
     beads_dep_add,
     beads_formula_list,
     beads_pour,
-    // Owner decision (samskara-e64): only the supervisor may start beads in a
-    // repository. Other sessions never get the tool, not merely a refusal.
+    // Owner decision (samskara-e64): beads_init only for the session
+    // `initSession` names (none by default). Other sessions never get the
+    // tool, not merely a refusal.
     ...(scope.supervisor ? { beads_init } : {}),
   } as unknown as IntegrationTools;
 }

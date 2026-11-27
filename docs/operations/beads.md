@@ -1785,7 +1785,7 @@ lease (option (b) of the 2026-10-08 design research, picked by the owner on
 | `beads_dep_add` | `bd --sandbox dep add <issue> <depends-on> --type=<t>` | yes | every session |
 | `beads_formula_list` | `bd --readonly formula list --json`, repository formulas only | no | every session |
 | `beads_pour` | `bd --sandbox mol pour <formula> --var=k=v ...`; `dry_run` adds `--dry-run` and never syncs | yes | every session |
-| `beads_init` | `git clone`, `bd init --prefix=<repo name> --skip-agents --skip-hooks`, `bd dolt push --yes` | yes | **supervisor only** |
+| `beads_init` | `git clone`, `bd init --prefix=<repo name> --skip-agents --skip-hooks`, `bd dolt push --yes` | yes | **`initSession` only (none by default)** |
 
 **How Factory sees them.** `FactoryIntegration.agentTools()`
 (`@mastra/factory` 0.20.0 `dist/integrations/base.d.ts:208-215`) is merged
@@ -1806,12 +1806,11 @@ merged provider without a catch (`@mastra/code-sdk`
 otherwise remove every tool from every session. A failure is logged once and
 the request simply gets no beads tools.
 
-**`beads_init` is for the supervisor only** (owner decision, 2026-10-09). The
-tool is in the tool set only when the session's resource id is
-`factory-supervisor:<projectId>` for the resolved project
-(`agent-tools.ts:76`, `:670`). Worker sessions (triage, plan, build, review)
-and channel sessions such as Slack never get it; they are not refused at call
-time, the tool is absent.
+**`beads_init` goes only to the session `initSession` names** (owner
+decision, 2026-10-09, when that was the Supervisor; 0.24 removed it). The
+integration's `initSession` option decides per session (`agent-tools.ts:84`);
+Samskara passes none, so no session gets the tool. Sessions it does not name
+are not refused at call time; the tool is absent.
 
 **Rules the tools enforce.**
 
