@@ -66,6 +66,8 @@ export type { BeadsTransitionPolicyOptions } from './board-rules';
 export { beadsSetting, beadsStartupLine } from './setting';
 export type { BeadsSetting } from './setting';
 export { BdRunner, childEnv, redact, CREDENTIAL_HELPER, TOKEN_ENV } from './runner';
+export { doltHubCredentialsFromEnv, isDoltHubRemote, syncRemoteOf, writeDoltRoot } from './dolt-remote';
+export type { DoltHubCredentials } from './dolt-remote';
 export type { BdResult, BdRunnerOptions, RepoCredentials } from './runner';
 export { BdRepo, BeadSnapshot, cacheDirFor, CONTAINER_TYPES, gateRepoProblem, NEVER_READY_TYPES, OVERVIEW_TYPES, RELATED_TYPES } from './repo';
 export type { BeadComment, BeadDetails, BeadRow, ReadyBead } from './repo';

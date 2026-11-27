@@ -39,6 +39,7 @@ import { validateFactoryRuleDecisions } from '@mastra/factory/rules/validation';
 import { LiveSessions } from '@mastra/factory/session/live-sessions';
 import { WorkItemRelationError } from '@mastra/factory/storage/domains/work-items/base';
 import type { Card as WorkItemRow, ExternalWorkItemSource } from '@mastra/factory/storage/domains/work-items/base';
+import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -50,6 +51,8 @@ import { BEADS_BOARD_ID, REQUESTS_TO_BEADS_PHASE } from './beads-board';
 import type { BeadsInitSession, ToolScope } from './agent-tools';
 import { BdRepo, cacheDirFor, gateRepoProblem, OVERVIEW_TYPES, RELATED_TYPES, resultTail } from './repo';
 import type { BeadDetails, BeadRow, BeadSnapshot } from './repo';
+import { isDoltHubRemote, syncRemoteOf, writeDoltRoot } from './dolt-remote';
+import type { DoltHubCredentials } from './dolt-remote';
 import { BdRunner } from './runner';
 import type { BdResult, RepoCredentials } from './runner';
 import { BeadsToolOps } from './tool-ops';
@@ -532,6 +535,13 @@ export interface BeadsIntegrationOptions {
   closeReason?: (item: WorkItemRow) => string;
   /** Extra environment for bd/git, e.g. PATH in tests. Never a token. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * DoltHub credentials, for repositories whose `.beads/config.yaml` keeps
+   * the beads database on DoltHub (`sync.remote: owner/db`) instead of in
+   * `refs/dolt/data` on origin. Written to a Dolt root under `cacheDir` that
+   * every bd child reads (`DOLT_ROOT_PATH`). See dolt-remote.ts.
+   */
+  dolthub?: DoltHubCredentials;
   /** A preconfigured runner; overrides bdPath, gitPath, actor and env. */
   runner?: BdRunner;
   /**
@@ -601,6 +611,8 @@ const REFRESH_FAILED = 'refresh read failed';
 
 /** The ref beads publishes its Dolt data to (bd's git remote). */
 export const BEADS_DATA_REF = 'refs/dolt/data';
+/** A repository's `no-beads-data` diagnostic when it publishes no beads data anywhere. */
+const NO_BEADS_DATA_REASON = `origin has no ${BEADS_DATA_REF} and its .beads/config.yaml names no Dolt remote: this repository does not publish beads data`;
 
 /** What a sweep reads from the installed board (BoardDefinition, boards/define-board.d.ts). */
 interface BoardPhases {
@@ -681,8 +693,12 @@ export class BeadsIntegration implements FactoryIntegration {
   /** Startup preconditions, checked once (first sweep): undefined = ok, else the idle reason. */
   #preflight: Promise<string | undefined> | undefined;
   #idle: string | undefined;
-  /** Repositories last seen without refs/dolt/data, by slug: when origin was checked. */
+  /** Repositories last seen without beads data the sweep can read, by slug: when origin was checked. */
   readonly #noData = new Map<string, number>();
+  /** Why each repository in `#noData` has none, for its report. */
+  readonly #noDataReason = new Map<string, string>();
+  /** Whether DoltHub credentials were given (`dolthub`). */
+  readonly #doltHub: boolean;
   /** When each repository's GitHub gates were last checked (`githubGateIntervalMs`). */
   readonly #githubGatesCheckedAt = new Map<string, number>();
   /** Repositories (slug) with an agent-tool write committed on the host copy but not yet on origin. */
@@ -709,13 +725,20 @@ export class BeadsIntegration implements FactoryIntegration {
     this.canceledPhase = options.canceledPhase ?? 'canceled';
     this.#cacheRoot = options.cacheDir ?? join(tmpdir(), 'factory-beads');
     this.#log = options.logger ?? console;
+    this.#doltHub = Boolean(options.dolthub);
+    const doltRoot = options.dolthub
+      ? writeDoltRoot(join(this.#cacheRoot, 'dolt-root'), options.dolthub, {
+          name: options.actor ?? 'factory-beads',
+          email: 'factory-beads@localhost',
+        })
+      : undefined;
     this.#runner =
       options.runner ??
       new BdRunner({
         bdPath: options.bdPath,
         gitPath: options.gitPath,
         actor: options.actor,
-        env: options.env,
+        env: doltRoot ? { ...options.env, DOLT_ROOT_PATH: doltRoot } : options.env,
       });
   }
 
@@ -852,6 +875,7 @@ export class BeadsIntegration implements FactoryIntegration {
         await (this.#repos.get(slug) ?? new BdRepo(slug, cacheDirFor(this.#cacheRoot, slug), '', this.#runner)).discard();
         this.#repos.delete(slug);
         this.#noData.delete(slug);
+        this.#noDataReason.delete(slug);
       },
       hasBeadsData: (cloneUrl, credentials) => this.#hasBeadsData(cloneUrl, credentials),
       repoState: (orgId, slug) => this.#last?.repos.find(r => r.orgId === orgId && r.repo === slug)?.state,
@@ -936,7 +960,7 @@ export class BeadsIntegration implements FactoryIntegration {
         // GitHub, until the slower re-check is due.
         const lastNoData = this.#noData.get(linked.slug);
         if (lastNoData !== undefined && Date.now() - lastNoData < this.#remoteCheckIntervalMs) {
-          this.#reportNoData(report, lastNoData);
+          this.#reportNoData(report, lastNoData, this.#noDataReason.get(linked.slug));
           continue;
         }
         try {
@@ -968,11 +992,51 @@ export class BeadsIntegration implements FactoryIntegration {
     return summary;
   }
 
-  #reportNoData(report: RepoSyncReport, checkedAt: number): void {
+  #reportNoData(report: RepoSyncReport, checkedAt: number, reason?: string): void {
     report.state = 'no-beads-data';
     report.checkedAt = new Date(checkedAt).toISOString();
     report.nextCheckAt = new Date(checkedAt + this.#remoteCheckIntervalMs).toISOString();
-    report.diagnostic = `origin has no ${BEADS_DATA_REF}: this repository does not publish beads data`;
+    report.diagnostic = reason ?? NO_BEADS_DATA_REASON;
+  }
+
+  /**
+   * Where origin's beads data lives: `refs/dolt/data` on origin (`git`), a
+   * Dolt remote named by the committed `.beads/config.yaml` (`dolt`, see
+   * dolt-remote.ts), or nowhere (`none`).
+   */
+  async #beadsRemote(cloneUrl: string, credentials: RepoCredentials | undefined): Promise<{ kind: 'git' | 'dolt' | 'none'; remote?: string }> {
+    if (await this.#hasDataRef(cloneUrl, credentials)) return { kind: 'git' };
+    const remote = await this.#configuredSyncRemote(cloneUrl, credentials);
+    return remote && !remote.startsWith('git+') ? { kind: 'dolt', remote } : { kind: 'none' };
+  }
+
+  /**
+   * `sync.remote` from origin's committed `.beads/config.yaml`, read from a
+   * blobless, checkout-free shallow clone (only that one blob is fetched), or
+   * undefined when the file or the key is absent.
+   */
+  async #configuredSyncRemote(cloneUrl: string, credentials: RepoCredentials | undefined): Promise<string | undefined> {
+    const dir = join(this.#cacheRoot, `.probe-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(dir, { recursive: true });
+    try {
+      const opts = { cwd: dir, credentials, timeoutMs: 60_000 };
+      const clone = await this.#runner.git(['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', cloneUrl, '.'], opts);
+      if (clone.code !== 0) throw new Error(`git clone exit ${clone.code}: ${resultTail(clone, 300)}`);
+      const show = await this.#runner.git(['show', 'HEAD:.beads/config.yaml'], opts);
+      return show.code === 0 ? syncRemoteOf(show.stdout) : undefined;
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Whether origin's beads data can be read: `refs/dolt/data` on origin, or
+   * a Dolt remote its `.beads/config.yaml` names. A repository on DoltHub
+   * counts even without credentials, so `beads_init` never starts a second
+   * database beside it; the sweep reports the missing credentials itself.
+   */
+  async #hasBeadsData(cloneUrl: string, credentials: RepoCredentials | undefined): Promise<boolean> {
+    return (await this.#beadsRemote(cloneUrl, credentials)).kind !== 'none';
   }
 
   /**
@@ -980,7 +1044,7 @@ export class BeadsIntegration implements FactoryIntegration {
    * when no ref matches (git ls-remote --help), so 0 = yes, 2 = no, and
    * anything else (auth, network) is an error for this sweep.
    */
-  async #hasBeadsData(cloneUrl: string, credentials: RepoCredentials | undefined): Promise<boolean> {
+  async #hasDataRef(cloneUrl: string, credentials: RepoCredentials | undefined): Promise<boolean> {
     const res = await this.#runner.git(['ls-remote', '--exit-code', cloneUrl, BEADS_DATA_REF], {
       cwd: tmpdir(),
       credentials,
@@ -1067,20 +1131,33 @@ export class BeadsIntegration implements FactoryIntegration {
     // `bd dolt pull` would fail with "no remote". Checked every sweep, so a
     // copy left from before (or a ref deleted on origin) is caught too.
     const checkedAt = Date.now();
-    if (!(await this.#hasBeadsData(cloneUrl, credentials))) {
-      if (!this.#noData.has(slug)) {
+    const source = await this.#beadsRemote(cloneUrl, credentials);
+    const unreadable =
+      source.kind === 'none'
+        ? NO_BEADS_DATA_REASON
+        : source.kind === 'dolt' && !isDoltHubRemote(source.remote!)
+          ? `.beads/config.yaml syncs beads to ${source.remote}; only ${BEADS_DATA_REF} on origin and DoltHub databases are supported`
+          : source.kind === 'dolt' && !this.#doltHub
+            ? `beads data is on DoltHub (${source.remote}) and no DoltHub credentials are set: set DOLT_CREDS_KEY_ID and DOLT_CREDS_JWK`
+            : undefined;
+    if (unreadable) {
+      if (this.#noDataReason.get(slug) !== unreadable) {
         this.#log.info(
-          `[factory-beads] ${slug}: origin has no ${BEADS_DATA_REF}, so it is not a beads repository yet; state no-beads-data, re-checked every ${Math.round(this.#remoteCheckIntervalMs / 60_000)} min`,
+          `[factory-beads] ${slug}: ${unreadable}; state no-beads-data, re-checked every ${Math.round(this.#remoteCheckIntervalMs / 60_000)} min`,
         );
       }
       this.#noData.set(slug, checkedAt);
+      this.#noDataReason.set(slug, unreadable);
       // Drop a copy bootstrapped without beads data: it has no remote to pull.
       await this.#repo(slug, cloneUrl).discard();
       this.#repos.delete(slug);
-      this.#reportNoData(report, checkedAt);
+      this.#reportNoData(report, checkedAt, unreadable);
       return;
     }
-    if (this.#noData.delete(slug)) this.#log.info(`[factory-beads] ${slug}: ${BEADS_DATA_REF} found on origin; syncing`);
+    this.#noDataReason.delete(slug);
+    if (this.#noData.delete(slug)) {
+      this.#log.info(`[factory-beads] ${slug}: ${source.kind === 'dolt' ? `beads data found on DoltHub (${source.remote})` : `${BEADS_DATA_REF} found on origin`}; syncing`);
+    }
 
     const repo = this.#repo(slug, cloneUrl);
     const boot = await repo.ensure(credentials);
