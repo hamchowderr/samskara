@@ -182,6 +182,26 @@ checklist that proves the deployment takes work end to end.
 A repository linked here must not also be linked to a local factory; see
 [environments.md](environments.md#one-environment-per-repository).
 
+## Client IPs and sign-in rate limits
+
+Better Auth rate-limits sign-in per client IP, read from `X-Forwarded-For`
+(`@better-auth/core` `dist/utils/ip.mjs:188-233`). Without
+`advanced.ipAddress.trustedProxies` it accepts only a single-value header; a
+chain resolves to no IP, and every such request shares one per-path bucket,
+which it warns about once per process ("Rate limiting could not determine a
+client IP", `better-auth` `dist/api/rate-limiter/index.mjs:245`).
+
+Coolify's Traefik proxy replaces whatever `X-Forwarded-For` a client sends with
+the address it saw, so the app always gets one value, the real client IP, and
+`trustedProxies` stays unset (samskara-3dz). Checked on production on
+2026-11-27: requests with no header, a forged single value, and a forged
+two-hop chain all resolved, and the warning never appeared in the log.
+
+Put a CDN or another proxy in front (Cloudflare's orange cloud, say) and this
+changes: the header then reaches the app as a chain, so set `trustedProxies` to
+the proxy's address ranges, or `ipAddressHeaders` to the CDN's own client-IP
+header, and check the log for the warning after the next deploy.
+
 ## Rolling back
 
 - **Configuration.** Remove the two identity variables in Coolify and restart.
