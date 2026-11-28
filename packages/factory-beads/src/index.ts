@@ -93,3 +93,4 @@ export { personInitSession } from './agent-tools';
 export type { BeadsInitCandidate, BeadsInitSession, BeadsScopeDeps, ToolScope } from './agent-tools';
 export { BeadsToolError, BeadsToolOps } from './tool-ops';
 export type { BeadsToolOpsDeps, ToolRepo, WriteOutcome } from './tool-ops';
+export type { BeadsRepoHook, BeadsRepoHookContext, BeadsRepoHookResult } from './repo-hooks';

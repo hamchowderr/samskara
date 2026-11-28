@@ -50,6 +50,7 @@ import { beadsKickoffHint } from './kickoff-rule';
 import { BEADS_BOARD_ID, REQUESTS_TO_BEADS_PHASE } from './beads-board';
 import type { BeadsInitSession, ToolScope } from './agent-tools';
 import { BdRepo, cacheDirFor, gateRepoProblem, OVERVIEW_TYPES, RELATED_TYPES, resultTail } from './repo';
+import type { BeadsRepoHook, BeadsRepoHookResult } from './repo-hooks';
 import type { BeadDetails, BeadRow, BeadSnapshot } from './repo';
 import { isDoltHubRemote, syncRemoteOf, writeDoltRoot } from './dolt-remote';
 import type { DoltHubCredentials } from './dolt-remote';
@@ -564,6 +565,12 @@ export interface BeadsIntegrationOptions {
    */
   toolLeaseWait?: WithLeaseOptions;
   logger?: Pick<Console, 'info' | 'warn' | 'error'>;
+  /**
+   * Extra per-repository work run inside each sweep, under the writer lease,
+   * before intake (samskara-rvq): e.g. filing outside-app tickets as beads.
+   * See repo-hooks.ts.
+   */
+  repoHooks?: readonly BeadsRepoHook[];
 }
 
 /**
@@ -1394,6 +1401,30 @@ export class BeadsIntegration implements FactoryIntegration {
         if (report.state === 'parked') return;
       }
       if (wrote || failed) snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
+    }
+    // 1c. Repository hooks (samskara-rvq): writes under this sweep's lease,
+    //     published once and read again before intake, like the step above.
+    const hooks = (this.#options.repoHooks ?? []).filter(hook => hook.appliesTo(slug));
+    if (snapshot && hooks.length > 0) {
+      let wrote = false;
+      for (const hook of hooks) {
+        let result: BeadsRepoHookResult;
+        try {
+          result = await hook.run({ slug, snapshot, bd: args => repo.write(args), log: this.#log });
+        } catch (error) {
+          result = { wrote: false, failed: true, diagnostic: error instanceof Error ? error.message : String(error) };
+        }
+        if (result.wrote) wrote = true;
+        if (result.failed) {
+          this.#warnOnce(`hook:${hook.name}:${slug}:${result.diagnostic ?? ''}`, `[factory-beads] ${slug}: ${hook.name} failed, retried every sweep: ${result.diagnostic ?? 'no detail'}`);
+          report.diagnostic ??= `${hook.name}: ${result.diagnostic ?? 'failed'}`;
+        }
+      }
+      if (wrote) {
+        await this.#publish(repo, credentials, report, 'publishing repository hook writes');
+        if (report.state === 'parked') return;
+        snapshot = await this.#readSnapshot(repo, report, 'the overview steps skipped');
+      }
     }
     const scope: IntakeScope = {
       orgId,

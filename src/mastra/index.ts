@@ -43,6 +43,7 @@ import { LinearIntegration } from '@mastra/factory/integrations/linear/integrati
 import { SlackIntegration } from '@mastra/factory/integrations/slack/integration';
 import type { IMastraAuthProvider } from '@mastra/core/server';
 import { BeadsIntegration, beadsBoard, beadsSetting, beadsStartupLine, doltHubCredentialsFromEnv } from '@samskara/factory-beads';
+import { AppIntakeHook, appsFromEnv, appsStartupLine } from '@samskara/factory-app-intake';
 import { createTeamRoutes } from './team/routes';
 
 /**
@@ -478,6 +479,14 @@ const slack = slackSigningSecret
 // 'no-beads-data', not as an error. Single writer: with more than one server
 // process, REDIS_URL must be set so the writer lease is shared. See
 // docs/operations/beads.md.
+// Outside-app intake (samskara-rvq): tickets a platform admin sent from an
+// outside app become beads in that app's linked repository, and the app hears
+// "fixed" when the bead closes. Runs inside the beads sweep, so it needs the
+// beads integration on. APP_INTAKE_APPS lists the apps; each token lives in
+// its own env var. See docs/operations/app-intake.md.
+const outsideApps = appsFromEnv(process.env);
+console.log(appsStartupLine(outsideApps));
+const appIntakeHook = outsideApps.apps.length > 0 ? new AppIntakeHook({ apps: outsideApps.apps }) : undefined;
 const beadsSwitch = beadsSetting(process.env.BEADS_INTEGRATION);
 const beadsLine = beadsStartupLine(beadsSwitch, Boolean(github));
 if (beadsSwitch.enabled && !github) console.warn(beadsLine);
@@ -494,6 +503,7 @@ const beads =
         // For repositories whose beads live on DoltHub (.beads/config.yaml
         // sync.remote), e.g. hamchowderr/braynee. Throws on a malformed JWK.
         dolthub: doltHubCredentialsFromEnv(),
+        repoHooks: appIntakeHook ? [appIntakeHook] : undefined,
       })
     : undefined;
 
