@@ -16,6 +16,7 @@
     "moduleResolution": "bundler",
     "noEmit": true,
     "paths": {
+      "@samskara/factory-app-intake": ["./packages/factory-app-intake/src/index.ts"],
       "@samskara/factory-beads": ["./packages/factory-beads/src/index.ts"]
     },
     "lib": [

@@ -309,6 +309,11 @@ export class BdRepo {
     await rm(this.dir, { recursive: true, force: true });
   }
 
+  /** A bd write as the integration's actor, for repository hooks (samskara-rvq). */
+  write(args: readonly string[]): Promise<BdResult> {
+    return this.runner.bd(['--sandbox', '--actor', this.runner.actor, ...args], { cwd: this.dir });
+  }
+
   pull(credentials: RepoCredentials | undefined): Promise<BdResult> {
     return this.runner.bd(['dolt', 'pull'], { cwd: this.dir, credentials });
   }

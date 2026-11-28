@@ -37,6 +37,7 @@
     "@mastra/memory": "1.41.3",
     "@mastra/platform-workspace": "1.14.0",
     "@mastra/redis-streams": "0.9.1",
+    "@samskara/factory-app-intake": "0.1.0",
     "@samskara/factory-beads": "0.1.0",
     "better-auth": "1.7.28",
     "resend": "6.28.1",
