@@ -265,16 +265,15 @@ title rather than a placeholder.
      new factory must change their **Default factory** explicitly.
    - A link with no default, in an organization with more than one factory,
      gets the **Pick a default factory** card, and the run does not start.
-3. **Turn on cards, if wanted — HUMAN.** **Settings → Connections → Slack →
-   Work items → Create work items for new Slack threads**, for this factory.
-   It is off by default. With it off, threads still run, but no card appears.
-4. **Invite the bot** to the channel (`/invite @Samskara`).
+3. **Invite the bot** to the channel (`/invite @Samskara`).
 
-A Slack card is created at **Building** and skips Triage (`samskara-ylt`); see
+A thread is a session, not a card. The agent files a card when asked, and it
+goes through intake routing and Planning before Building; see
 [slack-app.md](slack-app.md#where-slack-work-lands).
 
-**Verify:** a message mentioning the bot starts a session (and, with cards on,
-a card appears at Building on this factory's Work board).
+**Verify:** a message mentioning the bot starts a session on a `slack/…`
+branch. Asking it to file the work puts a card in Intake on this factory's
+board.
 
 ## 8. Beads readiness (per repository)
 

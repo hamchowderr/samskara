@@ -31,29 +31,18 @@ await fetch('/web/factory/work-items/<id>', {
 
 Never paste a session cookie into a terminal or a chat: it is a credential.
 
-## Slack messages create work items, but they never get triaged
+## A Slack thread made no card, or its card did not start building
 
-**Expected:** a chat request runs triage.
-**Actual:** the card is on the Work board, already at Building.
+On `@mastra/factory` 0.31 a Slack thread is a session and makes no card by
+itself. The agent files one with `factory_create_work_item` when the person
+asks for the work to be filed or done. The card goes through the project's
+intake routes onto its board's first phase, and on Work the only way to
+Building is through Planning and an approved plan. See
+[slack-app.md](setup/slack-app.md#where-slack-work-lands).
 
-This is how `@mastra/factory` 0.20.0 behaves. A dispatched Slack thread creates
-its card with `stages: ["execute"]` and no board
-(`dist/integrations/slack/slack.js:570-585`), and only when the factory's
-**Create work items for new Slack threads** setting is on (`slack.js:658`). A
-card with no board belongs to `work` (`dist/boards/semantics.js:8`), which is
-Samskara's own Work board (see [boards.md](boards.md)), so the card is on the
-right board. It skipped Triage because the Slack integration files it straight
-into Building (`samskara-ylt`).
-
-Assign the board and phase by hand, from a signed-in session (see
-[Calling the Factory API by hand](#calling-the-factory-api-by-hand)):
-`PATCH /web/factory/work-items/<id>` with
-`{"board":"work","stages":["triage"]}`.
-
-That works only while the card's board is still unset — a second attempt returns
-`board_already_assigned` (`dist/routes/work-items.js:558`). There is no
-configuration that files Slack work into Triage; upstream calls per-origin
-routing a planned follow-up.
+The 0.20 behaviour this section used to describe (a Slack card created
+straight into Building, `samskara-ylt`) is gone, and so is the
+`{"board":"work","stages":["triage"]}` workaround for it.
 
 ## Slack replies "Pick a default factory" and nothing runs
 

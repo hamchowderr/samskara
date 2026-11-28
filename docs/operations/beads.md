@@ -2334,11 +2334,14 @@ build never runs bd.
 
 ## Limitations
 
-- **Slack work through planning.** The owner decided that Slack-originated work
-  goes through planning, with the plan filed as beads and approved by a person
-  before building. That waits on Mastra routing Slack threads into
-  triage/planning (`samskara-ylt`). Today the Slack flow upserts a card straight
-  into Building and skips the board rules.
+- **Slack plans are not filed as beads.** The owner decided that
+  Slack-originated work goes through planning, with the plan filed as beads and
+  approved by a person before building. Since 0.31 the first and last parts
+  hold: a Slack thread makes no card of its own, and a card its agent files
+  enters Work's Intake and reaches Building only through Planning and an
+  approved plan (`samskara-ylt`, closed; see
+  [slack-app.md](../setup/slack-app.md#where-slack-work-lands)). Work's Planning
+  runs `factory-plan`, which does not write beads.
 - **More than one instance has not been tested.** The Redis lease is the
   intended guarantee, but no run with two replicas has been done. Separately,
   beads claims are atomic only inside one database

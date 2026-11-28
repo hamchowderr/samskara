@@ -1,8 +1,8 @@
 # Creating the Slack app
 
 Slack lets people start agent runs by mentioning the bot or sending it a
-message. Each thread becomes a Factory session with its own git branch, and
-optionally a card on a board.
+message. Each thread becomes a Factory session with its own git branch. Its
+agent can file a card on a board; see [Where Slack work lands](#where-slack-work-lands).
 
 Slack is optional. Samskara boots without it; the startup line simply omits it.
 
@@ -209,34 +209,54 @@ Slack does not allow removing scopes from an installed app.
 
 ## Where Slack work lands
 
-A thread creates a card only when its factory's **Create work items for new
-Slack threads** setting is on (`dist/integrations/slack/slack.js:658`). The
-setting is off by default (`slack_work_items_enabled` defaults to `false`,
-`dist/storage/domains/projects/base.js:74`). Turn it on in either of two ways:
+As of `@mastra/factory` 0.31, a Slack thread is a **session**, not a card. The
+integration starts a repo-backed session for the linked sender
+(`dist/integrations/slack/slack.js:244`) and creates no work item: the
+**Create work items for new Slack threads** setting and its
+`slackWorkItemsEnabled` field are gone (no `slack_work_items` anywhere in
+`dist/`), and so is the 0.20 `upsertThreadWorkItem` that put cards straight
+into Building. Samskara's `tests/factory/slack-intake.test.ts` fails if either
+comes back.
 
-- In the Factory: **Settings → Connections → Slack**, the **Work items**
-  section, **Create work items for new Slack threads**. It applies to the
-  factory whose settings you are in.
-- Through the API, from a signed-in session:
-  `PATCH /web/factory/projects/<factoryId>` with `{"slackWorkItemsEnabled": true}`
-  (`dist/routes/contracts.js:31-38`, `:260-266`). See
-  [troubleshooting.md](../troubleshooting.md#calling-the-factory-api-by-hand).
+A card exists only when the session's agent files one, with
+`factory_create_work_item` (`dist/tools/work-item-tools.js:132-174`). The tool
+acts as the linked Slack sender (`dist/tools/scope.js:22-27`) and runs the
+same filing as the board's **New card** button
+(`dist/work-items/create-work-item.js:30-71`):
 
-In `@mastra/factory` 0.20.0 the card is created at the **Building** stage
-(`upsertThreadWorkItem` passes `stages: ["execute"]` and no board,
-`slack.js:584`). A card with no board belongs to `work`
-(`dist/boards/semantics.js:8`), which is Samskara's Work board, so the card is on
-the right board but skips Triage (`samskara-ylt`). See
-[boards.md](../boards.md#installing-a-board-is-not-routing-work-to-it).
+1. **Intake routes pick the board.** The project's intake routes, stored in the
+   database and edited under the project's board settings, decide where the
+   card goes; with no matching route it lands on Work › Intake, Factory's
+   catch-all route (`dist/boards/work-routes.js:280-288`). A card filed from chat
+   has no external source, so routes see it as a `manual` card (no
+   `source.integration`). The agent can also name a board when the person picks
+   one.
+2. **It enters Intake.** Every new card enters its board's first phase, Work's
+   `intake`, which is resting and runs nothing.
+3. **Planning comes before Building.** Work's Intake moves only to Planning,
+   Review, Done or Canceled, never straight to Building, and Planning ends
+   with `submit_plan` and `autoApprove: false`
+   (`dist/boards/work.js:23-50`): an agent's move out of Planning is refused
+   until a person approves the plan (`dist/rules/transition-service.js:361-365`).
+   A person can still move the card themselves, from the board or by telling the
+   agent in Slack, since a move the agent makes for a signed-in sender counts as
+   that person's.
+
+So Slack work can no longer skip planning, which is what `samskara-ylt` asked
+for. There is no Triage phase on the Work of a project created on 0.31. A
+project that predates stored boards keeps the Work it had, Triage included
+(`dist/boards/work-seeds.js`), but Triage runs `factory-triage`, which
+investigates a source issue a chat card does not have, so do not route Slack
+cards there.
 
 ## Troubleshooting
 
 **The bot posts "Pick a default factory".** Set the default factory; see
 [Set the default factory](#set-the-default-factory--human).
 
-**Threads run, but no card appears on the board.** The factory's **Create work
-items for new Slack threads** setting is off. See
-[Where Slack work lands](#where-slack-work-lands).
+**Threads run, but no card appears on the board.** Expected on 0.31: a thread
+is a session, and a card appears only when the agent files one. Ask it to file
+or track the work. See [Where Slack work lands](#where-slack-work-lands).
 
 **`slack` missing from the startup line.** `SLACK_APP_SIGNING_SECRET` is unset
 or empty. It alone gates whether the integration is constructed.
